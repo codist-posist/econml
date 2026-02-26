@@ -531,10 +531,13 @@ class Trainer:
                 artifacts_root = _normalize_artifacts_root(str(cfg_artifacts_root))
             else:
                 artifacts_root = _normalize_artifacts_root(os.environ.get("DEQN_ARTIFACTS_ROOT", "../artifacts"))
+            run_tag = getattr(self.cfg, "tag", None)
+            if run_tag is None or str(run_tag).strip() == "":
+                run_tag = getattr(self.cfg, "mode", "run")
             _rd = make_run_dir(
                 artifacts_root,
                 self.policy,
-                tag=getattr(self.cfg, "tag", "mid"),
+                tag=str(run_tag),
                 seed=getattr(self.cfg, "seed", None),
             )
             try:
