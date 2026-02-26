@@ -171,7 +171,12 @@ def main() -> int:
     ap.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--policies", default="taylor,mod_taylor,discretion,commitment")
-    ap.add_argument("--show_progress", action="store_true", help="Show simulation progress bars.")
+    ap.add_argument(
+        "--show_progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Show simulation progress bars (use --no-show_progress to disable).",
+    )
 
     # Taylor/mod_taylor/discretion simulation defaults (from train notebooks).
     ap.add_argument("--sim_b", type=int, default=512)
