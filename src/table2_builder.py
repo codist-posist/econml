@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Sequence
 
 import numpy as np
 import pandas as pd
@@ -266,15 +266,96 @@ def _annualize_pct(x: np.ndarray | float) -> np.ndarray | float:
     return 400.0 * x
 
 
-def _load_run_dir(artifacts_root: str, policy: str, *, use_selected: bool = True) -> str:
-    rd: Optional[str] = None
-    if use_selected:
-        rd = load_selected_run(artifacts_root, policy)
-    if rd is None:
-        rd = find_latest_run_dir(artifacts_root, policy)
-    if rd is None:
+def _has_weights_file(run_dir: str) -> bool:
+    return os.path.exists(os.path.join(run_dir, "weights.pt")) or os.path.exists(os.path.join(run_dir, "weights_best.pt"))
+
+
+def _missing_run_requirements(run_dir: str, required_files: Sequence[str]) -> List[str]:
+    missing: List[str] = []
+    if not os.path.isdir(run_dir):
+        return ["<missing run directory>"]
+    if not _has_weights_file(run_dir):
+        missing.append("weights.pt|weights_best.pt")
+    for rel in required_files:
+        if not os.path.exists(os.path.join(run_dir, rel)):
+            missing.append(str(rel))
+    return missing
+
+
+def _candidate_run_dirs(
+    artifacts_root: str,
+    policy: str,
+    *,
+    use_selected: bool,
+) -> Tuple[List[str], Optional[str]]:
+    selected = load_selected_run(artifacts_root, policy) if use_selected else None
+    latest = find_latest_run_dir(artifacts_root, policy)
+
+    cand: List[str] = []
+    if selected is not None:
+        cand.append(os.path.normpath(selected))
+    if latest is not None:
+        cand.append(os.path.normpath(latest))
+
+    run_root: Optional[str] = None
+    if latest is not None:
+        run_root = os.path.dirname(latest)
+    elif selected is not None:
+        run_root = os.path.dirname(selected)
+
+    if run_root is not None and os.path.isdir(run_root):
+        run_dirs = [
+            os.path.join(run_root, d)
+            for d in os.listdir(run_root)
+            if os.path.isdir(os.path.join(run_root, d))
+        ]
+        for d in sorted(run_dirs, reverse=True):
+            cand.append(os.path.normpath(d))
+
+    # stable de-duplication while preserving order
+    out: List[str] = []
+    seen: set[str] = set()
+    for d in cand:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out, (os.path.normpath(selected) if selected is not None else None)
+
+
+def _load_run_dir(
+    artifacts_root: str,
+    policy: str,
+    *,
+    use_selected: bool = True,
+    required_files: Sequence[str] = ("sim_paths.npz",),
+) -> str:
+    cands, selected = _candidate_run_dirs(artifacts_root, policy, use_selected=use_selected)
+    if not cands:
         raise FileNotFoundError(f"No run directory found for policy='{policy}' under {artifacts_root}")
-    return rd
+
+    selected_missing: List[str] = []
+    if selected is not None:
+        selected_missing = _missing_run_requirements(selected, required_files)
+
+    for rd in cands:
+        miss = _missing_run_requirements(rd, required_files)
+        if not miss:
+            if selected is not None and rd != selected and selected_missing:
+                print(
+                    f"[build_table2] WARNING: selected run for policy='{policy}' is incomplete "
+                    f"({', '.join(selected_missing)}). Falling back to latest complete run: {rd}"
+                )
+            return rd
+
+    diag = []
+    for rd in cands[:5]:
+        miss = _missing_run_requirements(rd, required_files)
+        diag.append(f"{rd} -> missing: {', '.join(miss)}")
+    raise FileNotFoundError(
+        f"No complete run found for policy='{policy}' under {artifacts_root}. "
+        f"Expected weights.pt|weights_best.pt and {list(required_files)}. "
+        f"Checked:\n  " + "\n  ".join(diag)
+    )
 
 
 def _load_net_from_run(run_dir: str, params: ModelParams, policy: PolicyName) -> PolicyNetwork:

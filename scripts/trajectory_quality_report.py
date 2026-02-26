@@ -39,7 +39,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--artifacts_root", type=str, required=True)
     ap.add_argument("--policy", type=str, required=True, choices=["taylor", "mod_taylor", "discretion", "commitment"])
-    ap.add_argument("--use_selected", action="store_true", default=True)
+    ap.add_argument(
+        "--use_selected",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prefer selected_runs.json over latest complete run (use --no-use_selected to ignore it).",
+    )
     ap.add_argument("--gh_n", type=int, default=3)
     ap.add_argument("--tol", type=float, default=1e-3)
     ap.add_argument("--max_states", type=int, default=50_000)
