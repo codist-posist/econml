@@ -15,6 +15,7 @@ import argparse
 import sys
 
 import pandas as pd
+import torch
 
 from src.table2_builder import build_table2
 from src.paper_check import check_table2
@@ -28,7 +29,13 @@ def main() -> int:
     ap.add_argument("--tol-skew", type=float, default=0.5, help="Abs tolerance for skewness")
     args = ap.parse_args()
 
-    df = build_table2(args.artifacts, device=args.device, use_selected=True, include_rules=False)
+    df = build_table2(
+        args.artifacts,
+        device=args.device,
+        dtype=torch.float64,
+        use_selected=True,
+        include_rules=False,
+    )
     chk = check_table2(df, tol_abs=args.tol, tol_abs_skew=args.tol_skew)
 
     pd.set_option("display.max_rows", 200)

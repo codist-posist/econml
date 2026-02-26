@@ -16,6 +16,7 @@ from .deqn import PolicyNetwork, implied_nominal_rate_from_euler
 from .deqn import Trainer
 from .config import TrainConfig
 from .metrics import output_gap_from_consumption
+from .policy_rules import i_taylor, i_modified_taylor
 
 
 
@@ -407,7 +408,7 @@ def build_table2(
     artifacts_root: str,
     *,
     device: str = "cpu",
-    dtype: torch.dtype = torch.float32,
+    dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
     include_rules: bool = True,
 ) -> pd.DataFrame:
@@ -466,9 +467,34 @@ def build_table2(
         # nominal/real in SSS
         if policy_key == "flex":
             i_ss = float(flex.by_regime[regime]["r_star"])  # pi=0 so nominal=real
+        elif policy_key == "taylor":
+            # Paper Section 7: nominal rate under the rule i_t = (1+pi_bar)/beta - 1 + psi*(pi_t-pi_bar).
+            i_ss = float(
+                i_taylor(
+                    params,
+                    torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
+                ).detach().cpu()
+            )
+        elif policy_key == "mod_taylor":
+            # Regime-contingent rule: i_t = rbar_s + psi*(pi_t-pi_bar), with rbar_s = natural rate in regime s.
+            i_ss = float(
+                i_modified_taylor(
+                    params,
+                    torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
+                    rbar_by_regime,
+                    torch.tensor([int(regime)], device=params.device, dtype=torch.long),
+                )[0].detach().cpu()
+            )
         else:
             net = nets[policy_key]
-            i_ss = _implied_i_at_sss(params, policy_key, net, sss, regime=regime, rbar_by_regime=rbar_by_regime if policy_key=="mod_taylor" else None)
+            i_ss = _implied_i_at_sss(
+                params,
+                policy_key,
+                net,
+                sss,
+                regime=regime,
+                rbar_by_regime=None,
+            )
         r_ss = (1.0 + i_ss) / (1.0 + pi_ss) - 1.0
 
         # moments from sim
