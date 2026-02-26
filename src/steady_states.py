@@ -848,6 +848,7 @@ def solve_discretion_sss_switching(
     # stationary distribution and backward weights for Delta_prev
     def stationary_dist(Pm: torch.Tensor) -> torch.Tensor:
         # Solve (I - P.T) * pi = 0 with sum(pi)=1. Here P is 2x2 row-stochastic: P[current,next].
+        I = torch.eye(2, device=dev, dtype=dt)
         A = (I - Pm.T)  # 2x2
         A = torch.vstack([A, torch.ones((1, 2), device=dev, dtype=dt)])  # 3x2
         b = torch.tensor([[0.0], [0.0], [1.0]], device=dev, dtype=dt)    # 3x1
