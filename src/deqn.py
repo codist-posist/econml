@@ -235,6 +235,12 @@ class Trainer:
         self.params = self.params.to_torch()
         set_seeds(self.cfg.seed)
 
+        # Keep model tensors on the same device/dtype as params to avoid
+        # CPU/CUDA mismatches when notebooks instantiate net on default CPU.
+        self.net = self.net.to(device=self.params.device, dtype=self.params.dtype)
+        if self.rbar_by_regime is not None:
+            self.rbar_by_regime = self.rbar_by_regime.to(device=self.params.device, dtype=self.params.dtype)
+
         if self.policy == "mod_taylor":
             if self.rbar_by_regime is None:
                 raise ValueError("mod_taylor requires rbar_by_regime from export_rbar_tensor(solve_flexprice_sss(params))")
