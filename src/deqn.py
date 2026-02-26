@@ -514,34 +514,34 @@ class Trainer:
         log_every = int(getattr(self.cfg, "log_every", 50))
         log_every = int(getattr(self.cfg, "log_every", 50))
 
-# Resolve run_dir. If not provided, create one automatically under ../artifacts.
-# This keeps training reproducible with zero manual setup.
-_rd = getattr(self.cfg, "run_dir", None)
-if _rd is None or str(_rd).strip() == "":
-    artifacts_root = _normalize_artifacts_root(os.environ.get("DEQN_ARTIFACTS_ROOT", "../artifacts"))
-    _rd = make_run_dir(
-        artifacts_root,
-        self.policy,
-        tag=getattr(self.cfg, "tag", "mid"),
-        seed=getattr(self.cfg, "seed", None),
-    )
-    try:
-        setattr(self.cfg, "run_dir", _rd)
-    except Exception:
-        pass
-    try:
-        save_run_metadata(
-            _rd,
-            config={
-                "policy": self.policy,
-                "train_config": self.cfg.to_dict() if hasattr(self.cfg, "to_dict") else {},
-                "model_params": self.params.to_dict() if hasattr(self.params, "to_dict") else {},
-            },
-        )
-    except Exception:
-        pass
+        # Resolve run_dir. If not provided, create one automatically under ../artifacts.
+        # This keeps training reproducible with zero manual setup.
+        _rd = getattr(self.cfg, "run_dir", None)
+        if _rd is None or str(_rd).strip() == "":
+            artifacts_root = _normalize_artifacts_root(os.environ.get("DEQN_ARTIFACTS_ROOT", "../artifacts"))
+            _rd = make_run_dir(
+                artifacts_root,
+                self.policy,
+                tag=getattr(self.cfg, "tag", "mid"),
+                seed=getattr(self.cfg, "seed", None),
+            )
+            try:
+                setattr(self.cfg, "run_dir", _rd)
+            except Exception:
+                pass
+            try:
+                save_run_metadata(
+                    _rd,
+                    config={
+                        "policy": self.policy,
+                        "train_config": self.cfg.to_dict() if hasattr(self.cfg, "to_dict") else {},
+                        "model_params": self.params.to_dict() if hasattr(self.params, "to_dict") else {},
+                    },
+                )
+            except Exception:
+                pass
 
-run_dir: str | None = str(_rd) if _rd else None
+        run_dir: str | None = str(_rd) if _rd else None
         if run_dir is not None:
             ensure_dir(run_dir)
         metrics_rows: List[Dict[str, float]] | None = [] if run_dir is not None else None
@@ -626,7 +626,10 @@ run_dir: str | None = str(_rd) if _rd else None
                         if metrics_rows is not None:
                             metrics_rows.append(metr)
                             if (len(metrics_rows) % 20) == 0:
-                                save_csv(metrics_rows, os.path.join(run_dir, "train_metrics.csv"))
+                                save_csv(
+                                    os.path.join(run_dir, "train_metrics.csv"),
+                                    pd.DataFrame(metrics_rows),
+                                )
 
                 # Paper stopping rule: stop once loss is below epsilon
                 if eps_stop is not None and lv < float(eps_stop):
@@ -680,10 +683,8 @@ run_dir: str | None = str(_rd) if _rd else None
 
 
         # Save training diagnostics (quality monitoring)
-        if metrics_rows is not None:
+        if metrics_rows is not None and run_dir is not None:
             try:
-                run_dir = str(self.cfg.run_dir)
-                ensure_dir(run_dir)
                 df = pd.DataFrame(metrics_rows)
                 self.train_log_df = df
                 save_csv(os.path.join(run_dir, "train_metrics.csv"), df)
@@ -691,10 +692,13 @@ run_dir: str | None = str(_rd) if _rd else None
                 # Logging must never crash training
                 pass
 
-                        # Final flush + pointers
+        # Final flush + pointers
         if run_dir is not None:
             try:
-                save_csv(metrics_rows or [], os.path.join(run_dir, "train_metrics.csv"))
+                save_csv(
+                    os.path.join(run_dir, "train_metrics.csv"),
+                    pd.DataFrame(metrics_rows or []),
+                )
             except Exception:
                 pass
             print(f"[{self.policy}] training artifacts in: {run_dir}")

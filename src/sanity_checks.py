@@ -436,6 +436,8 @@ def residuals_check_switching_consistent(
 
     dev = params.device
     dt = params.dtype
+    # Keep backward-compatible variable name used below.
+    params64 = params
 
     P = params.P.to(device=dev, dtype=dt)  # shape [s_current, s_next] (row-stochastic)
     beta = params.beta
@@ -715,4 +717,3 @@ def residuals_check_switching_consistent(
 
     # Other policies: use the existing fixed-regime residual check.
     return residuals_check(params64, net, policy=policy, sss_by_regime=sss_by_regime, floors=floors)
-

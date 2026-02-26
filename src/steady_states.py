@@ -642,8 +642,9 @@ def solve_commitment_sss_switching(params: ModelParams, max_iter: int = 200, tol
 
     def B(current_s: int):
         pi_s = pi0_stat if current_s == 0 else pi1_stat
-        B0 = (pi0_stat * float(params.P[current_s, 0].detach().cpu())) / pi_s
-        B1 = (pi1_stat * float(params.P[current_s, 1].detach().cpu())) / pi_s
+        # Backward weights use Pr(s_t=current_s | s_{t-1}=j) = P[j, current_s].
+        B0 = (pi0_stat * float(params.P[0, current_s].detach().cpu())) / pi_s
+        B1 = (pi1_stat * float(params.P[1, current_s].detach().cpu())) / pi_s
         return B0, B1
 
     B00, B10 = B(0)
