@@ -611,17 +611,54 @@ class Trainer:
 
                 # --- 2) Compute residuals on the simulated path ---
                 opt.zero_grad(set_to_none=True)
-                resid = self._residuals(X)  # (N_path*B, K)
                 keys = self.res_keys
-                loss = loss_from_residuals(resid)
+                need_log = (global_step % log_every) == 0
 
-                # --- 3) Gradient step (Adam) ---
-                loss.backward()
+                # Discretion + CUDA + float64 can be memory-heavy.
+                # Use micro-batched residual/backward pass to keep equations/objective unchanged.
+                chunk_size = int(getattr(self.cfg, "residual_chunk_size", 0) or 0)
+                if chunk_size <= 0 and self.policy == "discretion" and str(dev).startswith("cuda"):
+                    chunk_size = min(int(X.shape[0]), 1024)
+                use_chunks = (0 < chunk_size < int(X.shape[0]))
+
+                resid_for_log: torch.Tensor | None = None
+                X_for_log: torch.Tensor | None = None
+                if not use_chunks:
+                    resid = self._residuals(X)  # (N_path*B, K)
+                    loss = loss_from_residuals(resid)
+                    lv = float(loss.detach().cpu())
+                    # --- 3) Gradient step (Adam) ---
+                    loss.backward()
+                    if need_log:
+                        resid_for_log = resid.detach()
+                        X_for_log = X.detach()
+                else:
+                    n_total = int(X.shape[0])
+                    lv = 0.0
+                    resid_chunks = [] if need_log else None
+                    x_chunks = [] if need_log else None
+                    for j in range(0, n_total, int(chunk_size)):
+                        Xi = X[j : j + int(chunk_size)]
+                        resid_i = self._residuals(Xi)
+                        loss_i = loss_from_residuals(resid_i)
+                        w = float(Xi.shape[0]) / float(n_total)
+                        (loss_i * w).backward()
+                        lv += float(loss_i.detach().cpu()) * w
+                        if need_log:
+                            with torch.no_grad():
+                                assert resid_chunks is not None and x_chunks is not None
+                                resid_chunks.append(resid_i.detach().cpu())
+                                x_chunks.append(Xi.detach().cpu())
+                        del Xi, resid_i, loss_i
+                    if need_log:
+                        assert resid_chunks is not None and x_chunks is not None
+                        resid_for_log = torch.cat(resid_chunks, dim=0)
+                        X_for_log = torch.cat(x_chunks, dim=0)
+
                 if self.cfg.grad_clip is not None and float(self.cfg.grad_clip) > 0:
                     torch.nn.utils.clip_grad_norm_(self.net.parameters(), float(self.cfg.grad_clip))
                 opt.step()
 
-                lv = float(loss.detach().cpu())
                 losses.append(lv)
                 global_step += 1
 
@@ -633,10 +670,10 @@ class Trainer:
                         best_state = {k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()}
 
                 # Optional logging to disk (unchanged; does not affect equations)
-                if (global_step % log_every) == 0:
+                if need_log and (resid_for_log is not None) and (X_for_log is not None):
                     with torch.no_grad():
-                        metr = residual_metrics(resid, keys, tol=1e-4)
-                        metr.update(residual_metrics_by_regime(X, resid, keys, tol=1e-4, policy=self.policy))
+                        metr = residual_metrics(resid_for_log, keys, tol=1e-4)
+                        metr.update(residual_metrics_by_regime(X_for_log, resid_for_log, keys, tol=1e-4, policy=self.policy))
                         metr.update({"global_step": float(global_step)})
 
                         # Console-friendly training diagnostics (does not affect equations)
