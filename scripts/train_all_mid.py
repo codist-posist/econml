@@ -64,6 +64,20 @@ def _parse_policies(raw: str) -> List[str]:
     return out
 
 
+def _resolve_device(requested: str) -> str:
+    req = str(requested).strip().lower()
+    if req == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if req == "cuda":
+        if torch.cuda.is_available():
+            return "cuda"
+        print("[warn] CUDA requested but not available; falling back to CPU.")
+        return "cpu"
+    if req == "cpu":
+        return "cpu"
+    raise ValueError(f"Unsupported device '{requested}'. Expected one of: auto,cpu,cuda")
+
+
 def _build_train_quality(trainer: Trainer, cfg: TrainConfig) -> dict:
     val_size = int(getattr(cfg, "val_size", 0))
     if val_size <= 0:
@@ -171,7 +185,7 @@ def train_one(policy: str, args: argparse.Namespace) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Train all policy variants with true mid preset and save artifacts.")
     ap.add_argument("--artifacts_root", default=os.path.join(_ROOT, "artifacts"))
-    ap.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
+    ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--policies", default="taylor,mod_taylor,discretion,commitment")
     ap.add_argument(
@@ -204,12 +218,14 @@ def main() -> int:
 
     args = ap.parse_args()
     args.artifacts_root = os.path.abspath(os.path.expanduser(str(args.artifacts_root)))
+    args.device = _resolve_device(str(args.device))
     ensure_dir(args.artifacts_root)
 
     policies = _parse_policies(str(args.policies))
     print("Policies:", policies)
     print("Artifacts root:", args.artifacts_root)
     print("Preset: mid")
+    print("Device:", args.device)
 
     started = time.time()
     run_dirs: Dict[str, str] = {}
