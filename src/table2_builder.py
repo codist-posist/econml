@@ -394,7 +394,10 @@ def _implied_i_at_sss(
         out["varrho"] = torch.tensor([sss["varrho"]], device=dev, dtype=dt)
 
     # minimal trainer (no training)
-    cfg_sim = TrainConfig.dev(seed=0) if params.device == "cpu" else TrainConfig.full(seed=0)
+    if params.device == "cpu":
+        cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
+    else:
+        cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
     trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, gh_n=7, rbar_by_regime=rbar_by_regime)
     i_t = implied_nominal_rate_from_euler(params, policy, x, out, 7, trainer)
     return float(i_t.item())

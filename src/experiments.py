@@ -89,7 +89,10 @@ def simulate_deterministic_path(
     """
     net.eval()
     # minimal cfg for trainer; no training
-    cfg_sim = TrainConfig.dev(seed=0) if params.device == "cpu" else TrainConfig.full(seed=0)
+    if params.device == "cpu":
+        cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
+    else:
+        cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
     tr = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
 
     T = int(spec.T)

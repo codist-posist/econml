@@ -21,7 +21,11 @@ from .policy_rules import i_taylor, i_modified_taylor, fisher_euler_term
 from .residuals_a1 import residuals_a1
 from .residuals_a2 import residuals_a2
 from .residuals_a3 import residuals_a3
-from .io_utils import save_csv, ensure_dir, make_run_dir, save_run_metadata, _normalize_artifacts_root
+from .io_utils import save_csv, ensure_dir, make_run_dir, save_run_metadata, _normalize_artifacts_root, pack_config
+
+
+# Torch thread pools can only be safely configured once per process.
+_CPU_THREAD_KNOBS_APPLIED = False
 
 
 class PolicyNetwork(nn.Module):
@@ -209,14 +213,18 @@ class Trainer:
     def __post_init__(self):
         # CPU knobs (safe; do not change equations)
         if self.params.device == "cpu":
-            try:
-                if self.cfg.cpu_num_threads is not None:
-                    torch.set_num_threads(int(self.cfg.cpu_num_threads))
-                if self.cfg.cpu_num_interop_threads is not None:
-                    torch.set_num_interop_threads(int(self.cfg.cpu_num_interop_threads))
-            except RuntimeError:
-                # Too late to change thread pools in this Python process (common in notebooks).
-                pass
+            global _CPU_THREAD_KNOBS_APPLIED
+            if not _CPU_THREAD_KNOBS_APPLIED:
+                try:
+                    if self.cfg.cpu_num_threads is not None:
+                        torch.set_num_threads(int(self.cfg.cpu_num_threads))
+                    if self.cfg.cpu_num_interop_threads is not None:
+                        torch.set_num_interop_threads(int(self.cfg.cpu_num_interop_threads))
+                except RuntimeError:
+                    # Too late to change thread pools in this Python process (common in notebooks).
+                    pass
+                finally:
+                    _CPU_THREAD_KNOBS_APPLIED = True
             mp = getattr(self.cfg, "matmul_precision", None)
             if mp is not None and hasattr(torch, "set_float32_matmul_precision"):
                 try:
@@ -518,7 +526,11 @@ class Trainer:
         # This keeps training reproducible with zero manual setup.
         _rd = getattr(self.cfg, "run_dir", None)
         if _rd is None or str(_rd).strip() == "":
-            artifacts_root = _normalize_artifacts_root(os.environ.get("DEQN_ARTIFACTS_ROOT", "../artifacts"))
+            cfg_artifacts_root = getattr(self.cfg, "artifacts_root", None)
+            if cfg_artifacts_root is not None and str(cfg_artifacts_root).strip() != "":
+                artifacts_root = _normalize_artifacts_root(str(cfg_artifacts_root))
+            else:
+                artifacts_root = _normalize_artifacts_root(os.environ.get("DEQN_ARTIFACTS_ROOT", "../artifacts"))
             _rd = make_run_dir(
                 artifacts_root,
                 self.policy,
@@ -530,13 +542,11 @@ class Trainer:
             except Exception:
                 pass
             try:
+                cfg_blob = pack_config(self.params, self.cfg, extra={"policy": self.policy})
+                cfg_blob["policy"] = self.policy
                 save_run_metadata(
                     _rd,
-                    config={
-                        "policy": self.policy,
-                        "train_config": self.cfg.to_dict() if hasattr(self.cfg, "to_dict") else {},
-                        "model_params": self.params.to_dict() if hasattr(self.params, "to_dict") else {},
-                    },
+                    config=cfg_blob,
                 )
             except Exception:
                 pass
@@ -755,7 +765,10 @@ def simulate_paths(
     x = x0.to(device=dev, dtype=dt)
 
     # Build a minimal cfg for simulation (no training). Must be compatible with new TrainConfig.
-    cfg_sim = TrainConfig.dev(seed=0) if params_sim.device == "cpu" else TrainConfig.full(seed=0)
+    if params_sim.device == "cpu":
+        cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
+    else:
+        cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
 
     trainer = Trainer(params=params_sim, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
 

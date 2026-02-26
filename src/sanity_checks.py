@@ -159,7 +159,10 @@ def trajectory_residuals_check(
 
     x = torch.tensor(X, device=dev, dtype=dt)
 
-    cfg_sim = TrainConfig.dev(seed=0) if params.device == "cpu" else TrainConfig.full(seed=0)
+    if params.device == "cpu":
+        cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
+    else:
+        cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
     trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
 
     resids = []
