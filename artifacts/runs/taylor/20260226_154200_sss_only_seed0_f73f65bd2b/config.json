@@ -1,0 +1,83 @@
+{
+  "extra": {
+    "policy": "taylor",
+    "stage": "sss_only"
+  },
+  "params": {
+    "bad_state": 1,
+    "beta": 0.9975,
+    "device": "cpu",
+    "dtype": "torch.float32",
+    "eps": 7.0,
+    "eta_bar": 0.14285714285714285,
+    "g_bar": 0.2,
+    "gamma": 2.0,
+    "omega": 1.0,
+    "p12": 0.020833333333333332,
+    "p21": 0.041666666666666664,
+    "pi_bar": 0.0,
+    "psi": 2.0,
+    "rho_A": 0.99,
+    "rho_g": 0.97,
+    "rho_tau": 0.9,
+    "sigma_A": 0.009,
+    "sigma_g": 0.0052,
+    "sigma_tau": 0.0014,
+    "tau_bar": 0.14285714285714285,
+    "theta": 0.75
+  },
+  "train_cfg": {
+    "activation": "selu",
+    "artifacts_root": "../artifacts",
+    "best_weights_name": "weights_best.pt",
+    "c_floor": 1e-06,
+    "commitment_init_multiplier_clip": 25.0,
+    "commitment_init_multiplier_std": 0.0,
+    "cpu_num_interop_threads": 1,
+    "cpu_num_threads": 16,
+    "delta_floor": 1e-08,
+    "early_stopping": false,
+    "enable_timers": true,
+    "grad_clip": 1.0,
+    "hidden_layers": [
+      512,
+      512
+    ],
+    "log_every": 100,
+    "lr_reduce_factor": 0.5,
+    "matmul_precision": "medium",
+    "min_delta": 1e-05,
+    "min_lr": 1e-07,
+    "mode": "mid",
+    "n_path": 50,
+    "n_paths_per_step": 1,
+    "patience": 5000,
+    "phase1": {
+      "batch_size": 128,
+      "eps_stop": 1e-07,
+      "gh_n_train": 2,
+      "lr": 1e-05,
+      "steps": 6000,
+      "use_float64": false
+    },
+    "phase2": {
+      "batch_size": 128,
+      "eps_stop": 1e-10,
+      "gh_n_train": 3,
+      "lr": 1e-05,
+      "steps": 1000,
+      "use_float64": true
+    },
+    "plateau_patience": 5000,
+    "profile": false,
+    "profile_dir": "../artifacts/profiles",
+    "profile_steps": 200,
+    "pstar_floor": 1e-08,
+    "reduce_lr_on_plateau": false,
+    "run_dir": null,
+    "save_best": true,
+    "seed": 0,
+    "val_every": 1500,
+    "val_size": 1024
+  }
+}

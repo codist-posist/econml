@@ -729,15 +729,35 @@ def simulate_paths(
     if (policy in ("discretion", "commitment")) and (not compute_implied_i):
         print("[simulate_paths] compute_implied_i was False for policy=%s; enabling it to compute nominal rates from Euler." % policy)
         compute_implied_i = True
-    dev, dt = params.device, params.dtype
+
+    # Keep params/net dtype consistent. Training may end in float64 (phase2), while callers
+    # can still pass float32 params from notebook setup.
+    net_dtype = next(net.parameters()).dtype
+    params_sim = params
+    if net_dtype != params.dtype:
+        params_sim = ModelParams(
+            beta=params.beta, gamma=params.gamma, omega=params.omega,
+            theta=params.theta, eps=params.eps, tau_bar=params.tau_bar,
+            rho_A=params.rho_A, rho_tau=params.rho_tau, rho_g=params.rho_g,
+            sigma_A=params.sigma_A, sigma_tau=params.sigma_tau, sigma_g=params.sigma_g,
+            g_bar=params.g_bar, eta_bar=params.eta_bar,
+            bad_state=params.bad_state,
+            p12=params.p12, p21=params.p21,
+            pi_bar=params.pi_bar, psi=params.psi,
+            device=params.device, dtype=net_dtype,
+        ).to_torch()
+        if rbar_by_regime is not None:
+            rbar_by_regime = rbar_by_regime.to(device=params_sim.device, dtype=params_sim.dtype)
+
+    dev, dt = params_sim.device, params_sim.dtype
     net.eval()
     B = x0.shape[0]
     x = x0.to(device=dev, dtype=dt)
 
     # Build a minimal cfg for simulation (no training). Must be compatible with new TrainConfig.
-    cfg_sim = TrainConfig.dev(seed=0) if params.device == "cpu" else TrainConfig.full(seed=0)
+    cfg_sim = TrainConfig.dev(seed=0) if params_sim.device == "cpu" else TrainConfig.full(seed=0)
 
-    trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
+    trainer = Trainer(params=params_sim, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
 
     assert thin >= 1
 
@@ -776,13 +796,13 @@ def simulate_paths(
 
         if policy in ["taylor", "mod_taylor"]:
             if policy == "taylor":
-                i_t = i_taylor(params, out["pi"])
+                i_t = i_taylor(params_sim, out["pi"])
             else:
                 assert rbar_by_regime is not None
-                i_t = i_modified_taylor(params, out["pi"], rbar_by_regime, st.s)
+                i_t = i_modified_taylor(params_sim, out["pi"], rbar_by_regime, st.s)
         else:
             if compute_implied_i:
-                i_t = implied_nominal_rate_from_euler(params, policy, x, out, int(gh_n), trainer)
+                i_t = implied_nominal_rate_from_euler(params_sim, policy, x, out, int(gh_n), trainer)
             else:
                 i_t = torch.full_like(out["pi"], float("nan"))
 

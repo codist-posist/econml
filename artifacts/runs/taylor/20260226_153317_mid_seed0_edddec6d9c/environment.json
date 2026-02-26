@@ -1,0 +1,7 @@
+{
+  "numpy": "1.26.4",
+  "pandas": "2.2.3",
+  "platform": "macOS-26.1-x86_64-i386-64bit",
+  "python": "3.9.7 (default, Sep 16 2021, 08:50:36) \n[Clang 10.0.0 ]",
+  "torch": "2.2.2"
+}
