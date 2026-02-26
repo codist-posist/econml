@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal, Tuple
+import math
 import torch
 
 PolicyName = Literal["taylor", "mod_taylor", "discretion", "commitment"]
@@ -27,6 +28,11 @@ class ModelParams:
     sigma_A: float = 0.009
     sigma_tau: float = 0.0014
     sigma_g: float = 0.0052
+    # Optional regime-dependent volatilities, ordered as (normal, bad).
+    # If None, scalar sigma_* above is used in both regimes.
+    sigma_A_by_regime: Tuple[float, float] | None = None
+    sigma_tau_by_regime: Tuple[float, float] | None = None
+    sigma_g_by_regime: Tuple[float, float] | None = None
 
     # Levels / regimes
     g_bar: float = 0.20
@@ -47,7 +53,88 @@ class ModelParams:
     def to_torch(self) -> "ModelParams":
         # Smoke check that device/dtype are valid (does not change params)
         torch.zeros(1, device=self.device, dtype=self.dtype)
+        for nm in ("sigma_A_by_regime", "sigma_tau_by_regime", "sigma_g_by_regime"):
+            by = getattr(self, nm)
+            if by is None:
+                continue
+            if len(by) != 2:
+                raise ValueError(f"{nm} must have exactly 2 elements (normal, bad). Got: {by}")
+            if float(by[0]) <= 0.0 or float(by[1]) <= 0.0:
+                raise ValueError(f"{nm} values must be positive. Got: {by}")
         return self
+
+    def with_device_dtype(self, *, device: str | None = None, dtype: torch.dtype | None = None) -> "ModelParams":
+        """Return a copy with updated torch placement/type."""
+        return replace(
+            self,
+            device=(self.device if device is None else device),
+            dtype=(self.dtype if dtype is None else dtype),
+        )
+
+    def stationary_probs(self) -> Tuple[float, float]:
+        """Stationary probabilities (normal, bad) for 2-state chain."""
+        denom = float(self.p12 + self.p21)
+        if denom <= 0.0:
+            raise ValueError(f"Invalid transition probs: p12+p21 must be > 0, got {denom}.")
+        pi_bad = float(self.p12) / denom
+        return (1.0 - pi_bad, pi_bad)
+
+    def sigma_by_regime(self, name: Literal["sigma_A", "sigma_tau", "sigma_g"]) -> Tuple[float, float]:
+        by = getattr(self, f"{name}_by_regime")
+        if by is None:
+            s = float(getattr(self, name))
+            return (s, s)
+        return (float(by[0]), float(by[1]))
+
+    def sigma_in_regime(self, name: Literal["sigma_A", "sigma_tau", "sigma_g"], regime: int) -> float:
+        s0, s1 = self.sigma_by_regime(name)
+        return s0 if int(regime) == 0 else s1
+
+    def sigma_effective(self, name: Literal["sigma_A", "sigma_tau", "sigma_g"]) -> float:
+        """Stationary-mixture volatility used for approximate unconditional initialization."""
+        s0, s1 = self.sigma_by_regime(name)
+        pi0, pi1 = self.stationary_probs()
+        return float(math.sqrt(pi0 * s0 * s0 + pi1 * s1 * s1))
+
+    def with_sigma_tau_regime(
+        self,
+        *,
+        bad_multiplier: float,
+        normal_multiplier: float = 1.0,
+    ) -> "ModelParams":
+        """Scenario A: only sigma_tau depends on regime."""
+        sig0 = float(self.sigma_tau) * float(normal_multiplier)
+        sig1 = float(self.sigma_tau) * float(bad_multiplier)
+        return replace(
+            self,
+            sigma_tau=sig0,
+            sigma_tau_by_regime=(sig0, sig1),
+            sigma_A_by_regime=None,
+            sigma_g_by_regime=None,
+        ).to_torch()
+
+    def with_all_sigma_regime(
+        self,
+        *,
+        bad_multiplier: float,
+        normal_multiplier: float = 1.0,
+    ) -> "ModelParams":
+        """Scenario B: sigma_A, sigma_tau and sigma_g all depend on regime."""
+        a0 = float(self.sigma_A) * float(normal_multiplier)
+        a1 = float(self.sigma_A) * float(bad_multiplier)
+        t0 = float(self.sigma_tau) * float(normal_multiplier)
+        t1 = float(self.sigma_tau) * float(bad_multiplier)
+        g0 = float(self.sigma_g) * float(normal_multiplier)
+        g1 = float(self.sigma_g) * float(bad_multiplier)
+        return replace(
+            self,
+            sigma_A=a0,
+            sigma_tau=t0,
+            sigma_g=g0,
+            sigma_A_by_regime=(a0, a1),
+            sigma_tau_by_regime=(t0, t1),
+            sigma_g_by_regime=(g0, g1),
+        ).to_torch()
 
     @property
     def M(self) -> float:
@@ -209,6 +296,24 @@ class TrainConfig:
             n_path=50,
             phase1 = PhaseConfig(steps=6_000, lr=1e-5, batch_size=128, gh_n_train=2, use_float64=False, eps_stop=1e-7),
             phase2 = PhaseConfig(steps=1000, lr=3e-6, batch_size=128, gh_n_train=3, use_float64=True, eps_stop=1e-6),
+        )
+        return replace(base, **overrides)
+
+    @staticmethod
+    def mid_discretion_fast(**overrides) -> "TrainConfig":
+        """
+        Memory/time-friendly mid preset for discretion sweeps on single GPU (e.g., L4):
+        - Keeps the same equations and 2-phase GH schedule.
+        - Reduces path length and phase-2 batch/steps to avoid CUDA OOM and speed up runs.
+        """
+        base = TrainConfig.mid(
+            mode="mid",
+            n_path=32,
+            val_size=512,
+            val_every=1200,
+            log_every=50,
+            phase1=PhaseConfig(steps=4_500, lr=1e-5, batch_size=96, gh_n_train=2, use_float64=False, eps_stop=2e-7),
+            phase2=PhaseConfig(steps=700, lr=3e-6, batch_size=64, gh_n_train=3, use_float64=True, eps_stop=2e-6),
         )
         return replace(base, **overrides)
 

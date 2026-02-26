@@ -112,9 +112,31 @@ def shock_laws_of_motion(
     assert st.logA.ndim == 1 and st.loggtilde.ndim == 1 and st.xi.ndim == 1, \
         "State shock components must be 1D (B,) at this stage"
 
-    # Drift corrections for log AR(1) so that levels have the intended mean under lognormality
-    driftA = (1.0 - params.rho_A) * (-(params.sigma_A ** 2) / (2.0 * (1.0 - params.rho_A ** 2)))
-    driftg = (1.0 - params.rho_g) * (-(params.sigma_g ** 2) / (2.0 * (1.0 - params.rho_g ** 2)))
+    # Regime-dependent volatilities: sigma can differ between normal (0) and bad (1).
+    # We index by s_{t+1} to keep each next-state branch internally consistent.
+    s_next_long = s_next.to(torch.long)
+    sigA0, sigA1 = params.sigma_by_regime("sigma_A")
+    sigg0, sigg1 = params.sigma_by_regime("sigma_g")
+    sigt0, sigt1 = params.sigma_by_regime("sigma_tau")
+    sigma_A = torch.where(
+        s_next_long == 0,
+        torch.full_like(epsA, float(sigA0)),
+        torch.full_like(epsA, float(sigA1)),
+    )
+    sigma_g = torch.where(
+        s_next_long == 0,
+        torch.full_like(epsg, float(sigg0)),
+        torch.full_like(epsg, float(sigg1)),
+    )
+    sigma_tau = torch.where(
+        s_next_long == 0,
+        torch.full_like(epstau, float(sigt0)),
+        torch.full_like(epstau, float(sigt1)),
+    )
+
+    # Drift corrections for log AR(1) so levels keep the intended mean under lognormality.
+    driftA = (1.0 - params.rho_A) * (-(sigma_A ** 2) / (2.0 * (1.0 - params.rho_A ** 2)))
+    driftg = (1.0 - params.rho_g) * (-(sigma_g ** 2) / (2.0 * (1.0 - params.rho_g ** 2)))
 
     B = st.logA.shape[0]
     view_shape = (B,) + (1,) * (epsA.ndim - 1)  # (B,1,1,...)
@@ -123,8 +145,8 @@ def shock_laws_of_motion(
     logg = st.loggtilde.view(view_shape)
     xi = st.xi.view(view_shape)
 
-    logA_next = driftA + params.rho_A * logA + params.sigma_A * epsA
-    logg_next = driftg + params.rho_g * logg + params.sigma_g * epsg
-    xi_next = params.rho_tau * xi + params.sigma_tau * epstau
+    logA_next = driftA + params.rho_A * logA + sigma_A * epsA
+    logg_next = driftg + params.rho_g * logg + sigma_g * epsg
+    xi_next = params.rho_tau * xi + sigma_tau * epstau
 
     return logA_next, logg_next, xi_next, s_next.long()

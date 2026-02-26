@@ -50,3 +50,36 @@ Training notebooks auto-select device:
 ```
 
 All notebooks include a `PROJECT_ROOT` bootstrap and work both locally and in Colab (`/content/econml`).
+
+## 5) Compare Critique Variants A vs B
+
+If you train scenario A and B into separate artifacts directories, compare them with:
+
+```bash
+!python scripts/compare_uncertainty_variants.py \
+  --artifacts_a /content/econml/artifacts_variant_a \
+  --artifacts_b /content/econml/artifacts_variant_b \
+  --device cuda --dtype float64 \
+  --bad_multiplier 2.0 --normal_multiplier 1.0
+```
+
+Outputs:
+- `artifacts/comparisons/table2_variants_combined.csv`
+- `artifacts/comparisons/table2_variantB_minus_variantA.csv`
+
+## 6) Fast Discretion Retraining on 4-Point Grid
+
+For critique sensitivity with full retraining of discretion (A/B variants) on a fixed
+4-point grid of `bad_multiplier`:
+
+```bash
+!python scripts/train_discretion_uncertainty_sweep.py \
+  --artifacts_root /content/econml/artifacts/critique_discretion \
+  --device cuda \
+  --bad_grid 1.0,1.25,1.5,2.0
+```
+
+Notes:
+- Uses a faster discretion preset (`TrainConfig.mid_discretion_fast`) to reduce OOM risk.
+- Saves one run per scenario under `artifacts/critique_discretion/variant_*_bm_*/runs/discretion/...`
+- Writes summary: `artifacts/critique_discretion/discretion_sweep_summary.csv`

@@ -284,9 +284,9 @@ class Trainer:
         # logA and logg are drift-corrected log-AR(1) processes; xi is AR(1) around zero.
         # Draw from the implied stationary distributions to start training samples in the
         # ergodic region (up to burn-in), avoiding off-model transients.
-        rho_A, sig_A = float(self.params.rho_A), float(self.params.sigma_A)
-        rho_g, sig_g = float(self.params.rho_g), float(self.params.sigma_g)
-        rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
+        rho_A, sig_A = float(self.params.rho_A), float(self.params.sigma_effective("sigma_A"))
+        rho_g, sig_g = float(self.params.rho_g), float(self.params.sigma_effective("sigma_g"))
+        rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_effective("sigma_tau"))
 
         mu_logA = -(sig_A**2) / (2.0 * (1.0 - rho_A**2)) if abs(rho_A) < 1.0 else 0.0
         mu_logg = -(sig_g**2) / (2.0 * (1.0 - rho_g**2)) if abs(rho_g) < 1.0 else 0.0
@@ -732,17 +732,7 @@ class Trainer:
 
             # Optional dtype switch (compute-only)
             if bool(getattr(phase, "use_float64", False)) and self.params.dtype != torch.float64:
-                self.params = ModelParams(
-                    beta=self.params.beta, gamma=self.params.gamma, omega=self.params.omega,
-                    theta=self.params.theta, eps=self.params.eps, tau_bar=self.params.tau_bar,
-                    rho_A=self.params.rho_A, rho_tau=self.params.rho_tau, rho_g=self.params.rho_g,
-                    sigma_A=self.params.sigma_A, sigma_tau=self.params.sigma_tau, sigma_g=self.params.sigma_g,
-                    g_bar=self.params.g_bar, eta_bar=self.params.eta_bar,
-                    bad_state=self.params.bad_state,
-                    p12=self.params.p12, p21=self.params.p21,
-                    pi_bar=self.params.pi_bar, psi=self.params.psi,
-                    device=self.params.device, dtype=torch.float64
-                ).to_torch()
+                self.params = self.params.with_device_dtype(dtype=torch.float64).to_torch()
                 self.net = self.net.to(dev).double()
                 x = x.to(device=dev, dtype=torch.float64)
                 self._set_gh(int(phase.gh_n_train))
@@ -815,17 +805,7 @@ def simulate_paths(
     net_dtype = next(net.parameters()).dtype
     params_sim = params
     if net_dtype != params.dtype:
-        params_sim = ModelParams(
-            beta=params.beta, gamma=params.gamma, omega=params.omega,
-            theta=params.theta, eps=params.eps, tau_bar=params.tau_bar,
-            rho_A=params.rho_A, rho_tau=params.rho_tau, rho_g=params.rho_g,
-            sigma_A=params.sigma_A, sigma_tau=params.sigma_tau, sigma_g=params.sigma_g,
-            g_bar=params.g_bar, eta_bar=params.eta_bar,
-            bad_state=params.bad_state,
-            p12=params.p12, p21=params.p21,
-            pi_bar=params.pi_bar, psi=params.psi,
-            device=params.device, dtype=net_dtype,
-        ).to_torch()
+        params_sim = params.with_device_dtype(dtype=net_dtype).to_torch()
         if rbar_by_regime is not None:
             rbar_by_regime = rbar_by_regime.to(device=params_sim.device, dtype=params_sim.dtype)
 
@@ -875,7 +855,7 @@ def simulate_paths(
     for t in iterator:
         out = trainer._policy_outputs(x)
         st = unpack_state(x, policy)
-        ids = identities(params, st, out)
+        ids = identities(params_sim, st, out)
 
         if policy in ["taylor", "mod_taylor"]:
             if policy == "taylor":

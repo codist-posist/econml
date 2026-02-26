@@ -10,7 +10,7 @@ Design principles:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional, Sequence, Tuple, Callable
 
 import numpy as np
@@ -170,15 +170,7 @@ def calibrate_xi_jump_to_match_pi_impact(
     p = params
     if rho_tau_override is not None:
         # create shallow copy of params with different rho_tau
-        p = ModelParams(
-            beta=p.beta, gamma=p.gamma, omega=p.omega, theta=p.theta, eps=p.eps, tau_bar=p.tau_bar,
-            rho_A=p.rho_A, rho_tau=float(rho_tau_override), rho_g=p.rho_g,
-            sigma_A=p.sigma_A, sigma_tau=p.sigma_tau, sigma_g=p.sigma_g,
-            g_bar=p.g_bar, eta_bar=p.eta_bar, bad_state=p.bad_state,
-            p12=p.p12, p21=p.p21,
-            pi_bar=p.pi_bar, psi=p.psi,
-            device=p.device, dtype=p.dtype
-        ).to_torch()
+        p = replace(p, rho_tau=float(rho_tau_override)).to_torch()
 
     # indices: x = [Delta_prev, logA, loggtilde, xi, s] (or + multipliers for commitment)
     xi_idx = 3

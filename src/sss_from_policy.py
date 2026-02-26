@@ -109,8 +109,8 @@ def switching_policy_sss_by_regime_from_policy(
     pi_stat = _stationary_dist_2state(P)
 
     # Exogenous states fixed at unconditional means (drift-corrected AR(1))
-    logA0 = _uncond_mean_log_ar1(float(params.rho_A), float(params.sigma_A))
-    logg0 = _uncond_mean_log_ar1(float(params.rho_g), float(params.sigma_g))
+    logA0 = _uncond_mean_log_ar1(float(params.rho_A), float(params.sigma_effective("sigma_A")))
+    logg0 = _uncond_mean_log_ar1(float(params.rho_g), float(params.sigma_effective("sigma_g")))
     xi0 = 0.0
 
     if policy == "commitment":
