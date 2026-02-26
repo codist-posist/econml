@@ -82,9 +82,10 @@ def _build_train_quality(trainer: Trainer, cfg: TrainConfig) -> dict:
 def train_one(policy: str, args: argparse.Namespace) -> str:
     set_seeds(int(args.seed))
     params = ModelParams(device=args.device, dtype=torch.float32).to_torch()
-    cfg = TrainConfig.mid(seed=int(args.seed), artifacts_root=str(args.artifacts_root))
-
-    run_dir = make_run_dir(str(args.artifacts_root), policy, tag=cfg.mode, seed=cfg.seed)
+    cfg_probe = TrainConfig.mid(seed=int(args.seed), artifacts_root=str(args.artifacts_root))
+    run_dir = make_run_dir(str(args.artifacts_root), policy, tag=cfg_probe.mode, seed=cfg_probe.seed)
+    # Bind trainer logging to the same run dir where we store weights/sim paths.
+    cfg = TrainConfig.mid(seed=int(args.seed), artifacts_root=str(args.artifacts_root), run_dir=run_dir)
     save_run_metadata(run_dir, pack_config(params, cfg, extra={"policy": policy}))
 
     rbar = None

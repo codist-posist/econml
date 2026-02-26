@@ -45,8 +45,9 @@ def run(policy: str, device: str = "cpu") -> None:
     set_seeds(123)
 
     params = ModelParams(device=device)
+    smoke_artifacts = tempfile.mkdtemp(prefix="deqn_smoke_train_")
     # Ultra-light training config for smoke tests (keep architecture unchanged).
-    base = TrainConfig.dev(run_dir=None)
+    base = TrainConfig.dev(run_dir=None, artifacts_root=smoke_artifacts)
     cfg = replace(
         base,
         n_path=8,
@@ -119,7 +120,7 @@ def run_pipeline(device: str = "cpu") -> None:
 
     for pol in ["taylor", "mod_taylor", "discretion", "commitment"]:
         set_seeds(123)
-        base = TrainConfig.dev(run_dir=None)
+        base = TrainConfig.dev(run_dir=None, artifacts_root=artifacts_root)
         cfg = replace(
             base,
             run_dir=None,

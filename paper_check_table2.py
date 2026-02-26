@@ -29,13 +29,18 @@ def main() -> int:
     ap.add_argument("--tol-skew", type=float, default=0.5, help="Abs tolerance for skewness")
     args = ap.parse_args()
 
-    df = build_table2(
-        args.artifacts,
-        device=args.device,
-        dtype=torch.float64,
-        use_selected=True,
-        include_rules=False,
-    )
+    try:
+        df = build_table2(
+            args.artifacts,
+            device=args.device,
+            dtype=torch.float64,
+            use_selected=True,
+            include_rules=False,
+        )
+    except FileNotFoundError as e:
+        print("ERROR: missing complete run artifacts for strict Table 2 check.")
+        print(str(e))
+        return 3
     chk = check_table2(df, tol_abs=args.tol, tol_abs_skew=args.tol_skew)
 
     pd.set_option("display.max_rows", 200)

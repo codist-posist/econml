@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
 # Allow running this script from any working directory.
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -29,8 +30,10 @@ def main() -> None:
     params = ModelParams(device="cpu", dtype=torch.float32).to_torch()
     flex = solve_flexprice_sss(params)
     rbar = export_rbar_tensor(params, flex)
+    smoke_artifacts = tempfile.mkdtemp(prefix="deqn_one_step_")
 
     cfg = TrainConfig.dev(
+        artifacts_root=smoke_artifacts,
         n_path=5,
         n_paths_per_step=1,
         val_size=0,
@@ -77,6 +80,7 @@ def main() -> None:
         print(f"[{pol}] OK | pi_mean={sim['pi'].mean():+.3g} | Delta_mean={sim['Delta'].mean():+.3g}")
 
     print("ALL OK")
+    print("smoke artifacts:", smoke_artifacts)
 
 
 if __name__ == "__main__":
