@@ -26,6 +26,27 @@ from .residuals_a3 import residuals_a3
 from .deqn import Trainer, TrainConfig, residual_metrics, residual_metrics_by_regime
 
 
+def _params_with_net_dtype(params: ModelParams, net: torch.nn.Module) -> ModelParams:
+    """Return params cast to network dtype when needed."""
+    try:
+        net_dt = next(net.parameters()).dtype
+    except StopIteration:
+        return params
+    if net_dt == params.dtype:
+        return params
+    return ModelParams(
+        beta=params.beta, gamma=params.gamma, omega=params.omega,
+        theta=params.theta, eps=params.eps, tau_bar=params.tau_bar,
+        rho_A=params.rho_A, rho_tau=params.rho_tau, rho_g=params.rho_g,
+        sigma_A=params.sigma_A, sigma_tau=params.sigma_tau, sigma_g=params.sigma_g,
+        g_bar=params.g_bar, eta_bar=params.eta_bar,
+        bad_state=params.bad_state,
+        p12=params.p12, p21=params.p21,
+        pi_bar=params.pi_bar, psi=params.psi,
+        device=params.device, dtype=net_dt,
+    ).to_torch()
+
+
 @dataclass
 class TrajectoryResidualCheckResult:
     """Residual diagnostics evaluated on a (possibly long) simulated path."""
@@ -69,6 +90,7 @@ def trajectory_residuals_check(
             "Run simulate_paths(..., store_states=True)." % (sorted(required), sorted(missing))
         )
 
+    params = _params_with_net_dtype(params, net)
     dev, dt = params.device, params.dtype
 
     Delta = np.asarray(sim_paths["Delta"], dtype=np.float64)
@@ -246,6 +268,7 @@ def fixed_point_check(
     if floors is None:
         floors = {"c": 1e-8, "Delta": 1e-10, "pstar": 1e-10}
 
+    params = _params_with_net_dtype(params, net)
     out_by_regime: Dict[int, FixedPointCheckResult] = {}
     for r, sss in sss_by_regime.items():
         x = _state_from_policy_sss(params, policy, sss, r)
@@ -352,6 +375,7 @@ def residuals_check(
     if floors is None:
         floors = {"c": 1e-8, "Delta": 1e-10, "pstar": 1e-10}
 
+    params = _params_with_net_dtype(params, net)
     results: Dict[int, ResidualCheckResult] = {}
 
     for r, sss in sss_by_regime.items():
@@ -434,6 +458,7 @@ def residuals_check_switching_consistent(
     if floors is None:
         floors = {"c": 1e-8, "Delta": 1e-10, "pstar": 1e-10}
 
+    params = _params_with_net_dtype(params, net)
     dev = params.device
     dt = params.dtype
     # Keep backward-compatible variable name used below.

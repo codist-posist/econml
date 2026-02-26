@@ -97,8 +97,15 @@ def switching_policy_sss_by_regime_from_policy(
     if floors is None:
         floors = {"c": 1e-8, "Delta": 1e-10, "pstar": 1e-10}
 
-    dev, dt = params.device, params.dtype
-    P = P_override if P_override is not None else params.P.to(device=dev, dtype=dt)
+    # Keep state tensors dtype-compatible with the policy network. After phase-2
+    # training, the net can be float64 while caller-side params are still float32.
+    try:
+        net_dt = next(net.parameters()).dtype
+    except StopIteration:
+        net_dt = params.dtype
+
+    dev, dt = params.device, net_dt
+    P = (P_override.to(device=dev, dtype=dt) if P_override is not None else params.P.to(device=dev, dtype=dt))
     pi_stat = _stationary_dist_2state(P)
 
     # Exogenous states fixed at unconditional means (drift-corrected AR(1))
@@ -185,6 +192,5 @@ def switching_policy_sss_by_regime_from_policy(
         return base
 
     return PolicySSS(by_regime={0: _pack_out(x0, out0), 1: _pack_out(x1, out1)})
-
 
 
