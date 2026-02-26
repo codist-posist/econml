@@ -21,7 +21,7 @@ from .policy_rules import i_taylor, i_modified_taylor, fisher_euler_term
 from .residuals_a1 import residuals_a1
 from .residuals_a2 import residuals_a2
 from .residuals_a3 import residuals_a3
-from .io_utils import save_csv, ensure_dir, make_run_dir, save_run_metadata, _normalize_artifacts_root, pack_config
+from .io_utils import save_csv, ensure_dir, make_run_dir, save_run_metadata, _normalize_artifacts_root, pack_config, save_torch
 
 
 # Torch thread pools can only be safely configured once per process.
@@ -588,6 +588,9 @@ class Trainer:
                 x_pop = x_init
 
             losses: List[float] = []
+            best_loss = float("inf")
+            best_step = -1
+            best_state: Dict[str, torch.Tensor] | None = None
 
             for _ in trange(int(steps), desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False):
                 # --- 1) Simulate a path (stop-gradient / sampling step) ---
@@ -615,6 +618,13 @@ class Trainer:
                 lv = float(loss.detach().cpu())
                 losses.append(lv)
                 global_step += 1
+
+                # Keep the best checkpoint within this phase.
+                if lv < best_loss:
+                    best_loss = lv
+                    best_step = global_step
+                    if bool(getattr(self.cfg, "save_best", True)):
+                        best_state = {k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()}
 
                 # Optional logging to disk (unchanged; does not affect equations)
                 if (global_step % log_every) == 0:
@@ -648,6 +658,20 @@ class Trainer:
                 if eps_stop is not None and lv < float(eps_stop):
                     break
 
+            # Restore best phase checkpoint so end-of-phase weights are not degraded by late noise.
+            if bool(getattr(self.cfg, "save_best", True)) and best_state is not None:
+                try:
+                    self.net.load_state_dict(best_state, strict=True)
+                except Exception:
+                    pass
+                if run_dir is not None:
+                    try:
+                        best_name = str(getattr(self.cfg, "best_weights_name", "weights_best.pt"))
+                        save_torch(os.path.join(run_dir, best_name), best_state)
+                    except Exception:
+                        pass
+
+            print(f"[{self.policy} | {tag}] best_loss={best_loss:.3e} at step={best_step}")
             return losses, x_pop
 
 

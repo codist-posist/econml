@@ -192,7 +192,7 @@ class TrainConfig:
         - Fixed net: (512,512) SELU (paper)
         - n_path: 50 (was 100)  [compute knob]
         - Phase 1: 6000 steps, GH=2, float32  [compute knob]
-        - Phase 2: 1000 steps, GH=3, float64   [paper feature kept, compute knob]
+        - Phase 2: 1000 steps, GH=3, float64, lower LR for stability near convergence
         - Simulation workflow: quick checks in float32; final table/fig runs in float64 (set ModelParams.dtype accordingly).
 
         This preset changes ONLY compute knobs (path length / steps) and keeps equations, residual definitions,
@@ -208,7 +208,7 @@ class TrainConfig:
             log_every=100,
             n_path=50,
             phase1 = PhaseConfig(steps=6_000, lr=1e-5, batch_size=128, gh_n_train=2, use_float64=False, eps_stop=1e-7),
-            phase2 = PhaseConfig(steps=1000, lr=1e-5, batch_size=128, gh_n_train=3, use_float64=True, eps_stop=1e-10),
+            phase2 = PhaseConfig(steps=1000, lr=3e-6, batch_size=128, gh_n_train=3, use_float64=True, eps_stop=1e-6),
         )
         return replace(base, **overrides)
 
