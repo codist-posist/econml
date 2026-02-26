@@ -68,7 +68,9 @@ def _build_train_quality(trainer: Trainer, cfg: TrainConfig) -> dict:
     val_size = int(getattr(cfg, "val_size", 0))
     if val_size <= 0:
         return {"skipped": True, "reason": "val_size<=0"}
-    with torch.inference_mode():
+    # Discretion residuals use autograd (dF/dDelta, dG/dDelta); inference/no_grad would break them.
+    ctx = torch.enable_grad() if trainer.policy == "discretion" else torch.inference_mode()
+    with ctx:
         x_val = trainer.simulate_initial_state(val_size, commitment_sss=None)
         val_burn = int(getattr(cfg, "val_burn_in", 200))
         for _ in range(val_burn):
