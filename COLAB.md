@@ -36,6 +36,32 @@ if torch.cuda.is_available():
 Training notebooks auto-select device:
 `DEVICE = "cuda" if torch.cuda.is_available() else "cpu"`.
 
+### Optional: run critique scenarios A/B
+
+The training notebooks now support:
+- `UNCERTAINTY_VARIANT=baseline` (default)
+- `UNCERTAINTY_VARIANT=A` (regime-dependent `sigma_tau`)
+- `UNCERTAINTY_VARIANT=B` (regime-dependent `sigma_A,sigma_tau,sigma_g`)
+
+Example for scenario A with `bad_multiplier=2.0`:
+
+```bash
+%env UNCERTAINTY_VARIANT=A
+%env BAD_MULTIPLIER=2.0
+%env NORMAL_MULTIPLIER=1.0
+%env ARTIFACTS_ROOT=/content/econml/artifacts
+
+!jupyter nbconvert --to notebook --execute --inplace notebooks/00_main_pipeline.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/10_train_taylor.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/11_train_mod_taylor.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/12_train_discretion.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/13_train_commitment.ipynb
+```
+
+Scenario outputs are saved under:
+- `artifacts/critique/A_bm_2/...`
+- `artifacts/critique/B_bm_2/...`
+
 ## 4) Run analysis and figure notebooks
 
 ```bash
@@ -50,6 +76,7 @@ Training notebooks auto-select device:
 ```
 
 All notebooks include a `PROJECT_ROOT` bootstrap and work both locally and in Colab (`/content/econml`).
+Figure notebooks now honor `ARTIFACTS_ROOT` from environment, so you can switch between baseline and critique runs without editing code.
 
 ## 5) Compare Critique Variants A vs B
 
@@ -57,8 +84,8 @@ If you train scenario A and B into separate artifacts directories, compare them 
 
 ```bash
 !python scripts/compare_uncertainty_variants.py \
-  --artifacts_a /content/econml/artifacts_variant_a \
-  --artifacts_b /content/econml/artifacts_variant_b \
+  --artifacts_a /content/econml/artifacts/critique/A_bm_2 \
+  --artifacts_b /content/econml/artifacts/critique/B_bm_2 \
   --device cuda --dtype float64 \
   --bad_multiplier 2.0 --normal_multiplier 1.0
 ```
@@ -83,3 +110,17 @@ Notes:
 - Uses a faster discretion preset (`TrainConfig.mid_discretion_fast`) to reduce OOM risk.
 - Saves one run per scenario under `artifacts/critique_discretion/variant_*_bm_*/runs/discretion/...`
 - Writes summary: `artifacts/critique_discretion/discretion_sweep_summary.csv`
+
+## 7) New Critique Figures
+
+After generating comparison CSVs and sweep summary:
+
+```bash
+!jupyter nbconvert --to notebook --execute --inplace notebooks/101_fig11_critique_variants.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/102_fig12_critique_sensitivity.ipynb
+```
+
+Saved plots:
+- `artifacts/figures/fig11_critique_variants_table2.png`
+- `artifacts/figures/fig11_critique_variants_delta.png`
+- `artifacts/figures/fig12_discretion_bad_multiplier_sensitivity.png`
