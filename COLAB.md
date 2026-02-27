@@ -124,3 +124,19 @@ Saved plots:
 - `artifacts/figures/fig11_critique_variants_table2.png`
 - `artifacts/figures/fig11_critique_variants_delta.png`
 - `artifacts/figures/fig12_discretion_bad_multiplier_sensitivity.png`
+
+## 8) Zero-Manual Figure Run (baseline + A + B)
+
+If you do not want to switch anything by hand, run one command:
+
+```bash
+!python scripts/run_figures_all_scenarios.py \
+  --base_artifacts_root /content/econml/artifacts \
+  --bad_multiplier 2.0
+```
+
+This command will:
+- execute `90/91/92/93/94/96/99/100` for `baseline`, `A`, `B` automatically,
+- build `A vs B` comparison CSVs,
+- execute `101_fig11_critique_variants.ipynb`,
+- execute `102_fig12_critique_sensitivity.ipynb` if sweep summary exists.
