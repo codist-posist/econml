@@ -115,23 +115,15 @@ def _simulate_flex_prices_for_table2(
     flex = solve_flexprice_sss(params)
     h0 = torch.tensor(flex.by_regime[0]["h"], device=dev, dtype=dt)
 
-    sigA_eff = float(params.sigma_effective("sigma_A"))
-    sigg_eff = float(params.sigma_effective("sigma_g"))
-    sigA0, sigA1 = [float(v) for v in params.sigma_by_regime("sigma_A")]
-    sigg0, sigg1 = [float(v) for v in params.sigma_by_regime("sigma_g")]
-    sigt0, sigt1 = [float(v) for v in params.sigma_by_regime("sigma_tau")]
-
-    logA = torch.full((B,), float(-(sigA_eff**2) / (2.0 * (1.0 - params.rho_A**2))), device=dev, dtype=dt)
-    logg = torch.full((B,), float(-(sigg_eff**2) / (2.0 * (1.0 - params.rho_g**2))), device=dev, dtype=dt)
+    logA = torch.full((B,), float(-(params.sigma_A**2)/(2.0*(1.0-params.rho_A**2))), device=dev, dtype=dt)
+    logg = torch.full((B,), float(-(params.sigma_g**2)/(2.0*(1.0-params.rho_g**2))), device=dev, dtype=dt)
     xi = torch.zeros((B,), device=dev, dtype=dt)
     s = torch.zeros((B,), device=dev, dtype=torch.long)  # start normal
     h_guess = h0.expand(B)
 
     # drift corrections (same as in model_common)
-    driftA0 = (1.0 - params.rho_A) * (-(sigA0**2) / (2.0 * (1.0 - params.rho_A**2)))
-    driftA1 = (1.0 - params.rho_A) * (-(sigA1**2) / (2.0 * (1.0 - params.rho_A**2)))
-    driftg0 = (1.0 - params.rho_g) * (-(sigg0**2) / (2.0 * (1.0 - params.rho_g**2)))
-    driftg1 = (1.0 - params.rho_g) * (-(sigg1**2) / (2.0 * (1.0 - params.rho_g**2)))
+    driftA = (1.0 - params.rho_A) * (-(params.sigma_A**2) / (2.0 * (1.0 - params.rho_A**2)))
+    driftg = (1.0 - params.rho_g) * (-(params.sigma_g**2) / (2.0 * (1.0 - params.rho_g**2)))
 
     c_list = []
     s_list = []
@@ -147,12 +139,9 @@ def _simulate_flex_prices_for_table2(
 
         # Expectation of lambda_{t+1} via GH + Markov sum
         # Build next exogenous states for each node (broadcast B x N)
-        logA_n0 = driftA0 + params.rho_A * logA[:, None] + sigA0 * epsA_nodes[None, :]
-        logA_n1 = driftA1 + params.rho_A * logA[:, None] + sigA1 * epsA_nodes[None, :]
-        logg_n0 = driftg0 + params.rho_g * logg[:, None] + sigg0 * epsg_nodes[None, :]
-        logg_n1 = driftg1 + params.rho_g * logg[:, None] + sigg1 * epsg_nodes[None, :]
-        xi_n0 = params.rho_tau * xi[:, None] + sigt0 * epst_nodes[None, :]
-        xi_n1 = params.rho_tau * xi[:, None] + sigt1 * epst_nodes[None, :]
+        logA_n = driftA + params.rho_A * logA[:, None] + params.sigma_A * epsA_nodes[None, :]
+        logg_n = driftg + params.rho_g * logg[:, None] + params.sigma_g * epsg_nodes[None, :]
+        xi_n   = params.rho_tau * xi[:, None] + params.sigma_tau * epst_nodes[None, :]
 
         # Two possible next regimes
         P = params.P  # shape (2,2) with orientation P[s_current, s_next] (row-stochastic)
@@ -167,17 +156,17 @@ def _simulate_flex_prices_for_table2(
         h_init_n = h_guess[:, None].expand(B, N).reshape(-1)
         c0 = _solve_flex_c_batch(
             params,
-            logA=logA_n0.reshape(-1),
-            logg=logg_n0.reshape(-1),
-            xi=xi_n0.reshape(-1),
+            logA=logA_n.reshape(-1),
+            logg=logg_n.reshape(-1),
+            xi=xi_n.reshape(-1),
             s=s0.reshape(-1),
             h_init=h_init_n,
         ).reshape(B, N)
         c1 = _solve_flex_c_batch(
             params,
-            logA=logA_n1.reshape(-1),
-            logg=logg_n1.reshape(-1),
-            xi=xi_n1.reshape(-1),
+            logA=logA_n.reshape(-1),
+            logg=logg_n.reshape(-1),
+            xi=xi_n.reshape(-1),
             s=s1.reshape(-1),
             h_init=h_init_n,
         ).reshape(B, N)
@@ -207,34 +196,14 @@ def _simulate_flex_prices_for_table2(
         epsA = torch.randn((B,), device=dev, dtype=dt)
         epsg = torch.randn((B,), device=dev, dtype=dt)
         epst = torch.randn((B,), device=dev, dtype=dt)
+        logA = driftA + params.rho_A * logA + params.sigma_A * epsA
+        logg = driftg + params.rho_g * logg + params.sigma_g * epsg
+        xi = params.rho_tau * xi + params.sigma_tau * epst
 
-        # Markov draw for next regime, then apply regime-conditional volatilities.
+        # Markov draw for next regime
         u = torch.rand((B,), device=dev, dtype=dt)
         pstay0 = P[s.to(torch.long), 0]
-        s_next = torch.where(u < pstay0, torch.zeros_like(s), torch.ones_like(s))
-
-        sigA = torch.where(
-            s_next == 0,
-            torch.full((B,), sigA0, device=dev, dtype=dt),
-            torch.full((B,), sigA1, device=dev, dtype=dt),
-        )
-        sigg = torch.where(
-            s_next == 0,
-            torch.full((B,), sigg0, device=dev, dtype=dt),
-            torch.full((B,), sigg1, device=dev, dtype=dt),
-        )
-        sigt = torch.where(
-            s_next == 0,
-            torch.full((B,), sigt0, device=dev, dtype=dt),
-            torch.full((B,), sigt1, device=dev, dtype=dt),
-        )
-        driftA = (1.0 - params.rho_A) * (-(sigA**2) / (2.0 * (1.0 - params.rho_A**2)))
-        driftg = (1.0 - params.rho_g) * (-(sigg**2) / (2.0 * (1.0 - params.rho_g**2)))
-
-        logA = driftA + params.rho_A * logA + sigA * epsA
-        logg = driftg + params.rho_g * logg + sigg * epsg
-        xi = params.rho_tau * xi + sigt * epst
-        s = s_next
+        s = torch.where(u < pstay0, torch.zeros_like(s), torch.ones_like(s))
 
         # update h_guess roughly with current h implied
         # (approx: h = (c+g)/A)
@@ -523,7 +492,6 @@ def build_table2(
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
     include_rules: bool = True,
-    params: ModelParams | None = None,
 ) -> pd.DataFrame:
     """
     Build a Table-2-like summary after trainings.
@@ -538,10 +506,7 @@ def build_table2(
       - SSS computed AFTER training as fixed points of the trained policies.
       - Ergodic moments from saved sim_paths.npz in each run directory.
     """
-    if params is None:
-        params = ModelParams(device=device, dtype=dtype).to_torch()
-    else:
-        params = params.with_device_dtype(device=device, dtype=dtype).to_torch()
+    params = ModelParams(device=device, dtype=dtype)
     # flex SSS
     flex = solve_flexprice_sss(params)
 

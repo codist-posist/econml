@@ -34,7 +34,17 @@ def _params_with_net_dtype(params: ModelParams, net: torch.nn.Module) -> ModelPa
         return params
     if net_dt == params.dtype:
         return params
-    return params.with_device_dtype(dtype=net_dt).to_torch()
+    return ModelParams(
+        beta=params.beta, gamma=params.gamma, omega=params.omega,
+        theta=params.theta, eps=params.eps, tau_bar=params.tau_bar,
+        rho_A=params.rho_A, rho_tau=params.rho_tau, rho_g=params.rho_g,
+        sigma_A=params.sigma_A, sigma_tau=params.sigma_tau, sigma_g=params.sigma_g,
+        g_bar=params.g_bar, eta_bar=params.eta_bar,
+        bad_state=params.bad_state,
+        p12=params.p12, p21=params.p21,
+        pi_bar=params.pi_bar, psi=params.psi,
+        device=params.device, dtype=net_dt,
+    ).to_torch()
 
 
 @dataclass
