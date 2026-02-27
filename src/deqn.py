@@ -309,7 +309,7 @@ class Trainer:
                         torch.zeros(B, device=dev, dtype=torch.long),
                         torch.ones(B, device=dev, dtype=torch.long))
 
-        # Backward-looking endogenous state: initialize at undistorted value.
+        # Backward-looking endogenous state defaults to undistorted value.
         Delta_prev = torch.ones(B, device=dev, dtype=dt)
 
         if self.policy != "commitment":
@@ -319,8 +319,15 @@ class Trainer:
         # If caller provides commitment SSS (per-regime or pooled), use it; otherwise start at 0.
         if commitment_sss is not None:
             if isinstance(commitment_sss, dict) and 0 in commitment_sss and 1 in commitment_sss:
+                d0 = float(commitment_sss[0].get("Delta_prev", commitment_sss[0].get("Delta", 1.0)))
+                d1 = float(commitment_sss[1].get("Delta_prev", commitment_sss[1].get("Delta", 1.0)))
                 vp0 = float(commitment_sss[0]["vartheta_prev"]); vp1 = float(commitment_sss[1]["vartheta_prev"])
                 rp0 = float(commitment_sss[0]["varrho_prev"]);   rp1 = float(commitment_sss[1]["varrho_prev"])
+                Delta_prev = torch.where(
+                    s == 0,
+                    torch.full((B,), d0, device=dev, dtype=dt),
+                    torch.full((B,), d1, device=dev, dtype=dt),
+                )
                 vp = torch.where(s == 0,
                                  torch.full((B,), vp0, device=dev, dtype=dt),
                                  torch.full((B,), vp1, device=dev, dtype=dt))
@@ -328,6 +335,8 @@ class Trainer:
                                  torch.full((B,), rp0, device=dev, dtype=dt),
                                  torch.full((B,), rp1, device=dev, dtype=dt))
             else:
+                d = float(commitment_sss.get("Delta_prev", commitment_sss.get("Delta", 1.0)))
+                Delta_prev = torch.full((B,), d, device=dev, dtype=dt)
                 vp = torch.full((B,), float(commitment_sss["vartheta_prev"]), device=dev, dtype=dt)
                 rp = torch.full((B,), float(commitment_sss["varrho_prev"]), device=dev, dtype=dt)
         else:
