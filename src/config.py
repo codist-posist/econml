@@ -165,10 +165,11 @@ class TrainConfig:
     )
 
     # ---- Commitment (timeless) initialization ----
-    # Under commitment, lagged Ramsey multipliers are part of the state. In a timeless
-    # perspective (as in the paper), we do NOT require steady-state multipliers as input;
-    # instead we rely on burn-in to enter the ergodic region. These knobs ONLY affect the
-    # initial distribution used to start simulations/training.
+    # Under commitment, lagged Ramsey multipliers are part of the state. If
+    # `commitment_sss` is provided to Trainer.train/simulate_initial_state, the
+    # lagged multipliers are initialized from SSS values (timeless-style init).
+    # If `commitment_sss` is None, the code falls back to zero/noisy init
+    # (time-0/bootstrap style). These knobs affect only the fallback init.
     commitment_init_multiplier_std: float = 0.0
     commitment_init_multiplier_clip: float = 25.0
 
