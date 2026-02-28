@@ -84,8 +84,8 @@ def _solve_flex_c_batch(
 def _simulate_flex_prices_for_table2(
     params: ModelParams,
     *,
-    T: int = 6000,
-    burn_in: int = 1000,
+    T: int = 20000,
+    burn_in: int = 2000,
     B: int = 2048,
     gh_n: int = 3,
     seed: int = 123,

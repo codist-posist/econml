@@ -156,6 +156,7 @@ def calibrate_xi_jump_to_match_pi_impact(
     target_pi0: float,
     horizon_T: int = 1,
     rho_tau_override: Optional[float] = None,
+    regime_path: Optional[Sequence[int]] = None,
     tol: float = 1e-6,
     max_iter: int = 60,
 ) -> float:
@@ -163,9 +164,10 @@ def calibrate_xi_jump_to_match_pi_impact(
     Find an initial xi jump (added to xi state at t=0) such that pi impact matches target_pi0,
     with zero innovations thereafter. This supports Fig 3 style comparisons.
     """
-    # We'll do bisection on xi0 in a wide bracket.
-    # Implementation: modify x0's xi component by +xi_jump, then simulate 0->1 step and read pi at t=0 (impact).
-    # If rho override provided, we temporarily override params.rho_tau (copy params).
+    # We do bisection on xi0 in a wide bracket.
+    # Implementation: modify x0's xi component by +xi_jump, then run a deterministic
+    # path (zero innovations) and read pi at t=0 (impact).
+    # If rho override is provided, we temporarily override params.rho_tau (copy params).
 
     p = params
     if rho_tau_override is not None:
@@ -183,10 +185,22 @@ def calibrate_xi_jump_to_match_pi_impact(
     # indices: x = [Delta_prev, logA, loggtilde, xi, s] (or + multipliers for commitment)
     xi_idx = 3
 
+    # Default to a fixed-regime deterministic path (no random Markov draws) to keep
+    # figure calibration reproducible and paper-consistent.
+    if regime_path is None:
+        s0 = int(float(x0[0, 4].detach().cpu()))
+        reg_path = [s0] * (int(horizon_T) + 1)
+    else:
+        reg_path = [int(v) for v in regime_path]
+        if len(reg_path) != int(horizon_T) + 1:
+            raise ValueError(
+                f"regime_path must have length horizon_T+1={int(horizon_T)+1}, got {len(reg_path)}"
+            )
+
     def impact_pi(xi_jump: float) -> float:
         x = x0.clone()
         x[:, xi_idx] = x[:, xi_idx] + float(xi_jump)
-        spec = DeterministicPathSpec(T=horizon_T, epsA=0.0, epsg=0.0, epst=0.0, regime_path=None)
+        spec = DeterministicPathSpec(T=horizon_T, epsA=0.0, epsg=0.0, epst=0.0, regime_path=reg_path)
         out = simulate_deterministic_path(p, policy, net, x0=x, spec=spec, compute_implied_i=False)
         # impact at t=0 (first stored point)
         return float(np.mean(out["pi"][0]))
