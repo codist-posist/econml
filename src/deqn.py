@@ -606,8 +606,21 @@ class Trainer:
             best_loss = float("inf")
             best_step = -1
             best_state: Dict[str, torch.Tensor] | None = None
+            strict_eps = bool(getattr(self.cfg, "strict_eps_stop", False))
+            max_steps_default = int(steps)
+            max_steps_safety = getattr(self.cfg, "strict_eps_max_steps", None)
+            if strict_eps and eps_stop is not None:
+                if max_steps_safety is None:
+                    # Keep a large but finite safety cap.
+                    max_steps = max(max_steps_default, 20 * max_steps_default)
+                else:
+                    max_steps = int(max_steps_safety)
+            else:
+                max_steps = max_steps_default
+            max_steps = max(1, int(max_steps))
+            hit_safety_cap = True
 
-            for _ in trange(int(steps), desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False):
+            for _ in trange(max_steps, desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False):
                 # --- 1) Simulate a path (stop-gradient / sampling step) ---
                 with torch.no_grad():
                     xs = []
@@ -708,7 +721,10 @@ class Trainer:
 
                 # Paper stopping rule: stop once loss is below epsilon
                 if eps_stop is not None and lv < float(eps_stop):
+                    hit_safety_cap = False
                     break
+                if eps_stop is None:
+                    hit_safety_cap = False
 
             # Restore best phase checkpoint so end-of-phase weights are not degraded by late noise.
             if bool(getattr(self.cfg, "save_best", True)) and best_state is not None:
@@ -723,6 +739,11 @@ class Trainer:
                     except Exception:
                         pass
 
+            if strict_eps and eps_stop is not None and hit_safety_cap:
+                print(
+                    f"[{self.policy} | {tag}] reached safety cap (max_steps={max_steps}) "
+                    f"before hitting eps_stop={float(eps_stop):.3e}."
+                )
             print(f"[{self.policy} | {tag}] best_loss={best_loss:.3e} at step={best_step}")
             return losses, x_pop
 

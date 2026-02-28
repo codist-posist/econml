@@ -135,6 +135,12 @@ class TrainConfig:
     patience: int = 5000
     min_delta: float = 1e-5
 
+    # ---- Paper-style stopping rule (Appendix B): stop on epsilon ----
+    # If enabled and a phase has eps_stop set, training runs until loss < eps_stop,
+    # with strict_eps_max_steps acting only as a safety cap.
+    strict_eps_stop: bool = False
+    strict_eps_max_steps: int | None = None
+
     reduce_lr_on_plateau: bool = False
     plateau_patience: int = 5000
     lr_reduce_factor: float = 0.5
@@ -179,6 +185,8 @@ class TrainConfig:
             hidden_layers=(512, 512),
             activation="selu",val_size=1024,
             val_every=2000,
+            strict_eps_stop=True,
+            strict_eps_max_steps=200_000,
             # NOTE: We keep GH orders aligned with the paper's DEQN description.
             # "full" is intentionally larger than "mid" so there is a meaningful gap.
             phase1 = PhaseConfig(steps=12_000, lr=1e-5, batch_size=256, gh_n_train=2, use_float64=False, eps_stop=1e-8),
@@ -204,6 +212,8 @@ class TrainConfig:
             hidden_layers=(512, 512),
             activation="selu",val_size=1024,
             val_every=1500,
+            strict_eps_stop=False,
+            strict_eps_max_steps=None,
             cpu_num_threads=16,
             cpu_num_interop_threads=1,
             log_every=100,
@@ -226,6 +236,8 @@ class TrainConfig:
             hidden_layers=(256, 256),
             activation="selu",val_size=1024,
             val_every=1000,
+            strict_eps_stop=False,
+            strict_eps_max_steps=None,
             cpu_num_threads=16,
             cpu_num_interop_threads=1,
             n_path=50,

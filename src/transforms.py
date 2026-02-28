@@ -1,16 +1,21 @@
 from __future__ import annotations
 from typing import Dict
 import torch
-import torch.nn.functional as F
+
+
+def _safe_exp(x: torch.Tensor) -> torch.Tensor:
+    # Clamp logits to avoid inf in exp while preserving monotonic mapping.
+    return torch.exp(torch.clamp(x, min=-40.0, max=40.0))
 
 
 def positive(x: torch.Tensor, floor: float = 1e-10) -> torch.Tensor:
-    return F.softplus(x) + float(floor)
+    # Strict log-parameterization: positive variable = exp(raw) + floor.
+    return _safe_exp(x) + float(floor)
 
 
 def ge_one(x: torch.Tensor, floor: float = 1e-10) -> torch.Tensor:
     """Map to >= 1 (used for price dispersion Delta)."""
-    return 1.0 + F.softplus(x) + float(floor)
+    return 1.0 + _safe_exp(x) + float(floor)
 
 
 def decode_outputs(policy: str, raw: torch.Tensor, floors: Dict[str, float]) -> Dict[str, torch.Tensor]:
