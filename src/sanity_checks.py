@@ -692,7 +692,9 @@ def residuals_check_switching_consistent(
         def Et_terms(curr_s: int, c_curr: torch.Tensor, lam_curr: torch.Tensor):
             Lam0 = beta * (lam0 / lam_curr)
             Lam1 = beta * (lam1 / lam_curr)
-            p0w = P[0, curr_s]; p1w = P[1, curr_s]
+            # Forward transition probabilities for E_t[·_{t+1} | s_t=curr_s].
+            p0w = P[curr_s, 0]
+            p1w = P[curr_s, 1]
 
             Et_XiN = theta * (p0w * (Lam0 * (1.0 + pi0).pow(eps)     * XiN0) +
                               p1w * (Lam1 * (1.0 + pi1).pow(eps)     * XiN1))
