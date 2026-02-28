@@ -718,8 +718,8 @@ class Trainer:
                     pass
                 if run_dir is not None:
                     try:
-                        best_name = str(getattr(self.cfg, "best_weights_name", "weights_best.pt"))
-                        save_torch(os.path.join(run_dir, best_name), best_state)
+                        # Keep a single canonical checkpoint file.
+                        save_torch(os.path.join(run_dir, "weights.pt"), best_state)
                     except Exception:
                         pass
 

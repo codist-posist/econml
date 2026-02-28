@@ -113,7 +113,8 @@ class TrainConfig:
     artifacts_root: str = "../artifacts"
     run_dir: str | None = None
     save_best: bool = True
-    best_weights_name: str = "weights_best.pt"
+    # Single canonical checkpoint file for trained/best model weights.
+    best_weights_name: str = "weights.pt"
 
     # ---- CPU / performance knobs (safe: does not change equations) ----
     cpu_num_threads: int | None = None
