@@ -28,6 +28,23 @@ DIMS: Dict[str, Tuple[int, int]] = {
     "commitment": (7, 13),
 }
 
+
+def _infer_net_input_output_dims(state: Dict[str, torch.Tensor], d_in: int, d_out: int) -> Tuple[int, int]:
+    """Infer (d_in, d_out) from checkpoint tensors when possible."""
+    try:
+        w0 = state.get("net.0.weight", None)
+        if isinstance(w0, torch.Tensor) and int(w0.ndim) == 2:
+            d_in = int(w0.shape[1])
+    except Exception:
+        pass
+    try:
+        w_last = state.get("net.4.weight", None)
+        if isinstance(w_last, torch.Tensor) and int(w_last.ndim) == 2:
+            d_out = int(w_last.shape[0])
+    except Exception:
+        pass
+    return int(d_in), int(d_out)
+
 # ---- Flex-prices simulation (needed for Table 2 moments) ----
 
 def _tensor_grid(nodes: torch.Tensor, weights: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -405,14 +422,7 @@ def _load_net_from_run(run_dir: str, params: ModelParams, policy: PolicyName) ->
     state = load_torch(w_path, map_location=params.device)
 
     d_in, d_out = DIMS[str(policy)]
-    # Backward/forward compatibility:
-    # infer output dim from checkpoint when available (e.g. mod_taylor 8->9 migration).
-    try:
-        last_w = state.get("net.4.weight", None)
-        if isinstance(last_w, torch.Tensor) and int(last_w.ndim) == 2:
-            d_out = int(last_w.shape[0])
-    except Exception:
-        pass
+    d_in, d_out = _infer_net_input_output_dims(state, d_in, d_out)
 
     net = PolicyNetwork(d_in, d_out, hidden=cfg.hidden_layers, activation=cfg.activation).to(
         device=params.device, dtype=params.dtype
@@ -478,11 +488,17 @@ def _implied_i_at_sss(
 ) -> float:
     # build a single-state tensor consistent with model_common.State order
     dev, dt = params.device, params.dtype
+    commit_d_in = None
     if policy == "commitment":
-        x = torch.tensor(
-            [sss["Delta_prev"], sss["logA"], sss["loggtilde"], sss["xi"], float(regime), sss["vartheta_prev"], sss["varrho_prev"]],
-            device=dev, dtype=dt
-        ).view(1, -1)
+        try:
+            commit_d_in = int(getattr(net.net[0], "in_features", 7))
+        except Exception:
+            commit_d_in = 7
+    if policy == "commitment":
+        xvals = [sss["Delta_prev"], sss["logA"], sss["loggtilde"], sss["xi"], float(regime), sss["vartheta_prev"], sss["varrho_prev"]]
+        if int(commit_d_in or 7) >= 8:
+            xvals.append(sss.get("c_prev", sss.get("c", 1.0)))
+        x = torch.tensor(xvals, device=dev, dtype=dt).view(1, -1)
     else:
         x = torch.tensor([sss["Delta_prev"], sss["logA"], sss["loggtilde"], sss["xi"], float(regime)], device=dev, dtype=dt).view(1, -1)
 

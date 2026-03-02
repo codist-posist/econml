@@ -25,6 +25,7 @@ class State:
     s: torch.Tensor
     vartheta_prev: torch.Tensor | None = None
     varrho_prev: torch.Tensor | None = None
+    c_prev: torch.Tensor | None = None
 
 
 def unpack_state(x: torch.Tensor, policy: str) -> State:
@@ -38,7 +39,8 @@ def unpack_state(x: torch.Tensor, policy: str) -> State:
             s=x[..., 4].long(),
         )
     if policy == "commitment":
-        assert x.shape[-1] == 7, f"Expected state dim 7 for commitment, got {x.shape[-1]}"
+        if x.shape[-1] not in (7, 8):
+            raise AssertionError(f"Expected state dim 7 or 8 for commitment, got {x.shape[-1]}")
         return State(
             Delta_prev=x[..., 0],
             logA=x[..., 1],
@@ -47,6 +49,7 @@ def unpack_state(x: torch.Tensor, policy: str) -> State:
             s=x[..., 4].long(),
             vartheta_prev=x[..., 5],
             varrho_prev=x[..., 6],
+            c_prev=x[..., 7] if x.shape[-1] == 8 else None,
         )
     raise ValueError(f"Unknown policy: {policy}")
 
@@ -125,6 +128,7 @@ def shock_laws_of_motion(
 
     logA_next = driftA + params.rho_A * logA + params.sigma_A * epsA
     logg_next = driftg + params.rho_g * logg + params.sigma_g * epsg
-    xi_next = params.rho_tau * xi + params.sigma_tau * epstau
+    drift_xi = (1.0 - params.rho_tau) * (-(params.sigma_tau ** 2) / (2.0 * (1.0 - params.rho_tau ** 2)))
+    xi_next = drift_xi + params.rho_tau * xi + params.sigma_tau * epstau
 
     return logA_next, logg_next, xi_next, s_next.long()

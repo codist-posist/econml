@@ -272,7 +272,7 @@ class TrainConfig:
         return replace(base, **overrides)
 
     @staticmethod
-    def author_like(**overrides) -> "TrainConfig":
+    def author_like(*, policy: PolicyName | None = None, **overrides) -> "TrainConfig":
         """
         Author-like compute preset (closest to public Keras code semantics):
         - strict_author training mode
@@ -280,10 +280,15 @@ class TrainConfig:
         - GH=3, Adam lr=1e-5, minibatch size=128, episode length=10
         - no hard eps-stop (monitor loss / checkpoints)
         """
+        # In the public Keras repo:
+        # - taylor uses 2x128 hidden layers
+        # - discretion/commitment use 2x512
+        hidden = (128, 128) if policy == "taylor" else (512, 512)
+
         base = TrainConfig(
             mode="author",
             training_mode="strict_author",
-            hidden_layers=(128, 128),
+            hidden_layers=hidden,
             activation="selu",
             use_two_phase=False,
             strict_eps_stop=False,

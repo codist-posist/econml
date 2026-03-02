@@ -197,6 +197,10 @@ def implied_nominal_rate_from_euler(
         if policy == "commitment":
             vp_cur = (out_t["vartheta"] * out_t["c"].pow(params.gamma)).view(-1, 1, 1).expand_as(logA_n)
             rp_cur = (out_t["varrho"] * out_t["c"].pow(params.gamma)).view(-1, 1, 1).expand_as(logA_n)
+            has_c_prev = bool(getattr(trainer, "_commitment_has_c_prev", False)) or (st.c_prev is not None)
+            if has_c_prev:
+                c_prev_cur = out_t["c"].view(-1, 1, 1).expand_as(logA_n)
+                return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vp_cur, rp_cur, c_prev_cur], dim=-1)
             return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vp_cur, rp_cur], dim=-1)
         return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype)], dim=-1)
 
@@ -266,11 +270,22 @@ class Trainer:
             if self.rbar_by_regime.numel() != 2:
                 raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
 
+        # Author commitment code can include c_old in the state.
+        # Keep backward compatibility: detect whether the current network expects it.
+        self._commitment_has_c_prev = False
+        if self.policy == "commitment":
+            try:
+                self._commitment_has_c_prev = int(self.net.net[0].in_features) >= 8
+            except Exception:
+                self._commitment_has_c_prev = False
+
         strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
         if self.policy == "taylor":
-            self.res_keys = ["res_c_lam", "res_labor", "res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
-            if not strict_author:
-                self.res_keys += ["res_calvo", "res_Delta"]
+            if strict_author:
+                # Closer to author equations set (A.1): eq_1, eq_2, eq_3, eq_7.
+                self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
+            else:
+                self.res_keys = ["res_c_lam", "res_labor", "res_euler", "res_XiN", "res_XiD", "res_pstar_def", "res_calvo", "res_Delta"]
         elif self.policy == "mod_taylor":
             self.res_keys = ["res_c_lam", "res_labor", "res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
             if strict_author:
@@ -279,17 +294,21 @@ class Trainer:
             else:
                 self.res_keys += ["res_calvo", "res_Delta"]
         elif self.policy == "discretion":
-            self.res_keys = ["res_c_foc", "res_pi_foc", "res_pstar_foc", "res_Delta_foc",
-                             "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
-                             "res_pstar_def"]
-            if not strict_author:
-                self.res_keys += ["res_calvo", "res_Delta_law"]
+            if strict_author:
+                # Closer to author equations set (A.2): eq_1, eq_2, eq_3, eq_4, eq_7.
+                self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
+            else:
+                self.res_keys = ["res_c_foc", "res_pi_foc", "res_pstar_foc", "res_Delta_foc",
+                                 "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
+                                 "res_pstar_def", "res_calvo", "res_Delta_law"]
         elif self.policy == "commitment":
-            self.res_keys = ["res_c_foc", "res_Delta_foc", "res_pi_foc", "res_pstar_foc", "res_XiN_foc", "res_XiD_foc",
-                             "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
-                             "res_pstar_def"]
-            if not strict_author:
-                self.res_keys += ["res_calvo", "res_Delta_law"]
+            if strict_author:
+                # Closer to author equations set (A.3): eq_1, eq_2, eq_3, eq_4, eq_7.
+                self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
+            else:
+                self.res_keys = ["res_c_foc", "res_Delta_foc", "res_pi_foc", "res_pstar_foc", "res_XiN_foc", "res_XiD_foc",
+                                 "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
+                                 "res_pstar_def", "res_calvo", "res_Delta_law"]
         else:
             raise ValueError(self.policy)
 
@@ -372,6 +391,8 @@ class Trainer:
             if c0 is not None and c1 is not None:
                 d0 = float(c0.get("Delta_prev", c0.get("Delta", 1.0)))
                 d1 = float(c1.get("Delta_prev", c1.get("Delta", 1.0)))
+                c_prev0 = float(c0.get("c_prev", c0.get("c", 1.0)))
+                c_prev1 = float(c1.get("c_prev", c1.get("c", 1.0)))
                 vp0 = float(c0["vartheta_prev"]); vp1 = float(c1["vartheta_prev"])
                 rp0 = float(c0["varrho_prev"]); rp1 = float(c1["varrho_prev"])
                 Delta_prev = torch.where(
@@ -385,11 +406,17 @@ class Trainer:
                 rp = torch.where(s == 0,
                                  torch.full((B,), rp0, device=dev, dtype=dt),
                                  torch.full((B,), rp1, device=dev, dtype=dt))
+                c_prev = torch.where(
+                    s == 0,
+                    torch.full((B,), c_prev0, device=dev, dtype=dt),
+                    torch.full((B,), c_prev1, device=dev, dtype=dt),
+                )
             else:
                 d = float(commitment_sss.get("Delta_prev", commitment_sss.get("Delta", 1.0)))
                 Delta_prev = torch.full((B,), d, device=dev, dtype=dt)
                 vp = torch.full((B,), float(commitment_sss["vartheta_prev"]), device=dev, dtype=dt)
                 rp = torch.full((B,), float(commitment_sss["varrho_prev"]), device=dev, dtype=dt)
+                c_prev = torch.full((B,), float(commitment_sss.get("c_prev", commitment_sss.get("c", 1.0))), device=dev, dtype=dt)
         elif strict_author:
             # Keras commitment Hooks.py constants:
             # vartheta_old=-0.019182, rho_old=0.016500, c_old=0.921336 + Gaussian noise.
@@ -401,6 +428,7 @@ class Trainer:
             c_old = torch.clamp(torch.tensor(0.921336, device=dev, dtype=dt) + normal_noise[:, 2], min=1e-8)
             vp = vartheta_old * c_old.pow(self.params.gamma)
             rp = rho_old * c_old.pow(self.params.gamma)
+            c_prev = c_old
         else:
             std = float(getattr(self.cfg, 'commitment_init_multiplier_std', 0.0) or 0.0)
             clip = float(getattr(self.cfg, 'commitment_init_multiplier_clip', 0.0) or 0.0)
@@ -413,7 +441,10 @@ class Trainer:
             else:
                 vp = torch.zeros(B, device=dev, dtype=dt)
                 rp = torch.zeros(B, device=dev, dtype=dt)
+            c_prev = torch.ones(B, device=dev, dtype=dt)
 
+        if self._commitment_has_c_prev:
+            return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vp, rp, c_prev], dim=-1)
         return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vp, rp], dim=-1)
     def _policy_outputs(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         # If x was created under torch.inference_mode(), it is an 'inference tensor' and
@@ -443,23 +474,36 @@ class Trainer:
         delta = float(getattr(self.cfg, "huber_delta", 1.0))
         terms: List[torch.Tensor] = []
 
-        # pi bounds
-        if "pi" in out:
-            lo = float(getattr(self.cfg, "pi_low", -0.1))
-            hi = float(getattr(self.cfg, "pi_high", 0.1))
-            below = torch.clamp(lo - out["pi"], min=0.0)
-            above = torch.clamp(out["pi"] - hi, min=0.0)
-            terms.append(huber_elementwise(below, delta).mean())
-            terms.append(huber_elementwise(above, delta).mean())
+        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
 
-        # pstar bounds
-        if "pstar" in out:
-            lo = float(getattr(self.cfg, "pstar_low", 0.9))
-            hi = float(getattr(self.cfg, "pstar_high", 1.1))
-            below = torch.clamp(lo - out["pstar"], min=0.0)
-            above = torch.clamp(out["pstar"] - hi, min=0.0)
-            terms.append(huber_elementwise(below, delta).mean())
-            terms.append(huber_elementwise(above, delta).mean())
+        def _add_bound(name: str, lo: float | None, hi: float | None) -> None:
+            if name not in out:
+                return
+            if lo is not None:
+                below = torch.clamp(float(lo) - out[name], min=0.0)
+                terms.append(huber_elementwise(below, delta).mean())
+            if hi is not None:
+                above = torch.clamp(out[name] - float(hi), min=0.0)
+                terms.append(huber_elementwise(above, delta).mean())
+
+        # Common nominal bounds
+        _add_bound("pi", float(getattr(self.cfg, "pi_low", -0.1)), float(getattr(self.cfg, "pi_high", 0.1)))
+        _add_bound("pstar", float(getattr(self.cfg, "pstar_low", 0.9)), float(getattr(self.cfg, "pstar_high", 1.1)))
+
+        # Wider author-like variable penalties
+        if strict_author:
+            _add_bound("c", 0.6, 1.4)
+            if self.policy == "taylor":
+                _add_bound("Delta", 0.9, 1.1)
+                _add_bound("XiN", 1.0, 8.0)
+                _add_bound("XiD", 1.0, 8.0)
+            else:
+                _add_bound("Delta", 0.6, 1.4)
+                _add_bound("XiN", 0.0, 12.0)
+                _add_bound("XiD", 0.0, 12.0)
+            if self.policy == "commitment":
+                _add_bound("vartheta", -2.0, 1.0)
+                _add_bound("varrho", -1.0, 1.0)
 
         if not terms:
             # keep graph/device consistent
@@ -502,6 +546,8 @@ class Trainer:
         if self.policy == "commitment":
             vp = out["vartheta"] * out["c"].pow(self.params.gamma)
             rp = out["varrho"] * out["c"].pow(self.params.gamma)
+            if st.c_prev is not None or self._commitment_has_c_prev:
+                return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), vp, rp, out["c"]], dim=-1)
             return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), vp, rp], dim=-1)
 
         return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
@@ -623,6 +669,9 @@ class Trainer:
                 Delta_cur = out["Delta"].view(-1, 1, 1).expand_as(logA_n)
                 vp_cur = (out["vartheta"] * out["c"].pow(gamma)).view(-1, 1, 1).expand_as(logA_n)
                 rp_cur = (out["varrho"] * out["c"].pow(gamma)).view(-1, 1, 1).expand_as(logA_n)
+                if st.c_prev is not None or self._commitment_has_c_prev:
+                    c_prev_cur = out["c"].view(-1, 1, 1).expand_as(logA_n)
+                    return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vp_cur, rp_cur, c_prev_cur], dim=-1)
                 return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vp_cur, rp_cur], dim=-1)
 
             def f_all(epsA, epsg, epst, s_next):
@@ -781,7 +830,7 @@ class Trainer:
                     max_steps = int(max_steps_safety)
             else:
                 max_steps = max_steps_default
-            max_steps = max(1, int(max_steps))
+            max_steps = max(0, int(max_steps))
             hit_safety_cap = eps_stop is not None
             keys = self.res_keys
 

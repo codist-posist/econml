@@ -26,6 +26,16 @@ from .residuals_a3 import residuals_a3
 from .deqn import Trainer, TrainConfig, residual_metrics, residual_metrics_by_regime
 
 
+def _infer_policy_input_dim(net: torch.nn.Module) -> int | None:
+    try:
+        for p in net.parameters():
+            if p.ndim == 2:
+                return int(p.shape[1])
+    except Exception:
+        return None
+    return None
+
+
 def _params_with_net_dtype(params: ModelParams, net: torch.nn.Module) -> ModelParams:
     """Return params cast to network dtype when needed."""
     try:
@@ -124,6 +134,15 @@ def trajectory_residuals_check(
         rp = np.asarray(sim_paths["varrho_prev"], dtype=np.float64)[1:]
         if vp.shape != Delta_prev.shape or rp.shape != Delta_prev.shape:
             raise ValueError("vartheta_prev/varrho_prev must have same shape as Delta")
+        d_in = _infer_policy_input_dim(net) or 7
+        c_prev = None
+        if d_in >= 8:
+            if "c" not in sim_paths:
+                raise KeyError(
+                    "policy='commitment' with 8D state requires sim_paths['c'] to reconstruct c_prev. "
+                    "Run simulate_paths(..., store_states=True)."
+                )
+            c_prev = np.asarray(sim_paths["c"], dtype=np.float64)[:-1]
 
     rng = np.random.default_rng(int(seed))
     pool_n = K2 * B
@@ -133,18 +152,33 @@ def trajectory_residuals_check(
     b_idx = flat_idx % B
 
     if policy == "commitment":
-        X = np.stack(
-            [
-                Delta_prev[t_idx, b_idx],
-                logA_c[t_idx, b_idx],
-                logg_c[t_idx, b_idx],
-                xi_c[t_idx, b_idx],
-                s_c[t_idx, b_idx].astype(np.float64),
-                vp[t_idx, b_idx],
-                rp[t_idx, b_idx],
-            ],
-            axis=1,
-        )
+        if c_prev is not None:
+            X = np.stack(
+                [
+                    Delta_prev[t_idx, b_idx],
+                    logA_c[t_idx, b_idx],
+                    logg_c[t_idx, b_idx],
+                    xi_c[t_idx, b_idx],
+                    s_c[t_idx, b_idx].astype(np.float64),
+                    vp[t_idx, b_idx],
+                    rp[t_idx, b_idx],
+                    c_prev[t_idx, b_idx],
+                ],
+                axis=1,
+            )
+        else:
+            X = np.stack(
+                [
+                    Delta_prev[t_idx, b_idx],
+                    logA_c[t_idx, b_idx],
+                    logg_c[t_idx, b_idx],
+                    xi_c[t_idx, b_idx],
+                    s_c[t_idx, b_idx].astype(np.float64),
+                    vp[t_idx, b_idx],
+                    rp[t_idx, b_idx],
+                ],
+                axis=1,
+            )
     else:
         X = np.stack(
             [
@@ -195,22 +229,28 @@ class ResidualCheckResult:
     residuals: Dict[str, float]
 
 
-def _state_from_policy_sss(params: ModelParams, policy: PolicyName, sss: Dict[str, float], regime: int) -> torch.Tensor:
+def _state_from_policy_sss(
+    params: ModelParams,
+    policy: PolicyName,
+    sss: Dict[str, float],
+    regime: int,
+    *,
+    commitment_state_dim: int | None = None,
+) -> torch.Tensor:
     """Build a 1xN torch state vector x consistent with the project's state ordering."""
     dev, dt = params.device, params.dtype
     s = float(int(regime))
 
     if policy == "commitment":
-        # x = (Delta_prev, logA, logg, xi, s, vp_prev, rp_prev)
+        # x = (Delta_prev, logA, logg, xi, s, vp_prev, rp_prev[, c_prev])
         # where vp_prev = vartheta_prev * c_prev^gamma, rp_prev = varrho_prev * c_prev^gamma.
         # sss_from_policy stores vartheta_prev/varrho_prev already in that representation.
         vp_prev = float(sss.get("vartheta_prev", 0.0))
         rp_prev = float(sss.get("varrho_prev", 0.0))
-        x = torch.tensor(
-            [float(sss.get("Delta_prev", sss["Delta"])), float(sss["logA"]), float(sss["loggtilde"]), float(sss["xi"]), s, vp_prev, rp_prev],
-            device=dev,
-            dtype=dt,
-        ).view(1, -1)
+        base = [float(sss.get("Delta_prev", sss["Delta"])), float(sss["logA"]), float(sss["loggtilde"]), float(sss["xi"]), s, vp_prev, rp_prev]
+        if (commitment_state_dim is not None and int(commitment_state_dim) >= 8) or ("c_prev" in sss):
+            base.append(float(sss.get("c_prev", sss.get("c", 1.0))))
+        x = torch.tensor(base, device=dev, dtype=dt).view(1, -1)
         return x
 
     # taylor, mod_taylor, discretion share x=(Delta_prev, logA, logg, xi, s)
@@ -241,10 +281,16 @@ def _deterministic_next_state(
         gamma = params.gamma
         vp_n = out["vartheta"] * out["c"].pow(gamma)
         rp_n = out["varrho"] * out["c"].pow(gamma)
-        x_next = torch.stack(
-            [out["Delta"], logA_n.view(-1), logg_n.view(-1), xi_n.view(-1), s_n.to(dt), vp_n.view(-1), rp_n.view(-1)],
-            dim=-1,
-        )
+        if st.c_prev is not None:
+            x_next = torch.stack(
+                [out["Delta"], logA_n.view(-1), logg_n.view(-1), xi_n.view(-1), s_n.to(dt), vp_n.view(-1), rp_n.view(-1), out["c"].view(-1)],
+                dim=-1,
+            )
+        else:
+            x_next = torch.stack(
+                [out["Delta"], logA_n.view(-1), logg_n.view(-1), xi_n.view(-1), s_n.to(dt), vp_n.view(-1), rp_n.view(-1)],
+                dim=-1,
+            )
         return x_next
 
     x_next = torch.stack(
@@ -272,9 +318,10 @@ def fixed_point_check(
         floors = {"c": 1e-8, "Delta": 1e-10, "pstar": 1e-10}
 
     params = _params_with_net_dtype(params, net)
+    commit_dim = _infer_policy_input_dim(net) if policy == "commitment" else None
     out_by_regime: Dict[int, FixedPointCheckResult] = {}
     for r, sss in sss_by_regime.items():
-        x = _state_from_policy_sss(params, policy, sss, r)
+        x = _state_from_policy_sss(params, policy, sss, r, commitment_state_dim=commit_dim)
         out = decode_outputs(policy, net(x), floors=floors)
         st = unpack_state(x, policy)
         x_next = _deterministic_next_state(params, policy, st, out, regime=r)
@@ -340,7 +387,11 @@ def _deterministic_terms_commitment(params: ModelParams, net: torch.nn.Module, x
     Delta_cur = _broadcast_like(out["Delta"], logA_n).expand_as(logA_n)
     vp_cur = _broadcast_like(out["vartheta"] * out["c"].pow(gamma), logA_n).expand_as(logA_n)
     rp_cur = _broadcast_like(out["varrho"] * out["c"].pow(gamma), logA_n).expand_as(logA_n)
-    xn = torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vp_cur, rp_cur], dim=-1).view(1, -1)
+    if st.c_prev is not None:
+        c_prev_cur = _broadcast_like(out["c"], logA_n).expand_as(logA_n)
+        xn = torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vp_cur, rp_cur, c_prev_cur], dim=-1).view(1, -1)
+    else:
+        xn = torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vp_cur, rp_cur], dim=-1).view(1, -1)
 
     on = decode_outputs("commitment", net(xn), floors=floors)
 
@@ -379,11 +430,12 @@ def residuals_check(
         floors = {"c": 1e-8, "Delta": 1e-10, "pstar": 1e-10}
 
     params = _params_with_net_dtype(params, net)
+    commit_dim = _infer_policy_input_dim(net) if policy == "commitment" else None
     results: Dict[int, ResidualCheckResult] = {}
 
     for r, sss in sss_by_regime.items():
         r = int(r)
-        x = _state_from_policy_sss(params, policy, sss, r)
+        x = _state_from_policy_sss(params, policy, sss, r, commitment_state_dim=commit_dim)
 
         if policy in ("taylor", "mod_taylor"):
             out = decode_outputs(policy, net(x), floors=floors)
