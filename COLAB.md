@@ -1,5 +1,8 @@
 # Google Colab Quick Start (CUDA)
 
+Replication policy and change-control rules are fixed in
+`REPLICATION_FREEZE.md`.
+
 ## 1) Clone repo in Colab
 
 ```bash
