@@ -5,6 +5,7 @@ import torch
 
 PolicyName = Literal["taylor", "mod_taylor", "discretion", "commitment"]
 RunMode = Literal["full", "mid", "dev"]
+TrainingMode = Literal["robust", "strict_author"]
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,9 @@ class TrainConfig:
     Training / compute configuration with a fixed network architecture and two phases.
     """
     mode: RunMode = "full"
+    # "robust": current stable training defaults for Colab/GPU.
+    # "strict_author": closer to the public Keras pipeline semantics.
+    training_mode: TrainingMode = "robust"
     seed: int = 123
 
     # ---- Network (FIXED across phases) ----
@@ -115,6 +119,9 @@ class TrainConfig:
     pi_high: float = 0.1
     pstar_low: float = 0.9
     pstar_high: float = 1.1
+    # Penalty-based bounds (author-like): used when training_mode="strict_author".
+    use_penalty_bounds: bool = True
+    bounds_penalty_weight: float = 1.0
 
     # ---- Optimization ----
     grad_clip: float = 1.0

@@ -70,6 +70,12 @@ def loss_from_residuals(
     raise ValueError(f"Unsupported loss_type={loss_type!r}; expected 'huber' or 'mse'")
 
 
+def huber_elementwise(x: torch.Tensor, delta: float = 1.0) -> torch.Tensor:
+    d = float(delta)
+    ax = torch.abs(x)
+    return torch.where(ax <= d, 0.5 * x * x, d * (ax - 0.5 * d))
+
+
 
 def residual_metrics(resid: torch.Tensor, keys: List[str], *, tol: float) -> Dict[str, float]:
     """Compute scalar diagnostics for a residual matrix (B,K)."""
@@ -260,16 +266,23 @@ class Trainer:
             if self.rbar_by_regime.numel() != 2:
                 raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
 
+        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
         if self.policy in ["taylor", "mod_taylor"]:
-            self.res_keys = ["res_c_lam", "res_labor", "res_euler", "res_XiN", "res_XiD", "res_pstar_def", "res_calvo", "res_Delta"]
+            self.res_keys = ["res_c_lam", "res_labor", "res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
+            if not strict_author:
+                self.res_keys += ["res_calvo", "res_Delta"]
         elif self.policy == "discretion":
             self.res_keys = ["res_c_foc", "res_pi_foc", "res_pstar_foc", "res_Delta_foc",
                              "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
-                             "res_pstar_def", "res_calvo", "res_Delta_law"]
+                             "res_pstar_def"]
+            if not strict_author:
+                self.res_keys += ["res_calvo", "res_Delta_law"]
         elif self.policy == "commitment":
             self.res_keys = ["res_c_foc", "res_Delta_foc", "res_pi_foc", "res_pstar_foc", "res_XiN_foc", "res_XiD_foc",
                              "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
-                             "res_pstar_def", "res_calvo", "res_Delta_law"]
+                             "res_pstar_def"]
+            if not strict_author:
+                self.res_keys += ["res_calvo", "res_Delta_law"]
         else:
             raise ValueError(self.policy)
 
@@ -377,7 +390,8 @@ class Trainer:
             "Delta": self.cfg.delta_floor,
             "pstar": self.cfg.pstar_floor,
         }
-        if bool(getattr(self.cfg, "use_author_bounds", True)):
+        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
+        if bool(getattr(self.cfg, "use_author_bounds", True)) and (not strict_author):
             floors.update(
                 {
                     "pi_low": float(getattr(self.cfg, "pi_low", -0.1)),
@@ -387,6 +401,48 @@ class Trainer:
                 }
             )
         return decode_outputs(self.policy, raw, floors=floors)
+
+    def _bounds_penalty(self, out: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Author-like soft penalties for bound violations (Huber)."""
+        delta = float(getattr(self.cfg, "huber_delta", 1.0))
+        terms: List[torch.Tensor] = []
+
+        # pi bounds
+        if "pi" in out:
+            lo = float(getattr(self.cfg, "pi_low", -0.1))
+            hi = float(getattr(self.cfg, "pi_high", 0.1))
+            below = torch.clamp(lo - out["pi"], min=0.0)
+            above = torch.clamp(out["pi"] - hi, min=0.0)
+            terms.append(huber_elementwise(below, delta).mean())
+            terms.append(huber_elementwise(above, delta).mean())
+
+        # pstar bounds
+        if "pstar" in out:
+            lo = float(getattr(self.cfg, "pstar_low", 0.9))
+            hi = float(getattr(self.cfg, "pstar_high", 1.1))
+            below = torch.clamp(lo - out["pstar"], min=0.0)
+            above = torch.clamp(out["pstar"] - hi, min=0.0)
+            terms.append(huber_elementwise(below, delta).mean())
+            terms.append(huber_elementwise(above, delta).mean())
+
+        if not terms:
+            # keep graph/device consistent
+            return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+        return torch.stack(terms).mean()
+
+    def _training_loss_from_states(self, x: torch.Tensor, resid: torch.Tensor) -> torch.Tensor:
+        """Combined training objective under selected training_mode."""
+        base = loss_from_residuals(
+            resid,
+            loss_type=getattr(self.cfg, "loss_type", "huber"),
+            huber_delta=float(getattr(self.cfg, "huber_delta", 1.0)),
+        )
+        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
+        if strict_author and bool(getattr(self.cfg, "use_penalty_bounds", True)):
+            out = self._policy_outputs(x)
+            w = float(getattr(self.cfg, "bounds_penalty_weight", 1.0))
+            base = base + w * self._bounds_penalty(out)
+        return base
 
     @torch.no_grad()
     def _step_state(self, x: torch.Tensor) -> torch.Tensor:
@@ -691,11 +747,7 @@ class Trainer:
                 X_for_log: torch.Tensor | None = None
                 if not use_chunks:
                     resid = self._residuals(X)  # (N_path*B, K)
-                    loss = loss_from_residuals(
-                        resid,
-                        loss_type=getattr(self.cfg, "loss_type", "huber"),
-                        huber_delta=float(getattr(self.cfg, "huber_delta", 1.0)),
-                    )
+                    loss = self._training_loss_from_states(X, resid)
                     lv = float(loss.detach().cpu())
                     # --- 3) Gradient step (Adam) ---
                     loss.backward()
@@ -710,11 +762,7 @@ class Trainer:
                     for j in range(0, n_total, int(chunk_size)):
                         Xi = X[j : j + int(chunk_size)]
                         resid_i = self._residuals(Xi)
-                        loss_i = loss_from_residuals(
-                            resid_i,
-                            loss_type=getattr(self.cfg, "loss_type", "huber"),
-                            huber_delta=float(getattr(self.cfg, "huber_delta", 1.0)),
-                        )
+                        loss_i = self._training_loss_from_states(Xi, resid_i)
                         w = float(Xi.shape[0]) / float(n_total)
                         (loss_i * w).backward()
                         lv += float(loss_i.detach().cpu()) * w
