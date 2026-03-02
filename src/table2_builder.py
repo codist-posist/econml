@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 
 from .config import ModelParams, PolicyName
-from .io_utils import load_selected_run, find_latest_run_dir, load_torch, load_json
+from .io_utils import load_selected_run, find_latest_run_dir, load_torch, load_json, resolve_analysis_run_dir
 from .steady_states import solve_flexprice_sss, solve_efficient_sss, solve_commitment_sss_from_policy, solve_discretion_sss_from_policy
 from .sss_from_policy import switching_policy_sss_by_regime_from_policy, frozen_policy_sss_by_regime_from_policy
 from .deqn import PolicyNetwork, implied_nominal_rate_from_euler
@@ -288,10 +288,18 @@ def _candidate_run_dirs(
     *,
     use_selected: bool,
 ) -> Tuple[List[str], Optional[str]]:
+    preferred = resolve_analysis_run_dir(
+        artifacts_root,
+        policy,
+        prefer_selected=use_selected,
+        require_paper_mod_taylor=True,
+    )
     selected = load_selected_run(artifacts_root, policy) if use_selected else None
     latest = find_latest_run_dir(artifacts_root, policy)
 
     cand: List[str] = []
+    if preferred is not None:
+        cand.append(os.path.normpath(preferred))
     if selected is not None:
         cand.append(os.path.normpath(selected))
     if latest is not None:

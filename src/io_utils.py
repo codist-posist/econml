@@ -3,7 +3,7 @@ import os, json, sys, platform
 from datetime import datetime
 from uuid import uuid4
 from dataclasses import asdict, is_dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import torch
 import numpy as np
@@ -88,6 +88,97 @@ def find_latest_run_dir(artifacts_root: str, policy: str) -> str | None:
     if not cand:
         return None
     return sorted(cand)[-1]
+
+
+def list_run_dirs(artifacts_root: str, policy: str) -> List[str]:
+    """Return run directories for a policy sorted by mtime (newest first)."""
+    artifacts_root = _normalize_artifacts_root(artifacts_root)
+    root = os.path.join(artifacts_root, "runs", policy)
+    if not os.path.isdir(root):
+        return []
+    cand = [os.path.join(root, d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+    cand.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return cand
+
+
+def _run_config_safe(run_dir: str) -> Dict[str, Any]:
+    p = os.path.join(run_dir, "config.json")
+    if not os.path.exists(p):
+        return {}
+    try:
+        return load_json(p)
+    except Exception:
+        return {}
+
+
+def _infer_net_output_dim_from_weights(run_dir: str) -> int | None:
+    for wname in ("weights.pt", "weights_best.pt"):
+        wp = os.path.join(run_dir, wname)
+        if not os.path.exists(wp):
+            continue
+        try:
+            state = load_torch(wp, map_location="cpu")
+            if isinstance(state, dict):
+                w = state.get("net.4.weight")
+                if isinstance(w, torch.Tensor) and w.ndim == 2:
+                    return int(w.shape[0])
+        except Exception:
+            pass
+    return None
+
+
+def infer_mod_taylor_variant(run_dir: str) -> str | None:
+    """Infer mod_taylor variant from metadata, with checkpoint-shape fallback."""
+    cfg = _run_config_safe(run_dir)
+    extra = cfg.get("extra", {}) if isinstance(cfg, dict) else {}
+    v = extra.get("mod_taylor_variant")
+    if v:
+        return str(v)
+    d_out = _infer_net_output_dim_from_weights(run_dir)
+    if d_out == 9:
+        return "author_repo_param_i"
+    if d_out == 8:
+        return "paper_rule_rbar"
+    return None
+
+
+def is_paper_mod_taylor_run(run_dir: str) -> bool:
+    """True for runs matching paper-style modified Taylor rule (rbar-by-regime rule)."""
+    v = infer_mod_taylor_variant(run_dir)
+    return v == "paper_rule_rbar"
+
+
+def resolve_analysis_run_dir(
+    artifacts_root: str,
+    policy: str,
+    *,
+    prefer_selected: bool = True,
+    require_paper_mod_taylor: bool = True,
+) -> str | None:
+    """
+    Resolve the *correct* run directory for analysis/figures.
+
+    For mod_taylor, this can enforce paper-rule runs (rbar-by-regime) and skip author-like runs.
+    """
+    artifacts_root = _normalize_artifacts_root(artifacts_root)
+    cands: List[str] = []
+    if prefer_selected:
+        sel = load_selected_run(artifacts_root, policy)
+        if sel is not None:
+            cands.append(sel)
+    for rd in list_run_dirs(artifacts_root, policy):
+        if rd not in cands:
+            cands.append(rd)
+
+    if not cands:
+        return None
+
+    for rd in cands:
+        if policy == "mod_taylor" and require_paper_mod_taylor:
+            if not is_paper_mod_taylor_run(rd):
+                continue
+        return rd
+    return None
 
 
 def save_selected_run(artifacts_root: str, policy: str, run_dir: str) -> str:
