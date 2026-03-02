@@ -53,8 +53,21 @@ def stack_residuals(res: Dict[str, torch.Tensor], keys: List[str]) -> torch.Tens
     return torch.stack([res[k] for k in keys], dim=-1)
 
 
-def loss_from_residuals(resid: torch.Tensor) -> torch.Tensor:
-    return (resid ** 2).mean()
+def loss_from_residuals(
+    resid: torch.Tensor,
+    *,
+    loss_type: str = "huber",
+    huber_delta: float = 1.0,
+) -> torch.Tensor:
+    lt = str(loss_type).lower().strip()
+    if lt == "mse":
+        return (resid ** 2).mean()
+    if lt == "huber":
+        d = float(huber_delta)
+        absr = torch.abs(resid)
+        hub = torch.where(absr <= d, 0.5 * resid * resid, d * (absr - 0.5 * d))
+        return hub.mean()
+    raise ValueError(f"Unsupported loss_type={loss_type!r}; expected 'huber' or 'mse'")
 
 
 
@@ -359,7 +372,20 @@ class Trainer:
         if torch.is_grad_enabled() and getattr(x, 'is_inference', False):
             x = x.clone()
         raw = self.net(x)
-        floors = {"c": self.cfg.c_floor, "Delta": self.cfg.delta_floor, "pstar": self.cfg.pstar_floor}
+        floors = {
+            "c": self.cfg.c_floor,
+            "Delta": self.cfg.delta_floor,
+            "pstar": self.cfg.pstar_floor,
+        }
+        if bool(getattr(self.cfg, "use_author_bounds", True)):
+            floors.update(
+                {
+                    "pi_low": float(getattr(self.cfg, "pi_low", -0.1)),
+                    "pi_high": float(getattr(self.cfg, "pi_high", 0.1)),
+                    "pstar_low": float(getattr(self.cfg, "pstar_low", 0.9)),
+                    "pstar_high": float(getattr(self.cfg, "pstar_high", 1.1)),
+                }
+            )
         return decode_outputs(self.policy, raw, floors=floors)
 
     @torch.no_grad()
@@ -665,7 +691,11 @@ class Trainer:
                 X_for_log: torch.Tensor | None = None
                 if not use_chunks:
                     resid = self._residuals(X)  # (N_path*B, K)
-                    loss = loss_from_residuals(resid)
+                    loss = loss_from_residuals(
+                        resid,
+                        loss_type=getattr(self.cfg, "loss_type", "huber"),
+                        huber_delta=float(getattr(self.cfg, "huber_delta", 1.0)),
+                    )
                     lv = float(loss.detach().cpu())
                     # --- 3) Gradient step (Adam) ---
                     loss.backward()
@@ -680,7 +710,11 @@ class Trainer:
                     for j in range(0, n_total, int(chunk_size)):
                         Xi = X[j : j + int(chunk_size)]
                         resid_i = self._residuals(Xi)
-                        loss_i = loss_from_residuals(resid_i)
+                        loss_i = loss_from_residuals(
+                            resid_i,
+                            loss_type=getattr(self.cfg, "loss_type", "huber"),
+                            huber_delta=float(getattr(self.cfg, "huber_delta", 1.0)),
+                        )
                         w = float(Xi.shape[0]) / float(n_total)
                         (loss_i * w).backward()
                         lv += float(loss_i.detach().cpu()) * w

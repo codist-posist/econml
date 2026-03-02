@@ -57,6 +57,7 @@ def residuals_a3(
     rp = st.varrho_prev
 
     res: Dict[str, torch.Tensor] = {}
+    eps_denom = 1e-12
 
     # ---- FOC w.r.t. c (Appendix A.3) ----
     term_util = c.pow(-gamma) - (c + g).pow(omega) * (Delta / A).pow(1.0 + omega)
@@ -72,16 +73,18 @@ def residuals_a3(
     term_varrho_now = (1.0 + Et_termD_next)
     term_varrho_lag = (-gamma) * theta * rp * c.pow(-gamma - 1.0) * one_plus_pi.pow(eps - 1.0) * XiD
 
+    denom_c = ((c + g).pow(omega) * (Delta / A).pow(1.0 + omega)).abs() + eps_denom
     res["res_c_foc"] = (
         term_util
         + vartheta * term_vartheta_now
         + term_vartheta_lag
         + varrho * term_varrho_now
         + term_varrho_lag
-    )
+    ) / denom_c
 
     # ---- FOC w.r.t. Delta ----
     disutil_over_Delta = -((c + g) * Delta / A).pow(1.0 + omega) / Delta
+    denom_D = (((c + g) * Delta / A).pow(1.0 + omega) / Delta).abs() + eps_denom
     res["res_Delta_foc"] = (
         disutil_over_Delta
         - zeta
@@ -89,7 +92,7 @@ def residuals_a3(
         + vartheta
         * omega * (c + g).pow(1.0 + omega) * c.pow(gamma)
         * (Delta / A).pow(omega) * (1.0 / Delta) * one_plus_tau / A
-    )
+    ) / denom_D
 
     # ---- FOC w.r.t. pi ----
     res["res_pi_foc"] = (
@@ -114,11 +117,13 @@ def residuals_a3(
     res["res_c_lam"] = c.pow(-gamma) - lam
     res["res_labor"] = h.pow(omega) - w * lam
 
-    res["res_XiN_rec"] = XiN - (y * w * one_plus_tau / A) - Et_XiN_next
-    res["res_XiD_rec"] = XiD - y - Et_XiD_next
+    res["res_XiN_rec"] = (XiN - (y * w * one_plus_tau / A) - Et_XiN_next) / (XiN.abs() + eps_denom)
+    res["res_XiD_rec"] = (XiD - y - Et_XiD_next) / (XiD.abs() + eps_denom)
 
-    res["res_pstar_def"] = pstar - (M * XiN / XiD)
+    res["res_pstar_def"] = (pstar - (M * XiN / XiD)) / (pstar.abs() + eps_denom)
     res["res_calvo"] = 1.0 - (theta * one_plus_pi.pow(eps - 1.0) + (1.0 - theta) * pstar.pow(1.0 - eps))
-    res["res_Delta_law"] = Delta - (theta * one_plus_pi.pow(eps) * st.Delta_prev + (1.0 - theta) * pstar.pow(-eps))
+    res["res_Delta_law"] = (
+        Delta - (theta * one_plus_pi.pow(eps) * st.Delta_prev + (1.0 - theta) * pstar.pow(-eps))
+    ) / (Delta.abs() + eps_denom)
 
     return res

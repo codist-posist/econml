@@ -44,11 +44,12 @@ def residuals_a1(
     res["res_euler"] = 1.0 - Et_euler
 
     # (A.1) Xi recursions
-    res["res_XiN"] = XiN - (y * w * one_plus_tau / A) - Et_XiN_next
-    res["res_XiD"] = XiD - y - Et_XiD_next
+    eps_denom = 1e-12
+    res["res_XiN"] = (XiN - (y * w * one_plus_tau / A) - Et_XiN_next) / (XiN.abs() + eps_denom)
+    res["res_XiD"] = (XiD - y - Et_XiD_next) / (XiD.abs() + eps_denom)
 
     # Optimal reset price
-    res["res_pstar_def"] = pstar - (params.M * XiN / XiD)
+    res["res_pstar_def"] = (pstar - (params.M * XiN / XiD)) / (pstar.abs() + eps_denom)
 
     # Calvo price index / inflation condition
     res["res_calvo"] = 1.0 - (
@@ -57,10 +58,10 @@ def residuals_a1(
     )
 
     # Price dispersion law
-    res["res_Delta"] = Delta - (
+    res["res_Delta"] = (Delta - (
         params.theta * one_plus_pi.pow(params.eps) * st.Delta_prev
         + (1.0 - params.theta) * pstar.pow(-params.eps)
-    )
+    )) / (Delta.abs() + eps_denom)
 
     return res
 

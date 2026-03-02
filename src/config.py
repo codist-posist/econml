@@ -109,9 +109,18 @@ class TrainConfig:
     c_floor: float = 1e-6
     delta_floor: float = 1e-8
     pstar_floor: float = 1e-8
+    # Author-like hard bounds for unstable nominal variables.
+    use_author_bounds: bool = True
+    pi_low: float = -0.1
+    pi_high: float = 0.1
+    pstar_low: float = 0.9
+    pstar_high: float = 1.1
 
     # ---- Optimization ----
     grad_clip: float = 1.0
+    # Author-like robust objective.
+    loss_type: str = "huber"  # "huber" | "mse"
+    huber_delta: float = 1.0
     # Optional micro-batch size for residual backpropagation.
     # This does not change the objective, only memory/throughput behavior.
     residual_chunk_size: int | None = None

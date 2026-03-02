@@ -36,6 +36,7 @@ def residuals_a2(
     gamma = params.gamma; omega = params.omega
 
     res: Dict[str, torch.Tensor] = {}
+    eps_denom = 1e-12
 
     # ---- FOC w.r.t. c (A.2) ----
     term1 = c.pow(-gamma) - (c + g).pow(omega) * (Delta / A).pow(1.0 + omega)
@@ -48,7 +49,8 @@ def residuals_a2(
             + gamma * c.pow(gamma - 1.0) * Et_G_next
         )
     )
-    res["res_c_foc"] = term1 + term2
+    denom_c = ((c + g).pow(omega) * (Delta / A).pow(1.0 + omega)).abs() + eps_denom
+    res["res_c_foc"] = (term1 + term2) / denom_c
 
     # ---- FOC w.r.t. π (eq. (27) in Appendix A.2) ----
     res["res_pi_foc"] = (
@@ -74,22 +76,23 @@ def residuals_a2(
             + c.pow(gamma) * Et_dG_dDelta_next
         )
     )
-    res["res_Delta_foc"] = disutil_over_Delta + expect_term + mu * mu_bracket
+    denom_D = (((c + g) * Delta / A).pow(1.0 + omega) / Delta).abs() + eps_denom
+    res["res_Delta_foc"] = (disutil_over_Delta + expect_term + mu * mu_bracket) / denom_D
 
     # ---- Equilibrium conditions block (same as A.1) ----
     res["res_c_lam"] = c.pow(-gamma) - lam
     res["res_labor"] = h.pow(omega) - w * lam
-    res["res_XiN_rec"] = XiN - (y * w * one_plus_tau / A) - Et_XiN_next
-    res["res_XiD_rec"] = XiD - y - Et_XiD_next
-    res["res_pstar_def"] = pstar - (M * XiN / XiD)
+    res["res_XiN_rec"] = (XiN - (y * w * one_plus_tau / A) - Et_XiN_next) / (XiN.abs() + eps_denom)
+    res["res_XiD_rec"] = (XiD - y - Et_XiD_next) / (XiD.abs() + eps_denom)
+    res["res_pstar_def"] = (pstar - (M * XiN / XiD)) / (pstar.abs() + eps_denom)
 
     res["res_calvo"] = 1.0 - (
         theta * one_plus_pi.pow(eps - 1.0)
         + (1.0 - theta) * pstar.pow(1.0 - eps)
     )
-    res["res_Delta_law"] = Delta - (
+    res["res_Delta_law"] = (Delta - (
         theta * one_plus_pi.pow(eps) * st.Delta_prev
         + (1.0 - theta) * pstar.pow(-eps)
-    )
+    )) / (Delta.abs() + eps_denom)
 
     return res
