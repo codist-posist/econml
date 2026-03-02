@@ -4,7 +4,7 @@ from typing import Literal, Tuple
 import torch
 
 PolicyName = Literal["taylor", "mod_taylor", "discretion", "commitment"]
-RunMode = Literal["full", "mid", "dev"]
+RunMode = Literal["full", "mid", "dev", "author"]
 TrainingMode = Literal["robust", "strict_author"]
 
 
@@ -170,6 +170,7 @@ class TrainConfig:
     min_lr: float = 1e-7
 
     # ---- Two-phase schedule (network fixed) ----
+    use_two_phase: bool = True
     phase1: PhaseConfig = PhaseConfig(
         steps=10_000,
         lr=1e-5,
@@ -270,7 +271,39 @@ class TrainConfig:
         )
         return replace(base, **overrides)
 
-    def phases(self) -> Tuple[PhaseConfig, PhaseConfig]:
+    @staticmethod
+    def author_like(**overrides) -> "TrainConfig":
+        """
+        Author-like compute preset (closest to public Keras code semantics):
+        - strict_author training mode
+        - single phase by default (episode-style training analog)
+        - GH=3, Adam lr=1e-5, minibatch-like batch=128, path length=10
+        - no hard eps-stop (monitor loss / checkpoints)
+        """
+        base = TrainConfig(
+            mode="author",
+            training_mode="strict_author",
+            hidden_layers=(512, 512),
+            activation="selu",
+            use_two_phase=False,
+            strict_eps_stop=False,
+            strict_eps_max_steps=None,
+            n_path=10,
+            n_paths_per_step=1,
+            log_every=100,
+            val_size=1024,
+            val_every=2000,
+            phase1=PhaseConfig(steps=200_000, lr=1e-5, batch_size=128, gh_n_train=3, use_float64=False, eps_stop=None),
+            # Kept for compatibility (not used when use_two_phase=False).
+            phase2=PhaseConfig(steps=0, lr=1e-5, batch_size=128, gh_n_train=3, use_float64=False, eps_stop=None),
+        )
+        return replace(base, **overrides)
+
+    def phases(self) -> Tuple[PhaseConfig, ...]:
+        if not bool(getattr(self, "use_two_phase", True)):
+            return (self.phase1,)
+        if int(self.phase2.steps) <= 0:
+            return (self.phase1,)
         return (self.phase1, self.phase2)
 
 
