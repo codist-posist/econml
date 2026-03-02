@@ -432,6 +432,36 @@ class CommitmentSSS:
     by_regime: Dict[int, Dict[str, float]]
 
 
+def commitment_author_like_sss(
+    params: ModelParams,
+    *,
+    vartheta_old: float = -0.019182,
+    varrho_old: float = 0.016500,
+    c_old: float = 0.921336,
+    delta_prev: float = 1.0,
+) -> CommitmentSSS:
+    """
+    Author-style timeless initialization used in the public Keras code (Hooks.py).
+
+    Their state stores lagged multipliers and lagged consumption separately.
+    In this PyTorch codebase the commitment state keeps scaled lagged multipliers:
+
+        vartheta_prev = vartheta_old * c_old^gamma
+        varrho_prev   = varrho_old   * c_old^gamma
+
+    We assign the same warm-start values to both regimes, matching the author setup.
+    """
+    scale = float(c_old) ** float(params.gamma)
+    vp = float(vartheta_old) * scale
+    rp = float(varrho_old) * scale
+    d = float(delta_prev)
+    by = {
+        0: {"Delta_prev": d, "vartheta_prev": vp, "varrho_prev": rp},
+        1: {"Delta_prev": d, "vartheta_prev": vp, "varrho_prev": rp},
+    }
+    return CommitmentSSS(by_regime=by)
+
+
 def solve_commitment_sss_switching(params: ModelParams, max_iter: int = 200, tol: float = 1e-12, damping: float = 1.0) -> CommitmentSSS:
     """
     LEGACY helper: regime-conditional point solution for the A.3 system using a Bayes-closure
