@@ -287,12 +287,14 @@ def _candidate_run_dirs(
     policy: str,
     *,
     use_selected: bool,
+    mod_taylor_variant: str | None = "paper_rule_rbar",
 ) -> Tuple[List[str], Optional[str]]:
     preferred = resolve_analysis_run_dir(
         artifacts_root,
         policy,
         prefer_selected=use_selected,
-        require_paper_mod_taylor=True,
+        require_paper_mod_taylor=False,
+        mod_taylor_variant=mod_taylor_variant if policy == "mod_taylor" else None,
     )
     selected = load_selected_run(artifacts_root, policy) if use_selected else None
     latest = find_latest_run_dir(artifacts_root, policy)
@@ -336,8 +338,14 @@ def _load_run_dir(
     *,
     use_selected: bool = True,
     required_files: Sequence[str] = ("sim_paths.npz",),
+    mod_taylor_variant: str | None = "paper_rule_rbar",
 ) -> str:
-    cands, selected = _candidate_run_dirs(artifacts_root, policy, use_selected=use_selected)
+    cands, selected = _candidate_run_dirs(
+        artifacts_root,
+        policy,
+        use_selected=use_selected,
+        mod_taylor_variant=mod_taylor_variant,
+    )
     if not cands:
         raise FileNotFoundError(f"No run directory found for policy='{policy}' under {artifacts_root}")
 
@@ -510,6 +518,7 @@ def build_table2(
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
     include_rules: bool = True,
+    mod_taylor_variant: str | None = "paper_rule_rbar",
 ) -> pd.DataFrame:
     """
     Build a Table-2-like summary after trainings.
@@ -666,7 +675,12 @@ def build_table2(
     for label, pkey in policies:
         if pkey is None:
             continue
-        run_dir = _load_run_dir(artifacts_root, pkey, use_selected=use_selected)
+        run_dir = _load_run_dir(
+            artifacts_root,
+            pkey,
+            use_selected=use_selected,
+            mod_taylor_variant=mod_taylor_variant if pkey == "mod_taylor" else None,
+        )
         nets[pkey] = _load_net_from_run(run_dir, params, pkey)
         sims[pkey] = _load_sim_paths(run_dir)
         # Quick diagnostic: Table-2 skewness can be unstable with short saved sims.

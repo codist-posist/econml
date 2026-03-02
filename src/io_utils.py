@@ -154,6 +154,7 @@ def resolve_analysis_run_dir(
     *,
     prefer_selected: bool = True,
     require_paper_mod_taylor: bool = True,
+    mod_taylor_variant: str | None = None,
 ) -> str | None:
     """
     Resolve the *correct* run directory for analysis/figures.
@@ -173,9 +174,13 @@ def resolve_analysis_run_dir(
     if not cands:
         return None
 
+    effective_variant = mod_taylor_variant
+    if policy == "mod_taylor" and effective_variant is None and require_paper_mod_taylor:
+        effective_variant = "paper_rule_rbar"
+
     for rd in cands:
-        if policy == "mod_taylor" and require_paper_mod_taylor:
-            if not is_paper_mod_taylor_run(rd):
+        if policy == "mod_taylor" and effective_variant is not None:
+            if infer_mod_taylor_variant(rd) != str(effective_variant):
                 continue
         return rd
     return None
