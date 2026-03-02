@@ -657,7 +657,7 @@ class Trainer:
                 if chunk_size <= 0 and str(dev).startswith("cuda"):
                     if self.policy == "discretion":
                         chunk_size = min(int(X.shape[0]), 1024)
-                    elif self.policy == "commitment":
+                    elif self.policy == "commitment" and self.params.dtype == torch.float64:
                         chunk_size = min(int(X.shape[0]), 512)
                 use_chunks = (0 < chunk_size < int(X.shape[0]))
 
