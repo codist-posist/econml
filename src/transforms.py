@@ -28,8 +28,21 @@ def bounded(x: torch.Tensor, low: float, high: float) -> torch.Tensor:
 
 
 def decode_outputs(policy: str, raw: torch.Tensor, floors: Dict[str, float]) -> Dict[str, torch.Tensor]:
-    if policy in ["taylor", "mod_taylor"]:
+    if policy == "taylor":
         names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta"]
+    elif policy == "mod_taylor":
+        # Backward-compatible decoding:
+        # - legacy runs: 8 outputs (same as taylor)
+        # - author-like para runs: + i_nom policy output
+        if raw.shape[-1] == 8:
+            names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta"]
+        elif raw.shape[-1] == 9:
+            names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta", "i_nom"]
+        else:
+            raise ValueError(
+                f"decode_outputs: raw last dim {raw.shape[-1]} unsupported for policy=mod_taylor "
+                "(expected 8 or 9)"
+            )
     elif policy == "discretion":
         names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta", "mu", "rho", "zeta"]
     elif policy == "commitment":

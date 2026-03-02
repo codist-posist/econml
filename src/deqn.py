@@ -267,9 +267,16 @@ class Trainer:
                 raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
 
         strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
-        if self.policy in ["taylor", "mod_taylor"]:
+        if self.policy == "taylor":
             self.res_keys = ["res_c_lam", "res_labor", "res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
             if not strict_author:
+                self.res_keys += ["res_calvo", "res_Delta"]
+        elif self.policy == "mod_taylor":
+            self.res_keys = ["res_c_lam", "res_labor", "res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
+            if strict_author:
+                # Author dsge_taylor_para keeps Delta law and rule residual (eq_5, eq_8).
+                self.res_keys += ["res_Delta", "res_i_rule"]
+            else:
                 self.res_keys += ["res_calvo", "res_Delta"]
         elif self.policy == "discretion":
             self.res_keys = ["res_c_foc", "res_pi_foc", "res_pstar_foc", "res_Delta_foc",
@@ -512,12 +519,21 @@ class Trainer:
         if self.policy in ["taylor", "mod_taylor"]:
             lam_t = out["lam"]
             lam_tg = lam_t.view(-1, 1, 1)
+            strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
 
             if self.policy == "taylor":
-                i_t = i_taylor(self.params, out["pi"])
+                i_rule_target = i_taylor(self.params, out["pi"])
+                i_t = i_rule_target
             else:
-                assert self.rbar_by_regime is not None
-                i_t = i_modified_taylor(self.params, out["pi"], self.rbar_by_regime, st.s)
+                if strict_author:
+                    # Author dsge_taylor_para eq_8 target:
+                    # i_nom = (1+pi_bar)/beta - 1 + psi*(pi - pi_bar)
+                    i_rule_target = i_taylor(self.params, out["pi"])
+                    i_t = out.get("i_nom", i_rule_target)
+                else:
+                    assert self.rbar_by_regime is not None
+                    i_rule_target = i_modified_taylor(self.params, out["pi"], self.rbar_by_regime, st.s)
+                    i_t = i_rule_target
 
             i_tg = i_t.view(-1, 1, 1)
 
@@ -542,7 +558,19 @@ class Trainer:
             Et_XiD = Et_all[..., 1]
             Et_eul = Et_all[..., 2]
 
-            res = residuals_a1(self.params, st, out, Et_XiN, Et_XiD, Et_eul)
+            if (self.policy == "mod_taylor") and strict_author:
+                res = residuals_a1(
+                    self.params,
+                    st,
+                    out,
+                    Et_XiN,
+                    Et_XiD,
+                    Et_eul,
+                    i_t_current=i_t,
+                    i_rule_target=i_rule_target,
+                )
+            else:
+                res = residuals_a1(self.params, st, out, Et_XiN, Et_XiD, Et_eul)
             return stack_residuals(res, self.res_keys)
 
         if self.policy == "discretion":
@@ -1083,8 +1111,11 @@ def simulate_paths(
             if policy == "taylor":
                 i_t = i_taylor(params_sim, out["pi"])
             else:
-                assert rbar_by_regime is not None
-                i_t = i_modified_taylor(params_sim, out["pi"], rbar_by_regime, st.s)
+                if "i_nom" in out:
+                    i_t = out["i_nom"]
+                else:
+                    assert rbar_by_regime is not None
+                    i_t = i_modified_taylor(params_sim, out["pi"], rbar_by_regime, st.s)
         else:
             if compute_implied_i:
                 i_t = implied_nominal_rate_from_euler(params_sim, policy, x, out, int(gh_n), trainer)

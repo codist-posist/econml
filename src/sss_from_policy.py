@@ -189,6 +189,8 @@ def switching_policy_sss_by_regime_from_policy(
                 "vartheta_prev": float(x[0, 5].item()),
                 "varrho_prev": float(x[0, 6].item()),
             })
+        if policy == "mod_taylor" and ("i_nom" in out):
+            base["i_nom"] = float(out["i_nom"].item())
         return base
 
     return PolicySSS(by_regime={0: _pack_out(x0, out0), 1: _pack_out(x1, out1)})

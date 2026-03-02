@@ -12,6 +12,9 @@ def residuals_a1(
     Et_XiN_next: torch.Tensor,
     Et_XiD_next: torch.Tensor,
     Et_euler: torch.Tensor,
+    *,
+    i_t_current: torch.Tensor | None = None,
+    i_rule_target: torch.Tensor | None = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Appendix A.1 residuals (Taylor / modified Taylor block).
@@ -62,6 +65,10 @@ def residuals_a1(
         params.theta * one_plus_pi.pow(params.eps) * st.Delta_prev
         + (1.0 - params.theta) * pstar.pow(-params.eps)
     )) / (Delta.abs() + eps_denom)
+
+    # Optional policy-rule residual (author taylor_para-style eq_8 analogue).
+    if (i_t_current is not None) and (i_rule_target is not None):
+        res["res_i_rule"] = i_t_current - i_rule_target
 
     return res
 

@@ -386,11 +386,21 @@ def _load_net_from_run(run_dir: str, params: ModelParams, policy: PolicyName) ->
             # If parsing fails, fall back to dev defaults
             cfg = TrainConfig.dev()
 
+    state = load_torch(w_path, map_location=params.device)
+
     d_in, d_out = DIMS[str(policy)]
+    # Backward/forward compatibility:
+    # infer output dim from checkpoint when available (e.g. mod_taylor 8->9 migration).
+    try:
+        last_w = state.get("net.4.weight", None)
+        if isinstance(last_w, torch.Tensor) and int(last_w.ndim) == 2:
+            d_out = int(last_w.shape[0])
+    except Exception:
+        pass
+
     net = PolicyNetwork(d_in, d_out, hidden=cfg.hidden_layers, activation=cfg.activation).to(
         device=params.device, dtype=params.dtype
     )
-    state = load_torch(w_path, map_location=params.device)
     net.load_state_dict(state)
     net.eval()
     return net
@@ -557,15 +567,30 @@ def build_table2(
                 ).detach().cpu()
             )
         elif policy_key == "mod_taylor":
-            # Regime-contingent rule: i_t = rbar_s + psi*(pi_t-pi_bar), with rbar_s = natural rate in regime s.
-            i_ss = float(
-                i_modified_taylor(
-                    params,
-                    torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
-                    rbar_by_regime,
-                    torch.tensor([int(regime)], device=params.device, dtype=torch.long),
-                )[0].detach().cpu()
-            )
+            # Compatibility:
+            # - legacy mod_taylor runs (8 outputs): regime-contingent rbar rule
+            # - author-like para runs (9 outputs): Taylor-style rule eq_8 target
+            d_out = None
+            try:
+                d_out = int(getattr(nets[policy_key].net[-1], "out_features"))
+            except Exception:
+                d_out = None
+            if d_out == 9:
+                i_ss = float(
+                    i_taylor(
+                        params,
+                        torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
+                    ).detach().cpu()
+                )
+            else:
+                i_ss = float(
+                    i_modified_taylor(
+                        params,
+                        torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
+                        rbar_by_regime,
+                        torch.tensor([int(regime)], device=params.device, dtype=torch.long),
+                    )[0].detach().cpu()
+                )
         else:
             net = nets[policy_key]
             i_ss = _implied_i_at_sss(

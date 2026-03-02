@@ -402,22 +402,36 @@ def residuals_check(
             one_plus_pi = on["one_plus_pi"]
             Et_XiN = params.theta * Lambda * one_plus_pi.pow(params.eps) * on["XiN"]
             Et_XiD = params.theta * Lambda * one_plus_pi.pow(params.eps - 1.0) * on["XiD"]
-            # Euler term uses the policy rule i_t. In some runs we don't store i in `out`
-            # (it's a derived diagnostic), so compute it directly from the rule here.
-            if "i" in out:
-                i_t = out["i"]
+            # Euler term uses the nominal rate implied by policy.
+            # - taylor: closed-form rule
+            # - mod_taylor legacy runs: regime-dependent rbar rule
+            # - mod_taylor author-like runs: direct i_nom output
+            from .policy_rules import i_taylor, i_modified_taylor
+            if policy == "taylor":
+                i_t = i_taylor(params, out["pi"])
             else:
-                from .policy_rules import i_taylor, i_modified_taylor
-                if policy == "taylor":
-                    i_t = i_taylor(params, out["pi"])
+                if "i_nom" in out:
+                    i_t = out["i_nom"]
                 else:
-                    # mod_taylor needs rbar_by_regime (natural-rate steady states)
                     from .steady_states import solve_flexprice_sss, export_rbar_tensor
                     rbar_by_regime = export_rbar_tensor(params, solve_flexprice_sss(params))
                     i_t = i_modified_taylor(params, out["pi"], rbar_by_regime, st.s)
             Et_eul = params.beta * ((1.0 + i_t) / one_plus_pi) * (on["lam"] / out["lam"])
 
-            res = residuals_a1(params, st, out, Et_XiN, Et_XiD, Et_eul)
+            if policy == "mod_taylor" and "i_nom" in out:
+                i_rule_target = i_taylor(params, out["pi"])
+                res = residuals_a1(
+                    params,
+                    st,
+                    out,
+                    Et_XiN,
+                    Et_XiD,
+                    Et_eul,
+                    i_t_current=i_t,
+                    i_rule_target=i_rule_target,
+                )
+            else:
+                res = residuals_a1(params, st, out, Et_XiN, Et_XiD, Et_eul)
 
         elif policy == "discretion":
             out, Et_F, Et_G, Et_dF, Et_dG, Et_theta, Et_XiN, Et_XiD = _deterministic_terms_discretion(params, net, x, regime=r, floors=floors)
