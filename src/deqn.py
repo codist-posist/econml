@@ -636,11 +636,14 @@ class Trainer:
                 keys = self.res_keys
                 need_log = (global_step % log_every) == 0
 
-                # Discretion + CUDA + float64 can be memory-heavy.
-                # Use micro-batched residual/backward pass to keep equations/objective unchanged.
+                # CUDA memory guard: evaluate residual loss in micro-batches.
+                # Objective is unchanged (weighted chunk averaging).
                 chunk_size = int(getattr(self.cfg, "residual_chunk_size", 0) or 0)
-                if chunk_size <= 0 and self.policy == "discretion" and str(dev).startswith("cuda"):
-                    chunk_size = min(int(X.shape[0]), 1024)
+                if chunk_size <= 0 and str(dev).startswith("cuda"):
+                    if self.policy == "discretion":
+                        chunk_size = min(int(X.shape[0]), 1024)
+                    elif self.policy == "commitment":
+                        chunk_size = min(int(X.shape[0]), 512)
                 use_chunks = (0 < chunk_size < int(X.shape[0]))
 
                 resid_for_log: torch.Tensor | None = None

@@ -108,6 +108,9 @@ class TrainConfig:
 
     # ---- Optimization ----
     grad_clip: float = 1.0
+    # Optional micro-batch size for residual backpropagation.
+    # This does not change the objective, only memory/throughput behavior.
+    residual_chunk_size: int | None = None
 
     # ---- Artifacts ----
     artifacts_root: str = "../artifacts"
