@@ -100,6 +100,10 @@ class TrainConfig:
 
     # ---- Number of simulated paths per optimizer step (vectorized batch of paths) ----
     n_paths_per_step: int = 1
+    # Optional per-phase overrides for n_paths_per_step.
+    # If set, they are used for the corresponding phase; otherwise `n_paths_per_step` is used.
+    n_paths_per_step_phase1: int | None = None
+    n_paths_per_step_phase2: int | None = None
 
     # ---- Output transforms floors ----
     c_floor: float = 1e-6

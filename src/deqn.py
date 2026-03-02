@@ -531,7 +531,22 @@ class Trainer:
         dev = self.params.device
 
 
-        npps = int(n_paths_per_step) if n_paths_per_step is not None else int(getattr(self.cfg, "n_paths_per_step", 1))
+        base_npps = int(n_paths_per_step) if n_paths_per_step is not None else int(getattr(self.cfg, "n_paths_per_step", 1))
+        if base_npps < 1:
+            base_npps = 1
+
+        def _phase_npps(phase_idx: int) -> int:
+            # Explicit train(...) argument overrides config and applies to both phases.
+            if n_paths_per_step is not None:
+                return base_npps
+            if phase_idx == 1:
+                v = getattr(self.cfg, "n_paths_per_step_phase1", None)
+            else:
+                v = getattr(self.cfg, "n_paths_per_step_phase2", None)
+            if v is None:
+                return base_npps
+            vv = int(v)
+            return vv if vv >= 1 else 1
 
         t0 = time.time()
         log_every = int(getattr(self.cfg, "log_every", 50))
@@ -752,8 +767,9 @@ class Trainer:
 
 
         # init population
+        npps_p1 = _phase_npps(1)
         x = self.simulate_initial_state(
-            int(self.cfg.phase1.batch_size) * npps,
+            int(self.cfg.phase1.batch_size) * npps_p1,
             commitment_sss=commitment_sss if self.policy == "commitment" else None,
         ).to(device=dev, dtype=self.params.dtype)
 
@@ -783,11 +799,12 @@ class Trainer:
                 assert self._eps_grid is None or self._eps_grid.dtype == self.params.dtype
                 assert self._w_grid is None or self._w_grid.dtype == self.params.dtype
 
-            tag = f"phase{pidx}(gh={int(phase.gh_n_train)},B={int(phase.batch_size)})"
+            npps_phase = _phase_npps(pidx)
+            tag = f"phase{pidx}(gh={int(phase.gh_n_train)},B={int(phase.batch_size)*npps_phase})"
             lp, x = run_stage(
                 steps=int(phase.steps),
                 lr=float(phase.lr),
-                batch_size=int(phase.batch_size) * npps,
+                batch_size=int(phase.batch_size) * npps_phase,
                 x_init=x,
                 tag=tag,
                 eps_stop=getattr(phase, "eps_stop", None),
