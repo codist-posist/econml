@@ -305,38 +305,54 @@ class Trainer:
     # --------------------
     def simulate_initial_state(self, B: int, commitment_sss: Dict | None = None) -> torch.Tensor:
         dev, dt = self.params.device, self.params.dtype
+        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
 
-        # Initialize exogenous states consistent with the model's laws of motion (Appendix B).
-        # logA and logg are drift-corrected log-AR(1) processes; xi is AR(1) around zero.
-        # Draw from the implied stationary distributions to start training samples in the
-        # ergodic region (up to burn-in), avoiding off-model transients.
         rho_A, sig_A = float(self.params.rho_A), float(self.params.sigma_A)
         rho_g, sig_g = float(self.params.rho_g), float(self.params.sigma_g)
         rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
 
-        mu_logA = -(sig_A**2) / (2.0 * (1.0 - rho_A**2)) if abs(rho_A) < 1.0 else 0.0
-        mu_logg = -(sig_g**2) / (2.0 * (1.0 - rho_g**2)) if abs(rho_g) < 1.0 else 0.0
-        sd_logA = sig_A / max(1e-12, (1.0 - rho_A**2))**0.5 if abs(rho_A) < 1.0 else sig_A
-        sd_logg = sig_g / max(1e-12, (1.0 - rho_g**2))**0.5 if abs(rho_g) < 1.0 else sig_g
-        sd_xi   = sig_xi / max(1e-12, (1.0 - rho_xi**2))**0.5 if abs(rho_xi) < 1.0 else sig_xi
+        if strict_author:
+            # Public Keras Hooks.py semantics:
+            # - exogenous states centered at zero
+            # - equal regime mix 50/50 at init
+            # - small noise around disp_old_x = 1
+            sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
+            sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
+            sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
+            logA = sd_logA * torch.randn(B, device=dev, dtype=dt)
+            logg = sd_logg * torch.randn(B, device=dev, dtype=dt)
+            xi = sd_xi * torch.randn(B, device=dev, dtype=dt)
+            s = torch.where(
+                torch.rand(B, device=dev, dtype=dt) < 0.5,
+                torch.zeros(B, device=dev, dtype=torch.long),
+                torch.ones(B, device=dev, dtype=torch.long),
+            )
+            disp_std = 1e-4 if self.policy == "commitment" else 1e-3
+            Delta_prev = torch.ones(B, device=dev, dtype=dt) + disp_std * torch.randn(B, device=dev, dtype=dt)
+        else:
+            # Initialize exogenous states from stationary laws of motion.
+            mu_logA = -(sig_A**2) / (2.0 * (1.0 - rho_A**2)) if abs(rho_A) < 1.0 else 0.0
+            mu_logg = -(sig_g**2) / (2.0 * (1.0 - rho_g**2)) if abs(rho_g) < 1.0 else 0.0
+            sd_logA = sig_A / max(1e-12, (1.0 - rho_A**2))**0.5 if abs(rho_A) < 1.0 else sig_A
+            sd_logg = sig_g / max(1e-12, (1.0 - rho_g**2))**0.5 if abs(rho_g) < 1.0 else sig_g
+            sd_xi = sig_xi / max(1e-12, (1.0 - rho_xi**2))**0.5 if abs(rho_xi) < 1.0 else sig_xi
+            logA = torch.tensor(mu_logA, device=dev, dtype=dt) + sd_logA * torch.randn(B, device=dev, dtype=dt)
+            logg = torch.tensor(mu_logg, device=dev, dtype=dt) + sd_logg * torch.randn(B, device=dev, dtype=dt)
+            xi = sd_xi * torch.randn(B, device=dev, dtype=dt)
 
-        logA = torch.tensor(mu_logA, device=dev, dtype=dt) + sd_logA * torch.randn(B, device=dev, dtype=dt)
-        logg = torch.tensor(mu_logg, device=dev, dtype=dt) + sd_logg * torch.randn(B, device=dev, dtype=dt)
-        xi   = sd_xi * torch.randn(B, device=dev, dtype=dt)
-
-        # Markov regime: draw from stationary distribution unless an SSS init is provided.
-        p12, p21 = float(self.params.p12), float(self.params.p21)
-        denom = p12 + p21
-        if denom <= 0.0:
-            raise ValueError(f"Invalid Markov switching parameters: p12+p21 must be > 0. Got p12={p12}, p21={p21}.")
-        pi_bad = (p12 / denom)  # stationary prob of bad regime
-        u = torch.rand(B, device=dev, dtype=dt)
-        s = torch.where(u < (1.0 - pi_bad),
-                        torch.zeros(B, device=dev, dtype=torch.long),
-                        torch.ones(B, device=dev, dtype=torch.long))
-
-        # Backward-looking endogenous state defaults to undistorted value.
-        Delta_prev = torch.ones(B, device=dev, dtype=dt)
+            # Markov regime: draw from stationary distribution.
+            p12, p21 = float(self.params.p12), float(self.params.p21)
+            denom = p12 + p21
+            if denom <= 0.0:
+                raise ValueError(f"Invalid Markov switching parameters: p12+p21 must be > 0. Got p12={p12}, p21={p21}.")
+            pi_bad = p12 / denom
+            u = torch.rand(B, device=dev, dtype=dt)
+            s = torch.where(
+                u < (1.0 - pi_bad),
+                torch.zeros(B, device=dev, dtype=torch.long),
+                torch.ones(B, device=dev, dtype=torch.long),
+            )
+            Delta_prev = torch.ones(B, device=dev, dtype=dt)
 
         if self.policy != "commitment":
             return torch.stack([Delta_prev, logA, logg, xi, s.to(dt)], dim=-1)
@@ -344,11 +360,13 @@ class Trainer:
         # Timeless commitment: lagged Ramsey multipliers are part of the state.
         # If caller provides commitment SSS (per-regime or pooled), use it; otherwise start at 0.
         if commitment_sss is not None:
-            if isinstance(commitment_sss, dict) and 0 in commitment_sss and 1 in commitment_sss:
-                d0 = float(commitment_sss[0].get("Delta_prev", commitment_sss[0].get("Delta", 1.0)))
-                d1 = float(commitment_sss[1].get("Delta_prev", commitment_sss[1].get("Delta", 1.0)))
-                vp0 = float(commitment_sss[0]["vartheta_prev"]); vp1 = float(commitment_sss[1]["vartheta_prev"])
-                rp0 = float(commitment_sss[0]["varrho_prev"]);   rp1 = float(commitment_sss[1]["varrho_prev"])
+            c0 = commitment_sss.get(0, commitment_sss.get("0")) if isinstance(commitment_sss, dict) else None
+            c1 = commitment_sss.get(1, commitment_sss.get("1")) if isinstance(commitment_sss, dict) else None
+            if c0 is not None and c1 is not None:
+                d0 = float(c0.get("Delta_prev", c0.get("Delta", 1.0)))
+                d1 = float(c1.get("Delta_prev", c1.get("Delta", 1.0)))
+                vp0 = float(c0["vartheta_prev"]); vp1 = float(c1["vartheta_prev"])
+                rp0 = float(c0["varrho_prev"]); rp1 = float(c1["varrho_prev"])
                 Delta_prev = torch.where(
                     s == 0,
                     torch.full((B,), d0, device=dev, dtype=dt),
@@ -365,6 +383,17 @@ class Trainer:
                 Delta_prev = torch.full((B,), d, device=dev, dtype=dt)
                 vp = torch.full((B,), float(commitment_sss["vartheta_prev"]), device=dev, dtype=dt)
                 rp = torch.full((B,), float(commitment_sss["varrho_prev"]), device=dev, dtype=dt)
+        elif strict_author:
+            # Keras commitment Hooks.py constants:
+            # vartheta_old=-0.019182, rho_old=0.016500, c_old=0.921336 + Gaussian noise.
+            normal_noise = torch.randn(B, 3, device=dev, dtype=dt) * torch.tensor(
+                [0.027, 0.023, 0.052], device=dev, dtype=dt
+            )
+            vartheta_old = torch.tensor(-0.019182, device=dev, dtype=dt) + normal_noise[:, 0]
+            rho_old = torch.tensor(0.016500, device=dev, dtype=dt) + normal_noise[:, 1]
+            c_old = torch.clamp(torch.tensor(0.921336, device=dev, dtype=dt) + normal_noise[:, 2], min=1e-8)
+            vp = vartheta_old * c_old.pow(self.params.gamma)
+            rp = rho_old * c_old.pow(self.params.gamma)
         else:
             std = float(getattr(self.cfg, 'commitment_init_multiplier_std', 0.0) or 0.0)
             clip = float(getattr(self.cfg, 'commitment_init_multiplier_clip', 0.0) or 0.0)
@@ -673,7 +702,16 @@ class Trainer:
         global_step = 0
         self._commitment_sss_for_init = commitment_sss if self.policy == "commitment" else None
 
-        def run_stage(*, steps: int, lr: float, batch_size: int, x_init: torch.Tensor, tag: str, eps_stop: float | None) -> Tuple[List[float], torch.Tensor]:
+        def run_stage(
+            *,
+            steps: int,
+            lr: float,
+            batch_size: int,
+            minibatch_size: int,
+            x_init: torch.Tensor,
+            tag: str,
+            eps_stop: float | None,
+        ) -> Tuple[List[float], torch.Tensor]:
             """Train for one phase using the DEQN algorithm as described in Appendix B.
 
             At each optimizer step:
@@ -704,6 +742,7 @@ class Trainer:
             best_step = -1
             best_state: Dict[str, torch.Tensor] | None = None
             strict_eps = bool(getattr(self.cfg, "strict_eps_stop", False))
+            strict_author_mode = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
             max_steps_default = int(steps)
             max_steps_safety = getattr(self.cfg, "strict_eps_max_steps", None)
             if strict_eps and eps_stop is not None:
@@ -715,52 +754,38 @@ class Trainer:
             else:
                 max_steps = max_steps_default
             max_steps = max(1, int(max_steps))
-            hit_safety_cap = True
+            hit_safety_cap = eps_stop is not None
+            keys = self.res_keys
 
-            for _ in trange(max_steps, desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False):
-                # --- 1) Simulate a path (stop-gradient / sampling step) ---
-                with torch.no_grad():
-                    xs = []
-                    cur = x_pop
-                    for __ in range(N_path):
-                        xs.append(cur)
-                        cur = self._step_state(cur)
-                    x_pop = cur  # continue from last state next iteration
-                    X = torch.cat(xs, dim=0)  # (N_path*B, d)
-
-                # --- 2) Compute residuals on the simulated path ---
+            def _opt_step(X_step: torch.Tensor, need_log: bool) -> Tuple[float, torch.Tensor | None, torch.Tensor | None]:
                 opt.zero_grad(set_to_none=True)
-                keys = self.res_keys
-                need_log = (global_step % log_every) == 0
 
                 # CUDA memory guard: evaluate residual loss in micro-batches.
-                # Objective is unchanged (weighted chunk averaging).
                 chunk_size = int(getattr(self.cfg, "residual_chunk_size", 0) or 0)
                 if chunk_size <= 0 and str(dev).startswith("cuda"):
                     if self.policy == "discretion":
-                        chunk_size = min(int(X.shape[0]), 1024)
+                        chunk_size = min(int(X_step.shape[0]), 1024)
                     elif self.policy == "commitment" and self.params.dtype == torch.float64:
-                        chunk_size = min(int(X.shape[0]), 512)
-                use_chunks = (0 < chunk_size < int(X.shape[0]))
+                        chunk_size = min(int(X_step.shape[0]), 512)
+                use_chunks = (0 < chunk_size < int(X_step.shape[0]))
 
                 resid_for_log: torch.Tensor | None = None
                 X_for_log: torch.Tensor | None = None
                 if not use_chunks:
-                    resid = self._residuals(X)  # (N_path*B, K)
-                    loss = self._training_loss_from_states(X, resid)
+                    resid = self._residuals(X_step)
+                    loss = self._training_loss_from_states(X_step, resid)
                     lv = float(loss.detach().cpu())
-                    # --- 3) Gradient step (Adam) ---
                     loss.backward()
                     if need_log:
                         resid_for_log = resid.detach()
-                        X_for_log = X.detach()
+                        X_for_log = X_step.detach()
                 else:
-                    n_total = int(X.shape[0])
+                    n_total = int(X_step.shape[0])
                     lv = 0.0
                     resid_chunks = [] if need_log else None
                     x_chunks = [] if need_log else None
                     for j in range(0, n_total, int(chunk_size)):
-                        Xi = X[j : j + int(chunk_size)]
+                        Xi = X_step[j : j + int(chunk_size)]
                         resid_i = self._residuals(Xi)
                         loss_i = self._training_loss_from_states(Xi, resid_i)
                         w = float(Xi.shape[0]) / float(n_total)
@@ -780,26 +805,24 @@ class Trainer:
                 if self.cfg.grad_clip is not None and float(self.cfg.grad_clip) > 0:
                     torch.nn.utils.clip_grad_norm_(self.net.parameters(), float(self.cfg.grad_clip))
                 opt.step()
+                return lv, resid_for_log, X_for_log
 
+            def _after_step(lv: float, need_log: bool, resid_for_log: torch.Tensor | None, X_for_log: torch.Tensor | None) -> bool:
+                nonlocal global_step, best_loss, best_step, best_state, hit_safety_cap
                 losses.append(lv)
                 global_step += 1
 
-                # Keep the best checkpoint within this phase.
                 if lv < best_loss:
                     best_loss = lv
                     best_step = global_step
                     if bool(getattr(self.cfg, "save_best", True)):
                         best_state = {k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()}
 
-                # Optional logging to disk (unchanged; does not affect equations)
                 if need_log and (resid_for_log is not None) and (X_for_log is not None):
                     with torch.no_grad():
                         metr = residual_metrics(resid_for_log, keys, tol=1e-4)
                         metr.update(residual_metrics_by_regime(X_for_log, resid_for_log, keys, tol=1e-4, policy=self.policy))
                         metr.update({"global_step": float(global_step)})
-
-                        # Console-friendly training diagnostics (does not affect equations)
-                        # Show a compact view of residual quality while training.
                         try:
                             rms = float(metr.get("rms", float("nan")))
                             mx = float(metr.get("max", float("nan")))
@@ -810,21 +833,67 @@ class Trainer:
                             f"[{self.policy} | {tag}] step={global_step:>6d} "
                             f"loss={lv:.3e}  rms={rms:.3e}  max={mx:.3e}  share(|res|<1e-4)={share:.3f}"
                         )
-
                         if metrics_rows is not None:
                             metrics_rows.append(metr)
                             if (len(metrics_rows) % 20) == 0:
-                                save_csv(
-                                    os.path.join(run_dir, "train_metrics.csv"),
-                                    pd.DataFrame(metrics_rows),
-                                )
+                                save_csv(os.path.join(run_dir, "train_metrics.csv"), pd.DataFrame(metrics_rows))
 
-                # Paper stopping rule: stop once loss is below epsilon
                 if eps_stop is not None and lv < float(eps_stop):
                     hit_safety_cap = False
-                    break
+                    return True
                 if eps_stop is None:
                     hit_safety_cap = False
+                return False
+
+            if strict_author_mode:
+                # Author-like training loop: simulate one episode, shuffle states, optimize in minibatches.
+                mb = max(1, int(minibatch_size))
+                pbar = trange(max_steps, desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False)
+                try:
+                    while global_step < max_steps:
+                        with torch.no_grad():
+                            xs = []
+                            cur = x_pop
+                            for __ in range(N_path):
+                                xs.append(cur)
+                                cur = self._step_state(cur)
+                            x_pop = cur
+                            X = torch.cat(xs, dim=0)
+                            perm = torch.randperm(int(X.shape[0]), device=X.device)
+                            X = X.index_select(0, perm)
+
+                        stop_now = False
+                        for j in range(0, int(X.shape[0]), mb):
+                            if global_step >= max_steps:
+                                break
+                            Xi = X[j : j + mb]
+                            need_log = (global_step % log_every) == 0
+                            lv, resid_for_log, X_for_log = _opt_step(Xi, need_log)
+                            stop_now = _after_step(lv, need_log, resid_for_log, X_for_log)
+                            pbar.update(1)
+                            if stop_now:
+                                break
+                        if stop_now:
+                            break
+                finally:
+                    pbar.close()
+            else:
+                for _ in trange(max_steps, desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False):
+                    # --- 1) Simulate a path (stop-gradient / sampling step) ---
+                    with torch.no_grad():
+                        xs = []
+                        cur = x_pop
+                        for __ in range(N_path):
+                            xs.append(cur)
+                            cur = self._step_state(cur)
+                        x_pop = cur  # continue from last state next iteration
+                        X = torch.cat(xs, dim=0)  # (N_path*B, d)
+
+                    need_log = (global_step % log_every) == 0
+                    lv, resid_for_log, X_for_log = _opt_step(X, need_log)
+                    stop_now = _after_step(lv, need_log, resid_for_log, X_for_log)
+                    if stop_now:
+                        break
 
             # Restore best phase checkpoint so end-of-phase weights are not degraded by late noise.
             if bool(getattr(self.cfg, "save_best", True)) and best_state is not None:
@@ -887,6 +956,7 @@ class Trainer:
                 steps=int(phase.steps),
                 lr=float(phase.lr),
                 batch_size=int(phase.batch_size) * npps_phase,
+                minibatch_size=int(phase.batch_size),
                 x_init=x,
                 tag=tag,
                 eps_stop=getattr(phase, "eps_stop", None),

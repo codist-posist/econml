@@ -276,14 +276,14 @@ class TrainConfig:
         """
         Author-like compute preset (closest to public Keras code semantics):
         - strict_author training mode
-        - single phase by default (episode-style training analog)
-        - GH=3, Adam lr=1e-5, minibatch-like batch=128, path length=10
+        - single phase by default (episode+minibatch training analog)
+        - GH=3, Adam lr=1e-5, minibatch size=128, episode length=10
         - no hard eps-stop (monitor loss / checkpoints)
         """
         base = TrainConfig(
             mode="author",
             training_mode="strict_author",
-            hidden_layers=(512, 512),
+            hidden_layers=(128, 128),
             activation="selu",
             use_two_phase=False,
             strict_eps_stop=False,
