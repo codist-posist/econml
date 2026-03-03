@@ -1,0 +1,63 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+import torch
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from src.paper_tables import build_table1_calibration, build_paper_tables_2_4
+from src.config import ModelParams
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Build paper-style Table 1/2/3/4 from current artifacts.")
+    ap.add_argument("--artifacts_root", default=os.path.join(ROOT, "artifacts"))
+    ap.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
+    ap.add_argument(
+        "--sss_source",
+        default="sim_conditional",
+        choices=["fixed_point", "sim_conditional"],
+        help="Source for SSS values.",
+    )
+    ap.add_argument(
+        "--use_selected",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prefer selected runs over latest runs.",
+    )
+    args = ap.parse_args()
+
+    os.makedirs(args.artifacts_root, exist_ok=True)
+
+    p = ModelParams(device=args.device, dtype=torch.float64).to_torch()
+    table1 = build_table1_calibration(p)
+    table1_path = os.path.join(args.artifacts_root, "table1_calibration.csv")
+    table1.to_csv(table1_path, index=False)
+    print("Saved:", table1_path)
+
+    tables = build_paper_tables_2_4(
+        args.artifacts_root,
+        device=args.device,
+        dtype=torch.float64,
+        use_selected=bool(args.use_selected),
+        sss_source=args.sss_source,
+    )
+
+    for key, df in tables.items():
+        out = os.path.join(args.artifacts_root, f"{key}_{args.sss_source}.csv")
+        df.to_csv(out, index=False)
+        print(f"\n{key.upper()}")
+        print(df.to_string(index=False))
+        print("Saved:", out)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

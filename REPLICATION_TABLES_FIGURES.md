@@ -1,0 +1,34 @@
+# Tables And Figures Coverage (SSRN 5005047)
+
+This repository keeps legacy notebooks and adds a paper-aligned layer.
+
+## Tables
+
+- Table 1: [101_paper_tables_1_4.ipynb](/c:/Users/User/Desktop/econml/notebooks/101_paper_tables_1_4.ipynb) (`table1_calibration.csv`)
+- Table 2: [101_paper_tables_1_4.ipynb](/c:/Users/User/Desktop/econml/notebooks/101_paper_tables_1_4.ipynb) (`table2_sim_conditional.csv` / `table2_fixed_point.csv`)
+- Table 3: [101_paper_tables_1_4.ipynb](/c:/Users/User/Desktop/econml/notebooks/101_paper_tables_1_4.ipynb) (`table3_sim_conditional.csv` / `table3_fixed_point.csv`)
+- Table 4: [101_paper_tables_1_4.ipynb](/c:/Users/User/Desktop/econml/notebooks/101_paper_tables_1_4.ipynb) (`table4_sim_conditional.csv` / `table4_fixed_point.csv`)
+
+## Figures
+
+- Figure 2: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 3: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 4: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 5: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 6: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 7: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 8: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 9: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 10: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 11: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 12: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 13: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Figure 14: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+
+## Notes
+
+- Existing notebooks (`91/92/93/94/96/99/100`) are preserved.
+- Paper table construction now supports two SSS sources:
+  - `sim_conditional` (author-style long-simulation conditional means),
+  - `fixed_point` (policy fixed-point regime values).
+- If ZLB runs are not available yet, Table 4 is generated with `NaN` placeholders and a warning.
