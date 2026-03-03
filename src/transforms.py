@@ -193,7 +193,7 @@ def decode_outputs(
         out["i_nom"] = i_ss + i_nom_raw
 
         # Equations.eq_8 target with optional interest-rate smoothing term.
-        i_old = torch.zeros_like(out["i_nom"])
+        i_old = st.i_old if st.i_old is not None else torch.zeros_like(out["i_nom"])
         out["i_rule_target"] = (
             params.rho_i * i_old
             + (1.0 - params.rho_i) * i_taylor(params, out["pi"])

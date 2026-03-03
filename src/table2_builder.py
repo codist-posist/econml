@@ -27,7 +27,7 @@ WeightLoadMode = Literal["auto", "canonical", "best", "last"]
 # Network dimensions used across notebooks/training
 DIMS: Dict[str, Tuple[int, int]] = {
     "taylor": (5, 4),
-    "taylor_para": (5, 5),
+    "taylor_para": (7, 5),
     "mod_taylor": (5, 4),
     "discretion": (5, 5),
     "commitment": (8, 5),
@@ -761,6 +761,20 @@ def _implied_i_at_sss(
         if int(commit_d_in or 8) >= 8:
             xvals.append(sss.get("c_prev", sss.get("c", 1.0)))
         x = torch.tensor(xvals, device=dev, dtype=dt).view(1, -1)
+    elif policy == "taylor_para":
+        x = torch.tensor(
+            [
+                sss["Delta_prev"],
+                sss["logA"],
+                sss["loggtilde"],
+                sss["xi"],
+                float(regime),
+                sss.get("i_old", sss.get("i_nom", 0.0)),
+                sss.get("p21", params.p21),
+            ],
+            device=dev,
+            dtype=dt,
+        ).view(1, -1)
     else:
         x = torch.tensor([sss["Delta_prev"], sss["logA"], sss["loggtilde"], sss["xi"], float(regime)], device=dev, dtype=dt).view(1, -1)
 
@@ -804,7 +818,7 @@ def build_table0(
     include_para: bool = False,
     include_zlb: bool = False,
     sss_source: str = "deterministic_no_innovation",
-    strict_author_table2: bool = False,
+    strict_author_table2: bool = True,
 ) -> pd.DataFrame:
     """
     Build a base summary table (`table0`) after trainings.
@@ -1213,7 +1227,7 @@ def build_table2(
     include_para: bool = False,
     include_zlb: bool = False,
     sss_source: str = "sim_conditional",
-    strict_author_table2: bool = False,
+    strict_author_table2: bool = True,
 ) -> pd.DataFrame:
     """
     Backward-compatible alias.

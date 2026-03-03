@@ -52,6 +52,8 @@ def _params_with_net_dtype(params: ModelParams, net: torch.nn.Module) -> ModelPa
         bad_state=params.bad_state,
         p12=params.p12,
         p21=params.p21,
+        p21_l=params.p21_l,
+        p21_u=params.p21_u,
         pi_bar=params.pi_bar,
         psi=params.psi,
         rho_i=params.rho_i,
@@ -124,6 +126,21 @@ def _state_from_policy_sss(
             dtype=dt,
         ).view(1, -1)
 
+    if policy == "taylor_para":
+        return torch.tensor(
+            [
+                float(sss.get("Delta_prev", sss["Delta"])),
+                float(sss["logA"]),
+                float(sss["loggtilde"]),
+                float(sss["xi"]),
+                s,
+                float(sss.get("i_old", sss.get("i_nom", 0.0))),
+                float(sss.get("p21", params.p21)),
+            ],
+            device=dev,
+            dtype=dt,
+        ).view(1, -1)
+
     return torch.tensor(
         [
             float(sss.get("Delta_prev", sss["Delta"])),
@@ -176,6 +193,21 @@ def _deterministic_next_state(
                 out["c"].view(-1),
                 out["i_nom"].view(-1),
                 out["varphi"].view(-1),
+            ],
+            dim=-1,
+        )
+
+    if policy == "taylor_para":
+        p21_prev = st.p21 if st.p21 is not None else torch.full_like(out["Delta"].view(-1), float(params.p21))
+        return torch.stack(
+            [
+                out["Delta"],
+                logA_n.view(-1),
+                logg_n.view(-1),
+                xi_n.view(-1),
+                s_n.to(dt),
+                out["i_nom"].view(-1),
+                p21_prev.view(-1),
             ],
             dim=-1,
         )

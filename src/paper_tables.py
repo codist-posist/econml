@@ -84,7 +84,7 @@ def build_paper_tables_2_4(
     strict_selected: bool = False,
     weights_source: str = "auto",
     sss_source: str = "sim_conditional",
-    strict_author_table2: bool = False,
+    strict_author_table2: bool = True,
 ) -> Dict[str, pd.DataFrame]:
     """
     Build paper-style Table 2/3/4 using the common table builder and reshape to article layout.
@@ -184,7 +184,7 @@ def build_taylor_para_robustness_table(
     strict_selected: bool = False,
     weights_source: str = "auto",
     sss_source: str = "sim_conditional",
-    strict_author_table2: bool = False,
+    strict_author_table2: bool = True,
 ) -> pd.DataFrame:
     """
     Robustness-only table: compare Taylor variants, including taylor_para

@@ -126,6 +126,11 @@ def switching_policy_sss_by_regime_from_policy(
     if policy == "commitment_zlb":
         x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0, 0.0, 0.0, 1.0, 0.002461, -0.000012], device=dev, dtype=dt).view(1, -1)
         x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0, 0.0, 0.0, 1.0, 0.002461, -0.000012], device=dev, dtype=dt).view(1, -1)
+    elif policy == "taylor_para":
+        i_nom_ss = (1.0 + float(params.pi_bar)) / float(params.beta) - 1.0
+        p21_mid = 0.5 * (float(getattr(params, "p21_l", params.p21)) + float(getattr(params, "p21_u", params.p21)))
+        x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0, i_nom_ss, p21_mid], device=dev, dtype=dt).view(1, -1)
+        x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0, i_nom_ss, p21_mid], device=dev, dtype=dt).view(1, -1)
     elif policy == "commitment":
         d_in = _infer_policy_input_dim(net) or 7
         if d_in >= 8:
@@ -251,6 +256,23 @@ def switching_policy_sss_by_regime_from_policy(
         else:
             x0_next = torch.tensor([float(DeltaPrev0.item()), logA0, logg0, xi0, 0.0], device=dev, dtype=dt).view(1, -1)
             x1_next = torch.tensor([float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0], device=dev, dtype=dt).view(1, -1)
+            if policy == "taylor_para":
+                i0 = out0["i_nom"].view(())
+                i1 = out1["i_nom"].view(())
+                iPrev0 = (wprev0[0] * i0 + wprev0[1] * i1).view(())
+                iPrev1 = (wprev1[0] * i0 + wprev1[1] * i1).view(())
+                p21_0 = float(x0[0, 6].item()) if int(x0.shape[-1]) >= 7 else float(params.p21)
+                p21_1 = float(x1[0, 6].item()) if int(x1.shape[-1]) >= 7 else float(params.p21)
+                x0_next = torch.tensor(
+                    [float(DeltaPrev0.item()), logA0, logg0, xi0, 0.0, float(iPrev0.item()), p21_0],
+                    device=dev,
+                    dtype=dt,
+                ).view(1, -1)
+                x1_next = torch.tensor(
+                    [float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0, float(iPrev1.item()), p21_1],
+                    device=dev,
+                    dtype=dt,
+                ).view(1, -1)
 
         diff = max(float((x0_next - x0).abs().max().item()), float((x1_next - x1).abs().max().item()))
         x0 = (1.0 - damping) * x0 + damping * x0_next
@@ -314,6 +336,9 @@ def switching_policy_sss_by_regime_from_policy(
             base["varphi_prev"] = float(x[0, 9].item())
         if policy in ("taylor_para", "mod_taylor", "mod_taylor_zlb") and ("i_nom" in out):
             base["i_nom"] = float(out["i_nom"].item())
+        if policy == "taylor_para" and int(x.shape[-1]) >= 7:
+            base["i_old"] = float(x[0, 5].item())
+            base["p21"] = float(x[0, 6].item())
         return base
 
     return PolicySSS(by_regime={0: _pack_out(x0, out0), 1: _pack_out(x1, out1)})

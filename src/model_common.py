@@ -10,9 +10,12 @@ class State:
     """
     STATE ORDER CONTRACT (must be consistent project-wide):
 
-    For policies: "taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb",
+    For policies: "taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb",
                   "discretion", "discretion_zlb"
         x = [Delta_prev, logA, loggtilde, xi, s]            (dim=5)
+
+    For policy: "taylor_para"
+        x = [Delta_prev, logA, loggtilde, xi, s, i_old, p21] (dim=7)
 
     For policy: "commitment"
         x = [Delta_prev, logA, loggtilde, xi, s, vartheta_prev, varrho_prev] (dim=7)
@@ -29,6 +32,8 @@ class State:
     loggtilde: torch.Tensor
     xi: torch.Tensor
     s: torch.Tensor
+    i_old: torch.Tensor | None = None
+    p21: torch.Tensor | None = None
     vartheta_prev: torch.Tensor | None = None
     varrho_prev: torch.Tensor | None = None
     c_prev: torch.Tensor | None = None
@@ -37,7 +42,7 @@ class State:
 
 
 def unpack_state(x: torch.Tensor, policy: str) -> State:
-    if policy in ["taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"]:
+    if policy in ["taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"]:
         if x.shape[-1] != 5:
             raise AssertionError(f"Expected state dim 5 for policy={policy}, got {x.shape[-1]}")
         return State(
@@ -46,6 +51,18 @@ def unpack_state(x: torch.Tensor, policy: str) -> State:
             loggtilde=x[..., 2],
             xi=x[..., 3],
             s=x[..., 4].long(),
+        )
+    if policy == "taylor_para":
+        if x.shape[-1] not in (5, 7):
+            raise AssertionError(f"Expected state dim 5 or 7 for policy=taylor_para, got {x.shape[-1]}")
+        return State(
+            Delta_prev=x[..., 0],
+            logA=x[..., 1],
+            loggtilde=x[..., 2],
+            xi=x[..., 3],
+            s=x[..., 4].long(),
+            i_old=x[..., 5] if x.shape[-1] >= 6 else None,
+            p21=x[..., 6] if x.shape[-1] >= 7 else None,
         )
     if policy == "commitment":
         if x.shape[-1] not in (7, 8):

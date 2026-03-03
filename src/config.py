@@ -52,6 +52,9 @@ class ModelParams:
     # Markov transition probabilities (normal->bad, bad->normal)
     p12: float = 1.0 / 48.0
     p21: float = 1.0 / 24.0
+    # Author taylor_para uses per-path p21 sampled in [p21_l, p21_u].
+    p21_l: float = 1.0 / 60.0
+    p21_u: float = 1.0
 
     # Taylor-rule objects (paper uses pi_bar = 0)
     pi_bar: float = 0.0
@@ -162,6 +165,14 @@ class TrainConfig:
     author_lr_warmup_episodes: int = 0
     # Author Main.py-style shuffle (limited buffer) in episode loop.
     author_limited_shuffle: bool = True
+    # Author Variables.py N_sim_batch (can differ from minibatch size).
+    author_n_sim_batch: int | None = None
+    # Author Main.py initialize_each_episode + Hooks.post_init().
+    author_initialize_each_episode: bool = True
+    # Optional safety cap for author loop. None => no hard cap.
+    author_step_cap: int | None = None
+    # Optional author-code override used in dsge_zlb_commitment Variables.py.
+    author_commitment_zlb_p12: float | None = None
     # Stabilization trick in author Taylor dynamics: keep some batches at zero shocks.
     author_n_steady_state_batches: int = 50
     author_n_steady_state_min_batch: int = 500
@@ -322,11 +333,13 @@ class TrainConfig:
         # New paper (SSRN 5005047) states a unified architecture:
         # two hidden layers with 512 neurons each (SELU).
         _ = policy
-        if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+        if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "taylor_para"):
             # Author dsge_taylor uses a smaller 128x128 network.
             hidden = (128, 128)
+            sim_batch = 512
         else:
             hidden = (512, 512)
+            sim_batch = 1024
 
         base = TrainConfig(
             mode="author",
@@ -342,6 +355,8 @@ class TrainConfig:
             use_two_phase=False,
             strict_eps_stop=False,
             strict_eps_max_steps=None,
+            author_step_cap=None,
+            author_commitment_zlb_p12=(1.0 / 28.0) if policy == "commitment_zlb" else None,
             n_path=10,
             n_paths_per_step=1,
             grad_clip_mode="value",
@@ -350,6 +365,8 @@ class TrainConfig:
             author_lr_min=1e-7,
             author_lr_warmup_episodes=0,
             author_limited_shuffle=True,
+            author_n_sim_batch=sim_batch,
+            author_initialize_each_episode=True,
             author_n_steady_state_batches=50,
             author_n_steady_state_min_batch=500,
             log_every=100,

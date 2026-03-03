@@ -73,6 +73,11 @@ def _deterministic_step(
             [out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"], out["c"], out["i_nom"], out["varphi"]],
             dim=-1,
         )
+    if policy == "taylor_para":
+        if st.p21 is None and int(x.shape[-1]) < 7:
+            return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
+        p21_prev = st.p21 if st.p21 is not None else torch.full_like(out["Delta"], float(params.p21))
+        return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["i_nom"], p21_prev], dim=-1)
 
     return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
 
@@ -177,7 +182,7 @@ def calibrate_xi_jump_to_match_pi_impact(
             rho_A=p.rho_A, rho_tau=float(rho_tau_override), rho_g=p.rho_g,
             sigma_A=p.sigma_A, sigma_tau=p.sigma_tau, sigma_g=p.sigma_g,
             g_bar=p.g_bar, eta_bar=p.eta_bar, bad_state=p.bad_state,
-            p12=p.p12, p21=p.p21,
+            p12=p.p12, p21=p.p21, p21_l=p.p21_l, p21_u=p.p21_u,
             pi_bar=p.pi_bar, psi=p.psi, rho_i=p.rho_i,
             device=p.device, dtype=p.dtype
         ).to_torch()

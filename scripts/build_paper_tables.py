@@ -53,7 +53,7 @@ def main() -> int:
     ap.add_argument(
         "--strict_author_table2",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="Require author NT/SS simulation files for sim_conditional mode (no fallback).",
     )
     ap.add_argument(

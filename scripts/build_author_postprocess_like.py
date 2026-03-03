@@ -15,8 +15,9 @@ if ROOT not in sys.path:
 
 from src.config import ModelParams
 from src.table2_builder import _load_net_from_run, _load_run_dir
-from src.deqn import Trainer, simulate_paths
+from src.deqn import Trainer, implied_nominal_rate_from_euler
 from src.config import TrainConfig
+from src.model_common import unpack_state, identities
 
 
 def _cons_flex_from_A(params: ModelParams, A: np.ndarray) -> np.ndarray:
@@ -96,10 +97,8 @@ def _export_for_policy(
     cfg_sim = TrainConfig.author_like(policy=policy)  # type: ignore[arg-type]
     trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net)
 
-    # Single shared start state (author post_process also starts from a single state replicated across branches).
+    # Author post_process semantics: one vectorized simulation with 5 branches.
     x0 = trainer.simulate_initial_state(1, commitment_sss=None)
-    # Fast compatibility check: old runs with legacy output dimensions are not decodable
-    # under strict author-style transforms used by current code.
     try:
         _ = trainer._policy_outputs(x0)
     except Exception as e:
@@ -108,86 +107,62 @@ def _export_for_policy(
             "Use an author-compatible run (or retrain this policy), then re-run this script."
         ) from e
 
-    full = simulate_paths(
-        params,
-        policy,  # type: ignore[arg-type]
-        net,
-        T=T,
-        burn_in=0,
-        x0=x0,
-        compute_implied_i=True,
-        gh_n=3,
-        thin=1,
-        show_progress=False,
-        store_states=True,
-    )
-    nt = simulate_paths(
-        params,
-        policy,  # type: ignore[arg-type]
-        net,
-        T=T,
-        burn_in=0,
-        x0=x0.clone(),
-        compute_implied_i=True,
-        gh_n=3,
-        thin=1,
-        show_progress=False,
-        store_states=True,
-        force_regime=0,
-    )
-    ss = simulate_paths(
-        params,
-        policy,  # type: ignore[arg-type]
-        net,
-        T=T,
-        burn_in=0,
-        x0=x0.clone(),
-        compute_implied_i=True,
-        gh_n=3,
-        thin=1,
-        show_progress=False,
-        store_states=True,
-        force_regime=1,
-    )
-    ss_only = simulate_paths(
-        params,
-        policy,  # type: ignore[arg-type]
-        net,
-        T=T,
-        burn_in=0,
-        x0=x0.clone(),
-        compute_implied_i=True,
-        gh_n=3,
-        thin=1,
-        show_progress=False,
-        store_states=True,
-        force_logA=0.0,
-        force_loggtilde=0.0,
-    )
-    xi_only = simulate_paths(
-        params,
-        policy,  # type: ignore[arg-type]
-        net,
-        T=T,
-        burn_in=0,
-        x0=x0.clone(),
-        compute_implied_i=True,
-        gh_n=3,
-        thin=1,
-        show_progress=False,
-        store_states=True,
-        force_regime=1,
-        force_logA=0.0,
-        force_loggtilde=0.0,
-    )
+    names = ["full", "NT", "SS", "ss_only", "xi_only"]
+    explicit_i = {"taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb"}
+    keys = ["c", "pi", "pstar", "Delta", "y", "h", "g", "A", "tau", "s", "i", "xi"]
+    sims: Dict[str, Dict[str, np.ndarray]] = {
+        nm: {k: np.zeros((int(T), 1), dtype=np.float64) for k in keys} for nm in names
+    }
+
+    x = x0.repeat(5, 1)
+    for t in range(int(T)):
+        out = trainer._policy_outputs(x)
+        st = unpack_state(x, policy)
+        ids = identities(params, st, out)
+
+        if policy in explicit_i:
+            i_now = out["i_nom"]
+        else:
+            i_now = implied_nominal_rate_from_euler(params, policy, x, out, 3, trainer)
+
+        for b, nm in enumerate(names):
+            sims[nm]["c"][t, 0] = float(out["c"][b].detach().cpu())
+            sims[nm]["pi"][t, 0] = float(out["pi"][b].detach().cpu())
+            sims[nm]["pstar"][t, 0] = float(out["pstar"][b].detach().cpu())
+            sims[nm]["Delta"][t, 0] = float(out["Delta"][b].detach().cpu())
+            sims[nm]["y"][t, 0] = float(ids["y"][b].detach().cpu())
+            sims[nm]["h"][t, 0] = float(ids["h"][b].detach().cpu())
+            sims[nm]["g"][t, 0] = float(ids["g"][b].detach().cpu())
+            sims[nm]["A"][t, 0] = float(ids["A"][b].detach().cpu())
+            sims[nm]["tau"][t, 0] = float((ids["one_plus_tau"][b] - 1.0).detach().cpu())
+            sims[nm]["s"][t, 0] = int(st.s[b].detach().cpu())
+            sims[nm]["i"][t, 0] = float(i_now[b].detach().cpu())
+            sims[nm]["xi"][t, 0] = float(st.xi[b].detach().cpu())
+
+        # One shared episode step, then branch transformations as in author post_process.py
+        x = trainer._step_state(x)
+        # regime_x: [full, 0, 1, keep, 1]
+        x[1, 4] = 0.0
+        x[2, 4] = 1.0
+        x[4, 4] = 1.0
+        # log_a_x for ss_only/xi_only -> 0
+        x[3, 1] = 0.0
+        x[4, 1] = 0.0
+        # log_xi_x: ss_only -> 0, xi_only <- previous ss_only xi
+        xi_ss_only_prev = x[3, 3].clone()
+        x[3, 3] = 0.0
+        x[4, 3] = xi_ss_only_prev
+        # log_g_x for ss_only/xi_only -> 0
+        x[3, 2] = 0.0
+        x[4, 2] = 0.0
 
     out_dir = os.path.join(run_dir, "author_postprocess")
     os.makedirs(out_dir, exist_ok=True)
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions.npz"), **_to_author_defs(full, params))
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_NT.npz"), **_to_author_defs(nt, params))
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_SS.npz"), **_to_author_defs(ss, params))
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_ss_only.npz"), **_to_author_defs(ss_only, params))
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_xi_only.npz"), **_to_author_defs(xi_only, params))
+    np.savez_compressed(os.path.join(out_dir, "simulated_definitions.npz"), **_to_author_defs(sims["full"], params))
+    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_NT.npz"), **_to_author_defs(sims["NT"], params))
+    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_SS.npz"), **_to_author_defs(sims["SS"], params))
+    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_ss_only.npz"), **_to_author_defs(sims["ss_only"], params))
+    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_xi_only.npz"), **_to_author_defs(sims["xi_only"], params))
     return out_dir
 
 
@@ -197,7 +172,17 @@ def main() -> int:
     ap.add_argument(
         "--policies",
         nargs="+",
-        default=["taylor", "mod_taylor", "discretion", "commitment", "taylor_para"],
+        default=[
+            "taylor",
+            "mod_taylor",
+            "discretion",
+            "commitment",
+            "taylor_zlb",
+            "mod_taylor_zlb",
+            "discretion_zlb",
+            "commitment_zlb",
+            "taylor_para",
+        ],
         help="Policies to export.",
     )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

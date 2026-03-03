@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Tuple, Optional
 import time
 import os
@@ -152,6 +152,17 @@ def _transition_probs_to_next(params: ModelParams, st) -> Tuple[torch.Tensor, to
     Return transition probabilities (to regime 0, to regime 1) as vectors of shape (B,).
     """
     p0 = params.P[st.s, 0]
+    # Author dsge_taylor_para keeps p21 as a state component (path-specific bad->normal prob).
+    p21_state = getattr(st, "p21", None)
+    if p21_state is not None:
+        p21_clamped = torch.clamp(
+            p21_state.to(device=p0.device, dtype=p0.dtype),
+            min=1e-8,
+            max=1.0 - 1e-8,
+        )
+        p0_bad = p21_clamped
+        p0_good = torch.full_like(p0_bad, 1.0 - float(params.p12))
+        p0 = torch.where(st.s == 0, p0_good, p0_bad)
     p1 = 1.0 - p0
     return p0, p1
 
@@ -243,6 +254,15 @@ def implied_nominal_rate_from_euler(
                 [Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vartheta_cur, varrho_cur, c_prev_cur, i_nom_cur, varphi_cur],
                 dim=-1,
             )
+        if policy == "taylor_para":
+            if not bool(getattr(trainer, "_taylor_para_has_extended_state", False)):
+                return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype)], dim=-1)
+            i_old_cur = out_t["i_nom"].view(-1, 1, 1).expand_as(logA_n)
+            if st.p21 is not None:
+                p21_cur = st.p21.view(-1, 1, 1).expand_as(logA_n)
+            else:
+                p21_cur = torch.full_like(logA_n, float(params.p21))
+            return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), i_old_cur, p21_cur], dim=-1)
         return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype)], dim=-1)
 
     def f_term(epsA, epsg, epst, s_next):
@@ -297,6 +317,13 @@ class Trainer:
                     pass
 
         self.params = self.params.to_torch()
+        p12_override = getattr(self.cfg, "author_commitment_zlb_p12", None)
+        if (
+            self.policy == "commitment_zlb"
+            and str(getattr(self.cfg, "training_mode", "author")).strip().lower() == "author"
+            and p12_override is not None
+        ):
+            self.params = replace(self.params, p12=float(p12_override)).to_torch()
         set_seeds(self.cfg.seed)
 
         # Keep model tensors on the same device/dtype as params to avoid
@@ -308,6 +335,7 @@ class Trainer:
         # Detect optional state extensions expected by the current network.
         self._commitment_has_c_prev = False
         self._commitment_zlb_has_full_state = False
+        self._taylor_para_has_extended_state = False
         if self.policy == "commitment":
             try:
                 self._commitment_has_c_prev = int(self.net.net[0].in_features) >= 8
@@ -318,6 +346,11 @@ class Trainer:
                 self._commitment_zlb_has_full_state = int(self.net.net[0].in_features) >= 10
             except Exception:
                 self._commitment_zlb_has_full_state = False
+        if self.policy == "taylor_para":
+            try:
+                self._taylor_para_has_extended_state = int(self.net.net[0].in_features) >= 7
+            except Exception:
+                self._taylor_para_has_extended_state = False
 
         if self.policy in ("mod_taylor", "mod_taylor_zlb"):
             if self.rbar_by_regime is None:
@@ -379,6 +412,17 @@ class Trainer:
             torch.zeros(B, device=dev, dtype=torch.long),
             torch.ones(B, device=dev, dtype=torch.long),
         )
+        if self.policy == "taylor_para":
+            Delta_prev = torch.ones(B, device=dev, dtype=dt) + 2e-3 * torch.randn(B, device=dev, dtype=dt)
+            i_nom_ss = (1.0 + float(self.params.pi_bar)) / float(self.params.beta) - 1.0
+            i_old = torch.tensor(i_nom_ss, device=dev, dtype=dt) + 8e-3 * torch.randn(B, device=dev, dtype=dt)
+            p21_l = float(getattr(self.params, "p21_l", self.params.p21))
+            p21_u = float(getattr(self.params, "p21_u", self.params.p21))
+            p21 = torch.empty(B, device=dev, dtype=dt).uniform_(p21_l, p21_u)
+            if bool(getattr(self, "_taylor_para_has_extended_state", False)):
+                return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), i_old, p21], dim=-1)
+            return torch.stack([Delta_prev, logA, logg, xi, s.to(dt)], dim=-1)
+
         disp_std = 1e-4 if self.policy in ("commitment", "commitment_zlb") else 1e-3
         Delta_prev = torch.ones(B, device=dev, dtype=dt) + disp_std * torch.randn(B, device=dev, dtype=dt)
 
@@ -419,6 +463,84 @@ class Trainer:
             [Delta_prev, logA, logg, xi, s.to(dt), vartheta_old, rho_old, c_old, i_nom_old, varphi_old],
             dim=-1,
         )
+
+    def _author_post_init_state(self, x: torch.Tensor, episode_idx: int) -> torch.Tensor:
+        """
+        Approximate author Hooks.post_init() behavior after each episode.
+        """
+        dev, dt = self.params.device, self.params.dtype
+        B = int(x.shape[0])
+        x_new = x.clone()
+
+        rho_A, sig_A = float(self.params.rho_A), float(self.params.sigma_A)
+        rho_g, sig_g = float(self.params.rho_g), float(self.params.sigma_g)
+        rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
+        sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
+        sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
+        sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
+
+        def _reset_exogenous_if_needed() -> None:
+            if int(episode_idx) >= 2:
+                return
+            x_new[:, 1] = sd_logA * torch.randn(B, device=dev, dtype=dt)
+            x_new[:, 2] = sd_logg * torch.randn(B, device=dev, dtype=dt)
+            x_new[:, 3] = sd_xi * torch.randn(B, device=dev, dtype=dt)
+            s = torch.where(
+                torch.rand(B, device=dev, dtype=dt) < 0.5,
+                torch.zeros(B, device=dev, dtype=torch.long),
+                torch.ones(B, device=dev, dtype=torch.long),
+            )
+            x_new[:, 4] = s.to(dt)
+
+        if self.policy == "taylor_para":
+            # Always refresh p21_x in author hooks.
+            p21_l = float(getattr(self.params, "p21_l", self.params.p21))
+            p21_u = float(getattr(self.params, "p21_u", self.params.p21))
+            if x_new.shape[1] >= 7:
+                x_new[:, 6] = torch.empty(B, device=dev, dtype=dt).uniform_(p21_l, p21_u)
+            if int(episode_idx) < 2:
+                x_new[:, 0] = 1.0 + 2e-3 * torch.randn(B, device=dev, dtype=dt)
+                i_nom_ss = (1.0 + float(self.params.pi_bar)) / float(self.params.beta) - 1.0
+                if x_new.shape[1] >= 6:
+                    x_new[:, 5] = torch.tensor(i_nom_ss, device=dev, dtype=dt) + 8e-3 * torch.randn(B, device=dev, dtype=dt)
+            _reset_exogenous_if_needed()
+            return x_new
+
+        if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"):
+            if int(episode_idx) < 2:
+                x_new[:, 0] = 1.0 + 1e-3 * torch.randn(B, device=dev, dtype=dt)
+            _reset_exogenous_if_needed()
+            return x_new
+
+        if self.policy == "commitment":
+            noise = torch.randn(B, 4, device=dev, dtype=dt) * torch.tensor(
+                [0.027, 0.023, 0.052, 0.0001], device=dev, dtype=dt
+            )
+            x_new[:, 5] = torch.tensor(-0.019182, device=dev, dtype=dt) + noise[:, 0]
+            x_new[:, 6] = torch.tensor(0.016500, device=dev, dtype=dt) + noise[:, 1]
+            if x_new.shape[1] >= 8:
+                x_new[:, 7] = torch.clamp(torch.tensor(0.921336, device=dev, dtype=dt) + noise[:, 2], min=1e-8)
+            x_new[:, 0] = 1.0 + noise[:, 3]
+            _reset_exogenous_if_needed()
+            return x_new
+
+        if self.policy == "commitment_zlb":
+            noise = torch.randn(B, 6, device=dev, dtype=dt) * torch.tensor(
+                [0.027, 0.023, 0.052, 0.0001, 0.001, 0.001], device=dev, dtype=dt
+            )
+            x_new[:, 5] = torch.tensor(-0.019182, device=dev, dtype=dt) + noise[:, 0]
+            x_new[:, 6] = torch.tensor(0.016500, device=dev, dtype=dt) + noise[:, 1]
+            x_new[:, 7] = torch.clamp(torch.tensor(0.921336, device=dev, dtype=dt) + noise[:, 2], min=1e-8)
+            x_new[:, 0] = 1.0 + noise[:, 3]
+            x_new[:, 8] = torch.clamp(torch.tensor(0.002461, device=dev, dtype=dt) + noise[:, 4], min=0.0)
+            x_new[:, 9] = torch.minimum(
+                torch.zeros(B, device=dev, dtype=dt),
+                torch.tensor(-0.000012, device=dev, dtype=dt) + noise[:, 5],
+            )
+            _reset_exogenous_if_needed()
+            return x_new
+
+        return x_new
 
     def _policy_outputs(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         # If x was created under torch.inference_mode(), it is an 'inference tensor' and
@@ -605,6 +727,15 @@ class Trainer:
                 dim=-1,
             )
 
+        if self.policy == "taylor_para":
+            if not bool(getattr(self, "_taylor_para_has_extended_state", False)):
+                return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
+            if st.p21 is not None:
+                p21_prev = st.p21
+            else:
+                p21_prev = torch.full_like(out["Delta"], float(self.params.p21))
+            return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["i_nom"], p21_prev], dim=-1)
+
         return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
 
     # --------------------
@@ -628,6 +759,15 @@ class Trainer:
             def x_next(epsA, epsg, epst, s_next):
                 logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)
                 Delta_cur = out["Delta"].view(-1, 1, 1).expand_as(logA_n)
+                if self.policy == "taylor_para":
+                    if not bool(getattr(self, "_taylor_para_has_extended_state", False)):
+                        return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype)], dim=-1)
+                    i_old_cur = out["i_nom"].view(-1, 1, 1).expand_as(logA_n)
+                    if st.p21 is not None:
+                        p21_cur = st.p21.view(-1, 1, 1).expand_as(logA_n)
+                    else:
+                        p21_cur = torch.full_like(logA_n, float(self.params.p21))
+                    return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), i_old_cur, p21_cur], dim=-1)
                 return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype)], dim=-1)
 
             def f_all(epsA, epsg, epst, s_next):
@@ -931,6 +1071,14 @@ class Trainer:
         run_dir: str | None = str(_rd) if _rd else None
         if run_dir is not None:
             ensure_dir(run_dir)
+            # Always refresh run metadata from the effective trainer params/cfg.
+            # This keeps config.json aligned even when run_dir was pre-created in notebooks.
+            try:
+                cfg_blob = pack_config(self.params, self.cfg, extra={"policy": self.policy})
+                cfg_blob["policy"] = self.policy
+                save_run_metadata(run_dir, config=cfg_blob)
+            except Exception:
+                pass
         metrics_rows: List[Dict[str, float]] | None = [] if run_dir is not None else None
         global_step = 0
         global_best_loss = float("inf")
@@ -966,11 +1114,20 @@ class Trainer:
 
             # Appendix B uses a simulated path of length N_path_length (notation in the paper).
             N_path = int(n_path) if n_path is not None else int(getattr(self.cfg, "n_path", 200))
+            train_mode = str(getattr(self.cfg, "training_mode", "author")).strip().lower()
+            if train_mode not in ("author", "ours"):
+                train_mode = "author"
 
-            # Ensure population size matches this phase's batch_size (config should be meaningful).
-            if x_init is None or int(x_init.shape[0]) != int(batch_size):
+            sim_batch_size = int(batch_size)
+            if train_mode == "author":
+                cfg_sim_batch = getattr(self.cfg, "author_n_sim_batch", None)
+                if cfg_sim_batch is not None and int(cfg_sim_batch) > 0:
+                    sim_batch_size = int(cfg_sim_batch)
+
+            # Ensure population size matches this phase's simulation batch size.
+            if x_init is None or int(x_init.shape[0]) != int(sim_batch_size):
                 x_pop = self.simulate_initial_state(
-                    int(batch_size),
+                    int(sim_batch_size),
                     commitment_sss=commitment_sss if self.policy in ("commitment", "commitment_zlb") else None,
                 ).to(device=dev, dtype=self.params.dtype)
             else:
@@ -980,9 +1137,6 @@ class Trainer:
             best_loss = float("inf")
             best_step = -1
             best_state: Dict[str, torch.Tensor] | None = None
-            train_mode = str(getattr(self.cfg, "training_mode", "author")).strip().lower()
-            if train_mode not in ("author", "ours"):
-                train_mode = "author"
             strict_eps = bool(getattr(self.cfg, "strict_eps_stop", False)) and (train_mode == "ours")
             max_steps_default = int(steps)
             max_steps_safety = getattr(self.cfg, "strict_eps_max_steps", None)
@@ -1121,7 +1275,7 @@ class Trainer:
 
             # Author-like training loop: simulate one episode, shuffle states, optimize in minibatches.
             mb = max(1, int(minibatch_size))
-            n_states_episode = max(1, int(N_path) * int(batch_size))
+            n_states_episode = max(1, int(N_path) * int(sim_batch_size))
             updates_per_episode = max(1, (n_states_episode + mb - 1) // mb)
             episodes_cfg = getattr(self.cfg, "n_episodes", None)
             explicit_author_episodes = int(episodes_cfg) if episodes_cfg is not None else None
@@ -1131,6 +1285,13 @@ class Trainer:
             if train_mode == "author":
                 if explicit_author_episodes is not None:
                     max_episodes = int(explicit_author_episodes)
+                    # Author Main.py uses episode count as the true stop criterion.
+                    # Keep steps only as an optional explicit safety guard.
+                    author_step_cap = getattr(self.cfg, "author_step_cap", None)
+                    if author_step_cap is None:
+                        max_steps = 0
+                    else:
+                        max_steps = max(0, int(author_step_cap))
                 else:
                     # Backward compatibility: derive episode budget from phase step budget.
                     max_episodes = max(1, (int(max_steps) + updates_per_episode - 1) // updates_per_episode)
@@ -1167,6 +1328,8 @@ class Trainer:
             try:
                 episode_count = 0
                 reached_step_cap = False
+                if train_mode == "author" and bool(getattr(self.cfg, "author_initialize_each_episode", True)):
+                    x_pop = self._author_post_init_state(x_pop, episode_idx=0)
                 while True:
                     if train_mode == "author":
                         if max_episodes is None or episode_count >= int(max_episodes):
@@ -1213,6 +1376,8 @@ class Trainer:
                         pbar.update(1)
                         if stop_now:
                             break
+                    if train_mode == "author" and bool(getattr(self.cfg, "author_initialize_each_episode", True)):
+                        x_pop = self._author_post_init_state(x_pop, episode_idx=episode_count)
                     if stop_now or reached_step_cap:
                         break
             finally:
@@ -1272,7 +1437,7 @@ class Trainer:
                     sigma_A=self.params.sigma_A, sigma_tau=self.params.sigma_tau, sigma_g=self.params.sigma_g,
                     g_bar=self.params.g_bar, eta_bar=self.params.eta_bar,
                     bad_state=self.params.bad_state,
-                    p12=self.params.p12, p21=self.params.p21,
+                    p12=self.params.p12, p21=self.params.p21, p21_l=self.params.p21_l, p21_u=self.params.p21_u,
                     pi_bar=self.params.pi_bar, psi=self.params.psi, rho_i=self.params.rho_i,
                     device=self.params.device, dtype=torch.float64
                 ).to_torch()
@@ -1284,7 +1449,12 @@ class Trainer:
                 assert self._w_grid is None or self._w_grid.dtype == self.params.dtype
 
             npps_phase = _phase_npps(pidx)
-            tag = f"phase{pidx}(gh={int(phase.gh_n_train)},B={int(phase.batch_size)*npps_phase})"
+            train_mode_here = str(getattr(self.cfg, "training_mode", "author")).strip().lower()
+            if train_mode_here == "author" and getattr(self.cfg, "author_n_sim_batch", None) is not None:
+                b_tag = int(getattr(self.cfg, "author_n_sim_batch"))
+            else:
+                b_tag = int(phase.batch_size) * npps_phase
+            tag = f"phase{pidx}(gh={int(phase.gh_n_train)},B={b_tag})"
             lp, x = run_stage(
                 steps=int(phase.steps),
                 lr=float(phase.lr),
@@ -1400,7 +1570,7 @@ def simulate_paths(
             sigma_A=params.sigma_A, sigma_tau=params.sigma_tau, sigma_g=params.sigma_g,
             g_bar=params.g_bar, eta_bar=params.eta_bar,
             bad_state=params.bad_state,
-            p12=params.p12, p21=params.p21,
+            p12=params.p12, p21=params.p21, p21_l=params.p21_l, p21_u=params.p21_u,
             pi_bar=params.pi_bar, psi=params.psi, rho_i=params.rho_i,
             device=params.device, dtype=net_dtype,
         ).to_torch()
@@ -1505,8 +1675,14 @@ def simulate_paths(
             epst = torch.randn(Bcur, device=dev, dtype=dt)
             s_next = torch.full_like(st.s, int(force_regime))
             logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params_sim, st, epsA, epsg, epst, s_next)
-            if policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"):
+            if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"):
                 x = torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
+            elif policy == "taylor_para":
+                if bool(getattr(trainer, "_taylor_para_has_extended_state", False)):
+                    p21_prev = st.p21 if st.p21 is not None else torch.full_like(out["Delta"], float(params_sim.p21))
+                    x = torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["i_nom"], p21_prev], dim=-1)
+                else:
+                    x = torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
             elif policy == "commitment":
                 if st.c_prev is not None or bool(getattr(trainer, "_commitment_has_c_prev", False)):
                     x = torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"], out["c"]], dim=-1)
