@@ -26,6 +26,18 @@ def main():
         help="Include Taylor and modified Taylor rows (use --no-include_rules to disable).",
     )
     ap.add_argument(
+        "--include_zlb",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include ZLB variants when include_rules=True (use --no-include_zlb to disable).",
+    )
+    ap.add_argument(
+        "--sss_source",
+        default="fixed_point",
+        choices=["fixed_point", "sim_conditional"],
+        help="Source for SSS columns: fixed-point solutions or conditional simulation means.",
+    )
+    ap.add_argument(
         "--use_selected",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -35,7 +47,14 @@ def main():
     ap.add_argument("--no_selected", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
     use_selected = bool(args.use_selected) and (not bool(args.no_selected))
-    df = build_table2(args.artifacts_root, device=args.device, include_rules=args.include_rules, use_selected=use_selected)
+    df = build_table2(
+        args.artifacts_root,
+        device=args.device,
+        include_rules=args.include_rules,
+        include_zlb=args.include_zlb,
+        sss_source=args.sss_source,
+        use_selected=use_selected,
+    )
     print(df.to_string(index=False))
     path = save_table2_csv(df, args.artifacts_root)
     print("Saved:", path)

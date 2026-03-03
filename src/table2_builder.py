@@ -298,6 +298,24 @@ def _annualize_pct(x: np.ndarray | float) -> np.ndarray | float:
     return 400.0 * x
 
 
+def _normalize_sss_source(sss_source: str) -> str:
+    key = str(sss_source).strip().lower()
+    aliases = {
+        "fixedpoint": "fixed_point",
+        "fixed_point": "fixed_point",
+        "policy_fixed_point": "fixed_point",
+        "sim_conditional": "sim_conditional",
+        "simulation_conditional": "sim_conditional",
+        "conditional": "sim_conditional",
+    }
+    if key not in aliases:
+        raise ValueError(
+            "sss_source must be one of {'fixed_point','sim_conditional'} "
+            f"(got {sss_source!r})"
+        )
+    return aliases[key]
+
+
 def _has_weights_file(run_dir: str) -> bool:
     return os.path.exists(os.path.join(run_dir, "weights.pt")) or os.path.exists(os.path.join(run_dir, "weights_best.pt"))
 
@@ -473,16 +491,7 @@ def _policy_sss_for_policy(
     *,
     rbar_by_regime: torch.Tensor | None = None,
 ) -> Dict[str, float]:
-    """Paper-faithful 'SSS by regime' for any policy.
-
-    For Table 2, the paper's 'SSS by regime' concept is the switching-consistent fixed point
-    conditional on the current regime.
-
-    - For commitment, we must also pin down the lagged multipliers (timeless perspective), so we
-      use solve_commitment_sss_from_policy(), which returns (c,pi,...) plus vartheta_prev/varrho_prev.
-    - For other policies, we compute the switching-consistent SSS as a fixed point of the trained
-      policy function.
-    """
+    """Switching-consistent fixed-point SSS by regime for a trained policy."""
     if policy == "commitment":
         sss_all = solve_commitment_sss_from_policy(params, net)
         return sss_all.by_regime[int(regime)]
@@ -555,6 +564,7 @@ def build_table2(
     use_selected: bool = True,
     include_rules: bool = True,
     include_zlb: bool = False,
+    sss_source: str = "fixed_point",
 ) -> pd.DataFrame:
     """
     Build a Table-2-like summary after trainings.
@@ -566,10 +576,13 @@ def build_table2(
       - (optional) taylor, mod_taylor
 
     Uses:
-      - SSS computed AFTER training as fixed points of the trained policies.
       - Ergodic moments from saved sim_paths.npz in each run directory.
+      - SSS source controlled by `sss_source`:
+          * "fixed_point": regime-conditional fixed points of trained policies.
+          * "sim_conditional": conditional means from simulated paths by regime.
     """
     params = ModelParams(device=device, dtype=dtype)
+    sss_source_norm = _normalize_sss_source(sss_source)
     # flex SSS
     flex = solve_flexprice_sss(params)
 
@@ -611,49 +624,7 @@ def build_table2(
     rows: List[Dict[str, Any]] = []
 
     def add_block(label: str, policy_key: str, regime: int, sss: Dict[str, float], sim: Optional[Dict[str, np.ndarray]]):
-        # SSS statistics
-        pi_ss = float(sss["pi"])
-        # output gap SSS: log(c) - log(c_hat)
-        x_ss = float(np.log(float(sss["c"])) - np.log(c_hat))
-        # nominal/real in SSS
-        if policy_key == "flex":
-            i_ss = float(flex.by_regime[regime]["r_star"])  # pi=0 so nominal=real
-        elif policy_key == "taylor":
-            # Paper Section 7: nominal rate under the rule i_t = (1+pi_bar)/beta - 1 + psi*(pi_t-pi_bar).
-            i_ss = float(
-                i_taylor(
-                    params,
-                    torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
-                ).detach().cpu()
-            )
-        elif policy_key == "mod_taylor":
-            pi_t = torch.tensor(pi_ss, device=params.device, dtype=params.dtype)
-            s_t = torch.tensor([int(regime)], device=params.device, dtype=torch.long)
-            i_ss = float(i_modified_taylor(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
-        elif policy_key == "taylor_zlb":
-            i_ss = float(
-                i_taylor_zlb(
-                    params,
-                    torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
-                ).detach().cpu()
-            )
-        elif policy_key == "mod_taylor_zlb":
-            pi_t = torch.tensor(pi_ss, device=params.device, dtype=params.dtype)
-            s_t = torch.tensor([int(regime)], device=params.device, dtype=torch.long)
-            i_ss = float(i_modified_taylor_zlb(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
-        else:
-            net = nets[policy_key]
-            i_ss = _implied_i_at_sss(
-                params,
-                policy_key,
-                net,
-                sss,
-                regime=regime,
-                rbar_by_regime=None,
-            )
-        r_ss = (1.0 + i_ss) / (1.0 + pi_ss) - 1.0
-
-        # moments from sim
+        # moments from simulation
         if sim is None:
             pi_m = {"mean": np.nan, "std": np.nan, "skew": np.nan}
             x_m = {"mean": np.nan, "std": np.nan, "skew": np.nan}
@@ -676,9 +647,62 @@ def build_table2(
             r_series = _split_by_regime(r_all, s_al, regime)
             r_m = _moments_with_skew(r_series)
 
+        # SSS statistics
+        if sss_source_norm == "sim_conditional":
+            if sim is None:
+                raise FileNotFoundError(
+                    f"sss_source='sim_conditional' requires sim_paths.npz for policy='{policy_key}'."
+                )
+            pi_ss = float(pi_m["mean"])
+            x_ss = float(x_m["mean"])
+            i_ss = float(i_m["mean"])
+            r_ss = float(r_m["mean"])
+        else:
+            pi_ss = float(sss["pi"])
+            # output gap SSS: log(c) - log(c_hat)
+            x_ss = float(np.log(float(sss["c"])) - np.log(c_hat))
+            # nominal/real in SSS
+            if policy_key == "flex":
+                i_ss = float(flex.by_regime[regime]["r_star"])  # pi=0 so nominal=real
+            elif policy_key == "taylor":
+                # Paper Section 7: nominal rate under the rule i_t = (1+pi_bar)/beta - 1 + psi*(pi_t-pi_bar).
+                i_ss = float(
+                    i_taylor(
+                        params,
+                        torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
+                    ).detach().cpu()
+                )
+            elif policy_key == "mod_taylor":
+                pi_t = torch.tensor(pi_ss, device=params.device, dtype=params.dtype)
+                s_t = torch.tensor([int(regime)], device=params.device, dtype=torch.long)
+                i_ss = float(i_modified_taylor(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
+            elif policy_key == "taylor_zlb":
+                i_ss = float(
+                    i_taylor_zlb(
+                        params,
+                        torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
+                    ).detach().cpu()
+                )
+            elif policy_key == "mod_taylor_zlb":
+                pi_t = torch.tensor(pi_ss, device=params.device, dtype=params.dtype)
+                s_t = torch.tensor([int(regime)], device=params.device, dtype=torch.long)
+                i_ss = float(i_modified_taylor_zlb(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
+            else:
+                net = nets[policy_key]
+                i_ss = _implied_i_at_sss(
+                    params,
+                    policy_key,
+                    net,
+                    sss,
+                    regime=regime,
+                    rbar_by_regime=None,
+                )
+            r_ss = (1.0 + i_ss) / (1.0 + pi_ss) - 1.0
+
         rows.append({
             "policy": label,
             "regime": "normal" if regime == 0 else "bad",
+            "sss_source": sss_source_norm,
             # Inflation
             "pi_sss_pct": _annualize_pct(pi_ss),
             "pi_mean_pct": _annualize_pct(pi_m["mean"]),
@@ -762,17 +786,17 @@ def build_table2(
         if pkey is None:
             continue
         for s in [0, 1]:
-            sss = _policy_sss_for_policy(
-                params,
-                pkey,
-                nets[pkey],
-                s,
-                rbar_by_regime=rbar_by_regime,
-            )
-            # add required fields for commitment (vartheta_prev,varrho_prev) if missing
-            if pkey == "commitment":
-                # solve_commitment_sss_from_policy returns them already
-                pass
+            sss: Dict[str, float]
+            if sss_source_norm == "fixed_point":
+                sss = _policy_sss_for_policy(
+                    params,
+                    pkey,
+                    nets[pkey],
+                    s,
+                    rbar_by_regime=rbar_by_regime,
+                )
+            else:
+                sss = {}
             sim = sims.get(pkey)
             add_block(label, pkey, s, sss, sim)
 
