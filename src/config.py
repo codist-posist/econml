@@ -14,7 +14,7 @@ PolicyName = Literal[
     "commitment_zlb",
 ]
 RunMode = Literal["full", "mid", "dev", "author"]
-TrainingMode = Literal["strict_author"]
+TrainingMode = Literal["author", "ours"]
 ExogenousInitMode = Literal["author_hooks"]
 CommitmentInitMode = Literal["author_hooks"]
 WeightSelectionMode = Literal["best", "last"]
@@ -103,8 +103,13 @@ class TrainConfig:
     Training / compute configuration with a fixed network architecture and two phases.
     """
     mode: RunMode = "full"
-    # Project policy: always author semantics.
-    training_mode: TrainingMode = "strict_author"
+    # Training semantics:
+    # - "author": episode-oriented DEQN loop (closest to author code)
+    # - "ours": step-oriented loop with optional strict epsilon stop
+    training_mode: TrainingMode = "author"
+    # Optional explicit number of episodes for author mode.
+    # If None, we derive an episode budget from phase.steps for backward compatibility.
+    n_episodes: int | None = None
     seed: int = 123
 
     # ---- Network (FIXED across phases) ----
@@ -131,7 +136,7 @@ class TrainConfig:
     pi_high: float = 0.1
     pstar_low: float = 0.9
     pstar_high: float = 1.1
-    # Penalty-based bounds (author-like): used when training_mode="strict_author".
+    # Penalty-based bounds (author-like): typically enabled for training_mode="author".
     use_penalty_bounds: bool = True
     bounds_penalty_weight: float = 1.0
 
@@ -217,6 +222,7 @@ class TrainConfig:
         """
         base = TrainConfig(
             mode="full",
+            training_mode="ours",
             hidden_layers=(512, 512),
             activation="selu",
             val_size=1024,
@@ -245,6 +251,7 @@ class TrainConfig:
         """
         base = TrainConfig(
             mode="mid",
+            training_mode="ours",
             hidden_layers=(512, 512),
             activation="selu",
             val_size=1024,
@@ -270,6 +277,7 @@ class TrainConfig:
         """
         base = TrainConfig(
             mode="dev",
+            training_mode="ours",
             hidden_layers=(256, 256),
             activation="selu",
             val_size=1024,
@@ -288,7 +296,7 @@ class TrainConfig:
     def author_like(*, policy: PolicyName | None = None, **overrides) -> "TrainConfig":
         """
         Author-like compute preset (closest to public Keras code semantics):
-        - strict_author training mode
+        - author training mode
         - author Hooks.py state initialization (exogenous + commitment)
         - single phase by default (episode+minibatch training analog)
         - GH=3, Adam lr=1e-5, minibatch size=128, episode length=10
@@ -301,7 +309,7 @@ class TrainConfig:
 
         base = TrainConfig(
             mode="author",
-            training_mode="strict_author",
+            training_mode="author",
             exogenous_init_mode="author_hooks",
             commitment_init_mode="author_hooks",
             weights_selection="last",

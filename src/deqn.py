@@ -899,7 +899,10 @@ class Trainer:
             best_loss = float("inf")
             best_step = -1
             best_state: Dict[str, torch.Tensor] | None = None
-            strict_eps = bool(getattr(self.cfg, "strict_eps_stop", False))
+            train_mode = str(getattr(self.cfg, "training_mode", "author")).strip().lower()
+            if train_mode not in ("author", "ours"):
+                train_mode = "author"
+            strict_eps = bool(getattr(self.cfg, "strict_eps_stop", False)) and (train_mode == "ours")
             max_steps_default = int(steps)
             max_steps_safety = getattr(self.cfg, "strict_eps_max_steps", None)
             if strict_eps and eps_stop is not None:
@@ -1008,9 +1011,37 @@ class Trainer:
 
             # Author-like training loop: simulate one episode, shuffle states, optimize in minibatches.
             mb = max(1, int(minibatch_size))
-            pbar = trange(max_steps, desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False)
+            n_states_episode = max(1, int(N_path) * int(batch_size))
+            updates_per_episode = max(1, (n_states_episode + mb - 1) // mb)
+            episodes_cfg = getattr(self.cfg, "n_episodes", None)
+            explicit_author_episodes = int(episodes_cfg) if episodes_cfg is not None else None
+            if explicit_author_episodes is not None and explicit_author_episodes <= 0:
+                explicit_author_episodes = None
+
+            if train_mode == "author":
+                if explicit_author_episodes is not None:
+                    max_episodes = int(explicit_author_episodes)
+                else:
+                    # Backward compatibility: derive episode budget from phase step budget.
+                    max_episodes = max(1, (int(max_steps) + updates_per_episode - 1) // updates_per_episode)
+            else:
+                max_episodes = None
+
+            pbar_total = int(max_steps) if int(max_steps) > 0 else (
+                int(max_episodes) * int(updates_per_episode) if max_episodes is not None else 1
+            )
+            pbar = trange(max(1, pbar_total), desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False)
             try:
-                while global_step < max_steps:
+                episode_count = 0
+                reached_step_cap = False
+                while True:
+                    if train_mode == "author":
+                        if max_episodes is None or episode_count >= int(max_episodes):
+                            break
+                    else:
+                        if global_step >= int(max_steps):
+                            break
+
                     with torch.no_grad():
                         xs = []
                         cur = x_pop
@@ -1021,10 +1052,12 @@ class Trainer:
                         X = torch.cat(xs, dim=0)
                         perm = torch.randperm(int(X.shape[0]), device=X.device)
                         X = X.index_select(0, perm)
+                    episode_count += 1
 
                     stop_now = False
                     for j in range(0, int(X.shape[0]), mb):
-                        if global_step >= max_steps:
+                        if int(max_steps) > 0 and global_step >= int(max_steps):
+                            reached_step_cap = True
                             break
                         Xi = X[j : j + mb]
                         need_log = (global_step % log_every) == 0
@@ -1033,7 +1066,7 @@ class Trainer:
                         pbar.update(1)
                         if stop_now:
                             break
-                    if stop_now:
+                    if stop_now or reached_step_cap:
                         break
             finally:
                 pbar.close()
@@ -1050,6 +1083,17 @@ class Trainer:
                     f"[{self.policy} | {tag}] reached safety cap (max_steps={max_steps}) "
                     f"before hitting eps_stop={float(eps_stop):.3e}."
                 )
+            if train_mode == "author":
+                if explicit_author_episodes is not None:
+                    print(
+                        f"[{self.policy} | {tag}] author episodes completed: "
+                        f"{episode_count}/{int(max_episodes)}"
+                    )
+                else:
+                    print(
+                        f"[{self.policy} | {tag}] author episodes (derived): "
+                        f"{episode_count} from step budget={int(max_steps)}"
+                    )
             print(f"[{self.policy} | {tag}] best_loss={best_loss:.3e} at step={best_step}")
             return losses, x_pop
 
