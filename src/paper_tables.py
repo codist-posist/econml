@@ -74,7 +74,10 @@ def build_paper_tables_2_4(
     """
     Build paper-style Table 2/3/4 using the common table builder and reshape to article layout.
 
-    `sss_source='sim_conditional'` aligns with author post-processing (long simulation means by regime).
+    Recommended:
+      - `sss_source='sim_conditional'` for paper/author table values
+        (conditional means from long simulation by regime).
+      - `sss_source='fixed_point'` only as a diagnostic comparison.
     """
     try:
         df = build_table2(

@@ -33,9 +33,12 @@ def main():
     )
     ap.add_argument(
         "--sss_source",
-        default="fixed_point",
+        default="sim_conditional",
         choices=["fixed_point", "sim_conditional"],
-        help="Source for SSS columns: fixed-point solutions or conditional simulation means.",
+        help=(
+            "Table source mode: sim_conditional (paper default, conditional long-simulation means) "
+            "or fixed_point (diagnostic fixed-point values)."
+        ),
     )
     ap.add_argument(
         "--use_selected",

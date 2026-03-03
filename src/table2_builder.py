@@ -467,6 +467,58 @@ def _load_sim_paths(run_dir: str) -> Dict[str, np.ndarray]:
     return {k: data[k] for k in data.files}
 
 
+def _find_author_defs_file(run_dir: str, filename: str) -> str | None:
+    candidates = [
+        os.path.join(run_dir, "author_postprocess", filename),
+        os.path.join(run_dir, "simulation", filename),
+        os.path.join(run_dir, filename),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _load_author_regime_moments(
+    run_dir: str,
+    regime: int,
+) -> Dict[str, Dict[str, float]] | None:
+    """
+    Load author-style post-process moments from fixed-regime simulation files when available.
+
+    Expected files (author naming):
+      - simulated_definitions_NT.npz  (regime=0)
+      - simulated_definitions_SS.npz  (regime=1)
+    """
+    fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
+    p = _find_author_defs_file(run_dir, fname)
+    if p is None:
+        return None
+    data = np.load(p)
+
+    def _vec(name: str) -> np.ndarray | None:
+        if name not in data.files:
+            return None
+        return np.asarray(data[name]).reshape(-1)
+
+    pi = _vec("pi_tot_y")
+    i_nom = _vec("i_nom_y")
+    if pi is None or i_nom is None:
+        return None
+
+    out: Dict[str, Dict[str, float]] = {
+        "pi": _moments_with_skew(pi),
+        "i": _moments_with_skew(i_nom),
+    }
+    x_gap = _vec("out_gap_y")
+    if x_gap is not None:
+        out["x"] = _moments_with_skew(x_gap)
+    r_real = _vec("r_real_y")
+    if r_real is not None:
+        out["r"] = _moments_with_skew(r_real)
+    return out
+
+
 def _compute_real_rate_series(sim: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
     """
     Real rate per period computed from realized next inflation:
@@ -564,7 +616,7 @@ def build_table2(
     use_selected: bool = True,
     include_rules: bool = True,
     include_zlb: bool = False,
-    sss_source: str = "fixed_point",
+    sss_source: str = "sim_conditional",
 ) -> pd.DataFrame:
     """
     Build a Table-2-like summary after trainings.
@@ -578,8 +630,10 @@ def build_table2(
     Uses:
       - Ergodic moments from saved sim_paths.npz in each run directory.
       - SSS source controlled by `sss_source`:
-          * "fixed_point": regime-conditional fixed points of trained policies.
-          * "sim_conditional": conditional means from simulated paths by regime.
+          * "sim_conditional" (paper/author default): regime-conditional
+            long-simulation moments (prefer author `simulated_definitions_NT/SS.npz`,
+            fallback to conditional moments from `sim_paths.npz`).
+          * "fixed_point": regime-conditional policy fixed points (diagnostic mode).
     """
     params = ModelParams(device=device, dtype=dtype)
     sss_source_norm = _normalize_sss_source(sss_source)
@@ -623,7 +677,15 @@ def build_table2(
 
     rows: List[Dict[str, Any]] = []
 
-    def add_block(label: str, policy_key: str, regime: int, sss: Dict[str, float], sim: Optional[Dict[str, np.ndarray]]):
+    def add_block(
+        label: str,
+        policy_key: str,
+        regime: int,
+        sss: Dict[str, float],
+        sim: Optional[Dict[str, np.ndarray]],
+        *,
+        run_dir: str | None = None,
+    ):
         # moments from simulation
         if sim is None:
             pi_m = {"mean": np.nan, "std": np.nan, "skew": np.nan}
@@ -647,17 +709,26 @@ def build_table2(
             r_series = _split_by_regime(r_all, s_al, regime)
             r_m = _moments_with_skew(r_series)
 
-        # SSS statistics
+        # Prefer author post-process fixed-regime moment files in sim_conditional mode.
+        if (sss_source_norm == "sim_conditional") and (run_dir is not None):
+            am = _load_author_regime_moments(run_dir, regime)
+            if am is not None:
+                pi_m = am["pi"]
+                i_m = am["i"]
+                if "x" in am:
+                    x_m = am["x"]
+                if "r" in am:
+                    r_m = am["r"]
+
         if sss_source_norm == "sim_conditional":
-            if sim is None:
-                raise FileNotFoundError(
-                    f"sss_source='sim_conditional' requires sim_paths.npz for policy='{policy_key}'."
-                )
+            # Paper/author object: stochastic steady state by regime as conditional means
+            # from long simulated paths (or author fixed-regime NT/SS files).
             pi_ss = float(pi_m["mean"])
             x_ss = float(x_m["mean"])
             i_ss = float(i_m["mean"])
             r_ss = float(r_m["mean"])
         else:
+            # Diagnostic object: policy fixed-point SSS.
             pi_ss = float(sss["pi"])
             # output gap SSS: log(c) - log(c_hat)
             x_ss = float(np.log(float(sss["c"])) - np.log(c_hat))
@@ -727,6 +798,7 @@ def build_table2(
 
     nets: Dict[str, PolicyNetwork] = {}
     sims: Dict[str, Dict[str, np.ndarray]] = {}
+    run_dirs: Dict[str, str] = {}
 
     # load nets + sims for trained policies
     for label, pkey in policies:
@@ -737,6 +809,7 @@ def build_table2(
             pkey,
             use_selected=use_selected,
         )
+        run_dirs[pkey] = run_dir
         nets[pkey] = _load_net_from_run(run_dir, params, pkey)
         sims[pkey] = _load_sim_paths(run_dir)
         # Quick diagnostic: Table-2 skewness can be unstable with short saved sims.
@@ -762,7 +835,7 @@ def build_table2(
         # Fallback: simulate flex prices directly (no network) using the model's switching + temporary shocks
         flex_sim = _simulate_flex_prices_for_table2(params)
     for s in [0, 1]:
-        add_block("flex", "flex", s, flex.by_regime[s], flex_sim)
+        add_block("flex", "flex", s, flex.by_regime[s], flex_sim, run_dir=None)
 
     # ---- Diagnostic: frozen-regime SSS (P = I), printed only ----
     # This is NOT used in Table 2 calculations; it is a comparison object.
@@ -786,19 +859,19 @@ def build_table2(
         if pkey is None:
             continue
         for s in [0, 1]:
-            sss: Dict[str, float]
-            if sss_source_norm == "fixed_point":
-                sss = _policy_sss_for_policy(
-                    params,
-                    pkey,
-                    nets[pkey],
-                    s,
-                    rbar_by_regime=rbar_by_regime,
-                )
-            else:
-                sss = {}
+            sss = _policy_sss_for_policy(
+                params,
+                pkey,
+                nets[pkey],
+                s,
+                rbar_by_regime=rbar_by_regime,
+            )
             sim = sims.get(pkey)
-            add_block(label, pkey, s, sss, sim)
+            if (sss_source_norm == "sim_conditional") and (sim is None):
+                raise FileNotFoundError(
+                    f"sss_source='sim_conditional' requires simulation moments for policy='{pkey}'."
+                )
+            add_block(label, pkey, s, sss, sim, run_dir=run_dirs.get(pkey))
 
     df = pd.DataFrame(rows)
     # Order like paper: by policy then regime
