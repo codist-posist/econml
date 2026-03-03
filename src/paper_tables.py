@@ -69,6 +69,8 @@ def build_paper_tables_2_4(
     device: str = "cpu",
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
+    strict_selected: bool = False,
+    weights_source: str = "auto",
     sss_source: str = "sim_conditional",
 ) -> Dict[str, pd.DataFrame]:
     """
@@ -85,6 +87,8 @@ def build_paper_tables_2_4(
             device=device,
             dtype=dtype,
             use_selected=use_selected,
+            strict_selected=strict_selected,
+            weights_source=weights_source,
             include_rules=True,
             include_zlb=True,
             sss_source=sss_source,
@@ -99,6 +103,8 @@ def build_paper_tables_2_4(
             device=device,
             dtype=dtype,
             use_selected=use_selected,
+            strict_selected=strict_selected,
+            weights_source=weights_source,
             include_rules=True,
             include_zlb=False,
             sss_source=sss_source,

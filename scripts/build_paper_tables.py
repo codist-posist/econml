@@ -31,6 +31,18 @@ def main() -> int:
         default=True,
         help="Prefer selected runs over latest runs.",
     )
+    ap.add_argument(
+        "--strict_selected",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Require selected runs to exist and be complete (no fallback).",
+    )
+    ap.add_argument(
+        "--weights_source",
+        default="auto",
+        choices=["auto", "canonical", "best", "last"],
+        help="Which checkpoint to load from each run.",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.artifacts_root, exist_ok=True)
@@ -46,6 +58,8 @@ def main() -> int:
         device=args.device,
         dtype=torch.float64,
         use_selected=bool(args.use_selected),
+        strict_selected=bool(args.strict_selected),
+        weights_source=args.weights_source,
         sss_source=args.sss_source,
     )
 

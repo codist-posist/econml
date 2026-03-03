@@ -17,6 +17,7 @@ RunMode = Literal["full", "mid", "dev", "author"]
 TrainingMode = Literal["strict_author"]
 ExogenousInitMode = Literal["author_hooks"]
 CommitmentInitMode = Literal["author_hooks"]
+WeightSelectionMode = Literal["best", "last"]
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,10 @@ class TrainConfig:
     save_best: bool = True
     # Single canonical checkpoint file for trained/best model weights.
     best_weights_name: str = "weights.pt"
+    # Which checkpoint should be treated as canonical training output:
+    # - "best": minimum training loss (closest to author's epsilon-style target)
+    # - "last": final optimizer iterate (closest to author's checkpoint-manager "latest")
+    weights_selection: WeightSelectionMode = "best"
 
     # ---- CPU / performance knobs (safe: does not change equations) ----
     cpu_num_threads: int | None = None
@@ -289,16 +294,17 @@ class TrainConfig:
         - GH=3, Adam lr=1e-5, minibatch size=128, episode length=10
         - no hard eps-stop (monitor loss / checkpoints)
         """
-        # In the public Keras repo:
-        # - taylor uses 2x128 hidden layers
-        # - discretion/commitment use 2x512
-        hidden = (128, 128) if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb") else (512, 512)
+        # New paper (SSRN 5005047) states a unified architecture:
+        # two hidden layers with 512 neurons each (SELU).
+        _ = policy
+        hidden = (512, 512)
 
         base = TrainConfig(
             mode="author",
             training_mode="strict_author",
             exogenous_init_mode="author_hooks",
             commitment_init_mode="author_hooks",
+            weights_selection="last",
             hidden_layers=hidden,
             activation="selu",
             use_two_phase=False,

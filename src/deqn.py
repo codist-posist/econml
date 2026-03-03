@@ -438,8 +438,22 @@ class Trainer:
                 terms.append(huber_elementwise(above, delta).sum())
 
         # Common nominal bounds
-        _add_bound("pi", float(getattr(self.cfg, "pi_low", -0.1)), float(getattr(self.cfg, "pi_high", 0.1)))
-        _add_bound("pstar", float(getattr(self.cfg, "pstar_low", 0.9)), float(getattr(self.cfg, "pstar_high", 1.1)))
+        pi_low = float(getattr(self.cfg, "pi_low", -0.1))
+        pi_high = float(getattr(self.cfg, "pi_high", 0.1))
+        pstar_low = float(getattr(self.cfg, "pstar_low", 0.9))
+        pstar_high = float(getattr(self.cfg, "pstar_high", 1.1))
+
+        _add_bound("pi", pi_low, pi_high)
+        _add_bound("pstar", pstar_low, pstar_high)
+
+        # Author Definitions also penalize auxiliary nominal objects.
+        one_plus_pi_low = max(1e-8, 1.0 + pi_low)
+        one_plus_pi_high = max(one_plus_pi_low + 1e-8, 1.0 + pi_high)
+        _add_bound(
+            "pi_aux",
+            one_plus_pi_low ** float(self.params.eps),
+            one_plus_pi_high ** float(self.params.eps),
+        )
 
         # Wider author-like variable penalties
         _add_bound("c", 0.6, 1.4)
@@ -451,6 +465,12 @@ class Trainer:
             _add_bound("Delta", 0.6, 1.4)
             _add_bound("XiN", 0.0, 12.0)
             _add_bound("XiD", 0.0, 12.0)
+            # Author discretion/commitment code places bounds on p_star_aux as well.
+            _add_bound(
+                "p_star_aux",
+                max(1e-12, pstar_high ** (-float(self.params.eps))),
+                max(1e-12, pstar_low ** (-float(self.params.eps))),
+            )
         if self.policy in ("commitment", "commitment_zlb"):
             _add_bound("vartheta", -2.0, 1.0)
             _add_bound("varrho", -1.0, 1.0)
@@ -832,6 +852,12 @@ class Trainer:
             ensure_dir(run_dir)
         metrics_rows: List[Dict[str, float]] | None = [] if run_dir is not None else None
         global_step = 0
+        global_best_loss = float("inf")
+        global_best_step = -1
+        global_best_state: Dict[str, torch.Tensor] | None = None
+        weights_selection = str(getattr(self.cfg, "weights_selection", "best")).strip().lower()
+        if weights_selection not in ("best", "last"):
+            weights_selection = "best"
         self._commitment_sss_for_init = commitment_sss if self.policy in ("commitment", "commitment_zlb") else None
 
         def run_stage(
@@ -940,14 +966,18 @@ class Trainer:
 
             def _after_step(lv: float, need_log: bool, resid_for_log: torch.Tensor | None, X_for_log: torch.Tensor | None) -> bool:
                 nonlocal global_step, best_loss, best_step, best_state, hit_safety_cap
+                nonlocal global_best_loss, global_best_step, global_best_state
                 losses.append(lv)
                 global_step += 1
 
                 if lv < best_loss:
                     best_loss = lv
                     best_step = global_step
-                    if bool(getattr(self.cfg, "save_best", True)):
-                        best_state = {k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()}
+                    best_state = {k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()}
+                if lv < global_best_loss:
+                    global_best_loss = lv
+                    global_best_step = global_step
+                    global_best_state = {k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()}
 
                 if need_log and (resid_for_log is not None) and (X_for_log is not None):
                     with torch.no_grad():
@@ -1008,18 +1038,12 @@ class Trainer:
             finally:
                 pbar.close()
 
-            # Restore best phase checkpoint so end-of-phase weights are not degraded by late noise.
-            if bool(getattr(self.cfg, "save_best", True)) and best_state is not None:
+            # Optional phase-wise best restore (kept for "best" checkpoint mode).
+            if weights_selection == "best" and best_state is not None:
                 try:
                     self.net.load_state_dict(best_state, strict=True)
                 except Exception:
                     pass
-                if run_dir is not None:
-                    try:
-                        # Keep a single canonical checkpoint file.
-                        save_torch(os.path.join(run_dir, "weights.pt"), best_state)
-                    except Exception:
-                        pass
 
             if strict_eps and eps_stop is not None and hit_safety_cap:
                 print(
@@ -1076,6 +1100,45 @@ class Trainer:
             )
             losses_all.extend(lp)
 
+        # Final checkpoint selection and persistence:
+        # - weights_last.pt: final iterate
+        # - weights_best.pt: minimum training loss iterate
+        # - weights.pt (or cfg.best_weights_name): canonical file according to cfg.weights_selection
+        state_last = {k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()}
+        selected_state = state_last
+        selected_label = "last"
+        if weights_selection == "best":
+            if global_best_state is not None:
+                selected_state = global_best_state
+                selected_label = "best"
+            else:
+                print(f"[{self.policy}] WARNING: weights_selection='best' but best snapshot is unavailable; using last.")
+        try:
+            self.net.load_state_dict(selected_state, strict=True)
+        except Exception:
+            pass
+
+        if run_dir is not None:
+            try:
+                save_torch(os.path.join(run_dir, "weights_last.pt"), state_last)
+            except Exception:
+                pass
+            if global_best_state is not None:
+                try:
+                    save_torch(os.path.join(run_dir, "weights_best.pt"), global_best_state)
+                except Exception:
+                    pass
+            canonical_name = str(getattr(self.cfg, "best_weights_name", "weights.pt") or "weights.pt")
+            try:
+                save_torch(os.path.join(run_dir, canonical_name), selected_state)
+                if canonical_name != "weights.pt":
+                    save_torch(os.path.join(run_dir, "weights.pt"), selected_state)
+            except Exception:
+                pass
+        print(
+            f"[{self.policy}] checkpoint selection: {selected_label} "
+            f"(global_best={global_best_loss:.3e} at step={global_best_step})"
+        )
 
         # Save training diagnostics (quality monitoring)
         if metrics_rows is not None and run_dir is not None:
@@ -1117,6 +1180,7 @@ def simulate_paths(
     thin: int = 1,
     store_states: bool = False,
     show_progress: bool = False,
+    force_regime: int | None = None,
 ) -> Dict[str, np.ndarray]:
     """Forward simulation under a trained policy network."""
 
@@ -1187,6 +1251,10 @@ def simulate_paths(
         store["varphi_prev"] = np.zeros((keep, B))
 
     k = 0
+    if force_regime is not None:
+        fr = int(force_regime)
+        if fr not in (0, 1):
+            raise ValueError(f"force_regime must be 0/1 or None, got {force_regime!r}")
     iterator = trange(T, desc=f"simulate[{policy}]", leave=False) if show_progress else range(T)
     for t in iterator:
         out = trainer._policy_outputs(x)
@@ -1228,6 +1296,40 @@ def simulate_paths(
                 store["varphi_prev"][k] = st.varphi_prev.cpu().numpy()
             k += 1
 
-        x = trainer._step_state(x)
+        if force_regime is None:
+            x = trainer._step_state(x)
+        else:
+            # Author-like fixed-regime branches used in post-processing (NT/SS).
+            Bcur = x.shape[0]
+            epsA = torch.randn(Bcur, device=dev, dtype=dt)
+            epsg = torch.randn(Bcur, device=dev, dtype=dt)
+            epst = torch.randn(Bcur, device=dev, dtype=dt)
+            s_next = torch.full_like(st.s, int(force_regime))
+            logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params_sim, st, epsA, epsg, epst, s_next)
+            if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"):
+                x = torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
+            elif policy == "commitment":
+                if st.c_prev is not None or bool(getattr(trainer, "_commitment_has_c_prev", False)):
+                    x = torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"], out["c"]], dim=-1)
+                else:
+                    x = torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"]], dim=-1)
+            elif policy == "commitment_zlb":
+                x = torch.stack(
+                    [
+                        out["Delta"],
+                        logA_n,
+                        logg_n,
+                        xi_n,
+                        s_n.to(dt),
+                        out["vartheta"],
+                        out["varrho"],
+                        out["c"],
+                        out["i_nom"],
+                        out["varphi"],
+                    ],
+                    dim=-1,
+                )
+            else:
+                raise ValueError(f"Unsupported policy for simulate_paths: {policy}")
 
     return store

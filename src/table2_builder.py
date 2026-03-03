@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Any, Optional, List, Tuple, Sequence
+from typing import Dict, Any, Optional, List, Tuple, Sequence, Literal
 
 import numpy as np
 import pandas as pd
@@ -17,6 +17,8 @@ from .deqn import Trainer
 from .config import TrainConfig
 from .metrics import output_gap_from_consumption
 from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
+
+WeightLoadMode = Literal["auto", "canonical", "best", "last"]
 
 
 
@@ -317,7 +319,8 @@ def _normalize_sss_source(sss_source: str) -> str:
 
 
 def _has_weights_file(run_dir: str) -> bool:
-    return os.path.exists(os.path.join(run_dir, "weights.pt")) or os.path.exists(os.path.join(run_dir, "weights_best.pt"))
+    names = ("weights.pt", "weights_best.pt", "weights_last.pt")
+    return any(os.path.exists(os.path.join(run_dir, n)) for n in names)
 
 
 def _missing_run_requirements(run_dir: str, required_files: Sequence[str]) -> List[str]:
@@ -325,7 +328,7 @@ def _missing_run_requirements(run_dir: str, required_files: Sequence[str]) -> Li
     if not os.path.isdir(run_dir):
         return ["<missing run directory>"]
     if not _has_weights_file(run_dir):
-        missing.append("weights.pt|weights_best.pt")
+        missing.append("weights.pt|weights_best.pt|weights_last.pt")
     for rel in required_files:
         if not os.path.exists(os.path.join(run_dir, rel)):
             missing.append(str(rel))
@@ -384,6 +387,7 @@ def _load_run_dir(
     policy: str,
     *,
     use_selected: bool = True,
+    strict_selected: bool = False,
     required_files: Sequence[str] = ("sim_paths.npz",),
 ) -> str:
     cands, selected = _candidate_run_dirs(
@@ -397,6 +401,17 @@ def _load_run_dir(
     selected_missing: List[str] = []
     if selected is not None:
         selected_missing = _missing_run_requirements(selected, required_files)
+    if strict_selected:
+        if selected is None:
+            raise FileNotFoundError(
+                f"strict_selected=True but selected run is not set for policy='{policy}' under {artifacts_root}."
+            )
+        if selected_missing:
+            raise FileNotFoundError(
+                f"strict_selected=True and selected run for policy='{policy}' is incomplete: "
+                f"{', '.join(selected_missing)}\nselected_run={selected}"
+            )
+        return selected
 
     for rd in cands:
         miss = _missing_run_requirements(rd, required_files)
@@ -414,24 +429,63 @@ def _load_run_dir(
         diag.append(f"{rd} -> missing: {', '.join(miss)}")
     raise FileNotFoundError(
         f"No complete run found for policy='{policy}' under {artifacts_root}. "
-        f"Expected weights.pt|weights_best.pt and {list(required_files)}. "
+        f"Expected weights.pt|weights_best.pt|weights_last.pt and {list(required_files)}. "
         f"Checked:\n  " + "\n  ".join(diag)
     )
 
 
-def _load_net_from_run(run_dir: str, params: ModelParams, policy: PolicyName) -> PolicyNetwork:
+def _read_run_weight_selection(run_dir: str) -> str | None:
+    cfg_path = os.path.join(run_dir, "config.json")
+    if not os.path.exists(cfg_path):
+        return None
+    try:
+        packed = load_json(cfg_path)
+        train_cfg = packed.get("train_cfg", {})
+        v = str(train_cfg.get("weights_selection", "")).strip().lower()
+        if v in ("best", "last"):
+            return v
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_weight_path(run_dir: str, *, weights_source: WeightLoadMode = "auto") -> str:
+    mode = str(weights_source).strip().lower()
+    if mode not in ("auto", "canonical", "best", "last"):
+        mode = "auto"
+    if mode == "auto":
+        mode = _read_run_weight_selection(run_dir) or "canonical"
+
+    if mode == "best":
+        order = ["weights_best.pt", "weights.pt", "weights_last.pt"]
+    elif mode == "last":
+        order = ["weights_last.pt", "weights.pt", "weights_best.pt"]
+    else:  # canonical
+        order = ["weights.pt", "weights_best.pt", "weights_last.pt"]
+
+    for name in order:
+        p = os.path.join(run_dir, name)
+        if os.path.exists(p):
+            return p
+    raise FileNotFoundError(
+        f"Missing weights in {run_dir} (expected one of: {', '.join(order)})"
+    )
+
+
+def _load_net_from_run(
+    run_dir: str,
+    params: ModelParams,
+    policy: PolicyName,
+    *,
+    weights_source: WeightLoadMode = "auto",
+) -> PolicyNetwork:
     """Load a trained policy network from a run directory.
 
     The network architecture (hidden layers, activation) is read from config.json
     saved alongside the run. Input/output dimensions are policy-specific and match
     the training notebooks.
     """
-    w_path = os.path.join(run_dir, "weights.pt")
-    if not os.path.exists(w_path):
-        # back-compat
-        w_path = os.path.join(run_dir, "weights_best.pt")
-    if not os.path.exists(w_path):
-        raise FileNotFoundError(f"Missing weights in {run_dir} (expected weights.pt or weights_best.pt)")
+    w_path = _resolve_weight_path(run_dir, weights_source=weights_source)
 
     # Load training config to reconstruct the exact architecture
     cfg_path = os.path.join(run_dir, "config.json")
@@ -614,6 +668,8 @@ def build_table2(
     device: str = "cpu",
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
+    strict_selected: bool = False,
+    weights_source: WeightLoadMode = "auto",
     include_rules: bool = True,
     include_zlb: bool = False,
     sss_source: str = "sim_conditional",
@@ -634,6 +690,11 @@ def build_table2(
             long-simulation moments (prefer author `simulated_definitions_NT/SS.npz`,
             fallback to conditional moments from `sim_paths.npz`).
           * "fixed_point": regime-conditional policy fixed points (diagnostic mode).
+      - Weights source controlled by `weights_source`:
+          * "auto" (default): infer best/last policy from run config (fallback canonical),
+          * "canonical": always load weights.pt,
+          * "best": prefer weights_best.pt,
+          * "last": prefer weights_last.pt.
     """
     params = ModelParams(device=device, dtype=dtype)
     sss_source_norm = _normalize_sss_source(sss_source)
@@ -808,9 +869,10 @@ def build_table2(
             artifacts_root,
             pkey,
             use_selected=use_selected,
+            strict_selected=strict_selected,
         )
         run_dirs[pkey] = run_dir
-        nets[pkey] = _load_net_from_run(run_dir, params, pkey)
+        nets[pkey] = _load_net_from_run(run_dir, params, pkey, weights_source=weights_source)
         sims[pkey] = _load_sim_paths(run_dir)
         # Quick diagnostic: Table-2 skewness can be unstable with short saved sims.
         try:

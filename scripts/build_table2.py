@@ -46,6 +46,18 @@ def main():
         default=True,
         help="Prefer selected_runs.json over latest complete run (use --no-use_selected to ignore it).",
     )
+    ap.add_argument(
+        "--strict_selected",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Require selected_runs.json entries to exist and be complete (no fallback to latest run).",
+    )
+    ap.add_argument(
+        "--weights_source",
+        default="auto",
+        choices=["auto", "canonical", "best", "last"],
+        help="Which checkpoint to load from each run.",
+    )
     # Backward compatibility with previous CLI.
     ap.add_argument("--no_selected", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -57,6 +69,8 @@ def main():
         include_zlb=args.include_zlb,
         sss_source=args.sss_source,
         use_selected=use_selected,
+        strict_selected=bool(args.strict_selected),
+        weights_source=args.weights_source,
     )
     print(df.to_string(index=False))
     path = save_table2_csv(df, args.artifacts_root)

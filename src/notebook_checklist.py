@@ -39,7 +39,8 @@ def _project_root() -> str:
 def _has_weights(run_dir: str) -> bool:
     if not os.path.isdir(run_dir):
         return False
-    return os.path.exists(os.path.join(run_dir, "weights.pt")) or os.path.exists(os.path.join(run_dir, "weights_best.pt"))
+    names = ("weights.pt", "weights_best.pt", "weights_last.pt")
+    return any(os.path.exists(os.path.join(run_dir, n)) for n in names)
 
 
 def _select_run_dir(artifacts_root: str, policy: str, prefer_selected: bool) -> Tuple[str | None, str]:
@@ -56,10 +57,10 @@ def _select_run_dir(artifacts_root: str, policy: str, prefer_selected: bool) -> 
 
 def _missing_required(run_dir: str) -> List[str]:
     if not os.path.isdir(run_dir):
-        return REQUIRED_RUN_FILES + ["weights.pt|weights_best.pt"]
+        return REQUIRED_RUN_FILES + ["weights.pt|weights_best.pt|weights_last.pt"]
     miss = [name for name in REQUIRED_RUN_FILES if not os.path.exists(os.path.join(run_dir, name))]
     if not _has_weights(run_dir):
-        miss.append("weights.pt|weights_best.pt")
+        miss.append("weights.pt|weights_best.pt|weights_last.pt")
     return miss
 
 
@@ -84,7 +85,7 @@ def build_notebook_run_checklist(
 
         run_dir, run_source = _select_run_dir(artifacts_root, policy, prefer_selected=prefer_selected)
         run_exists = bool(run_dir and os.path.isdir(run_dir))
-        missing = _missing_required(run_dir) if run_dir is not None else (REQUIRED_RUN_FILES + ["weights.pt|weights_best.pt"])
+        missing = _missing_required(run_dir) if run_dir is not None else (REQUIRED_RUN_FILES + ["weights.pt|weights_best.pt|weights_last.pt"])
 
         run_mtime = None
         if run_exists and run_dir is not None:
