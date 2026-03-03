@@ -332,12 +332,32 @@ class Trainer:
     def simulate_initial_state(self, B: int, commitment_sss: Dict | None = None) -> torch.Tensor:
         dev, dt = self.params.device, self.params.dtype
         strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
+        exog_init_mode = str(
+            getattr(
+                self.cfg,
+                "exogenous_init_mode",
+                "author_hooks" if strict_author else "stationary",
+            )
+        )
+        commitment_init_mode = str(
+            getattr(
+                self.cfg,
+                "commitment_init_mode",
+                "author_hooks" if strict_author else "sss_or_ours",
+            )
+        )
 
         rho_A, sig_A = float(self.params.rho_A), float(self.params.sigma_A)
         rho_g, sig_g = float(self.params.rho_g), float(self.params.sigma_g)
         rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
 
-        if strict_author:
+        if exog_init_mode not in ("stationary", "author_hooks"):
+            raise ValueError(
+                f"Unknown exogenous_init_mode={exog_init_mode}. "
+                "Use 'stationary' or 'author_hooks'."
+            )
+
+        if exog_init_mode == "author_hooks":
             # Public Keras Hooks.py semantics:
             # - exogenous states centered at zero
             # - equal regime mix 50/50 at init
@@ -385,9 +405,19 @@ class Trainer:
         if self.policy != "commitment":
             return torch.stack([Delta_prev, logA, logg, xi, s.to(dt)], dim=-1)
 
+        if commitment_init_mode not in ("sss_or_ours", "author_hooks", "ours_no_sss"):
+            raise ValueError(
+                f"Unknown commitment_init_mode={commitment_init_mode}. "
+                "Use 'sss_or_ours', 'author_hooks', or 'ours_no_sss'."
+            )
+
         # Timeless commitment: lagged Ramsey multipliers are part of the state.
-        # If caller provides commitment SSS (per-regime or pooled), use it; otherwise start at 0.
-        if commitment_sss is not None:
+        # Modes:
+        # - sss_or_ours: use commitment_sss when provided; otherwise our fallback.
+        # - author_hooks: strict author init, ignore commitment_sss.
+        # - ours_no_sss: always our fallback, ignore commitment_sss.
+        use_sss_init = (commitment_init_mode == "sss_or_ours") and (commitment_sss is not None)
+        if use_sss_init:
             c0 = commitment_sss.get(0, commitment_sss.get("0")) if isinstance(commitment_sss, dict) else None
             c1 = commitment_sss.get(1, commitment_sss.get("1")) if isinstance(commitment_sss, dict) else None
             if c0 is not None and c1 is not None:
@@ -419,7 +449,7 @@ class Trainer:
                 vp = torch.full((B,), float(commitment_sss["vartheta_prev"]), device=dev, dtype=dt)
                 rp = torch.full((B,), float(commitment_sss["varrho_prev"]), device=dev, dtype=dt)
                 c_prev = torch.full((B,), float(commitment_sss.get("c_prev", commitment_sss.get("c", 1.0))), device=dev, dtype=dt)
-        elif strict_author:
+        elif commitment_init_mode == "author_hooks":
             # Keras commitment Hooks.py constants:
             # vartheta_old=-0.019182, rho_old=0.016500, c_old=0.921336 + Gaussian noise.
             normal_noise = torch.randn(B, 3, device=dev, dtype=dt) * torch.tensor(

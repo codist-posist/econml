@@ -6,6 +6,8 @@ import torch
 PolicyName = Literal["taylor", "mod_taylor", "discretion", "commitment"]
 RunMode = Literal["full", "mid", "dev", "author"]
 TrainingMode = Literal["robust", "strict_author"]
+ExogenousInitMode = Literal["stationary", "author_hooks"]
+CommitmentInitMode = Literal["sss_or_ours", "author_hooks", "ours_no_sss"]
 
 
 @dataclass(frozen=True)
@@ -191,9 +193,20 @@ class TrainConfig:
     # ---- Commitment (timeless) initialization ----
     # Under commitment, lagged Ramsey multipliers are part of the state. If
     # `commitment_sss` is provided to Trainer.train/simulate_initial_state, the
-    # lagged multipliers are initialized from SSS values (timeless-style init).
-    # If `commitment_sss` is None, the code falls back to zero/noisy init
-    # (time-0/bootstrap style). These knobs affect only the fallback init.
+    # lagged multipliers can be initialized from SSS values (timeless-style init),
+    # depending on `commitment_init_mode`.
+    #
+    # exogenous_init_mode:
+    #   - "stationary": sample around stationary means/variances (our baseline).
+    #   - "author_hooks": public Keras Hooks.py style (centered at zero, 50/50 regime).
+    #
+    # commitment_init_mode:
+    #   - "sss_or_ours": if commitment_sss is passed -> use SSS; else use our fallback.
+    #   - "author_hooks": always use author Hooks.py constants/noise (ignore commitment_sss).
+    #   - "ours_no_sss": always use our fallback (ignore commitment_sss).
+    exogenous_init_mode: ExogenousInitMode = "stationary"
+    commitment_init_mode: CommitmentInitMode = "sss_or_ours"
+    # Our fallback init knobs (used by sss_or_ours when commitment_sss is None, or by ours_no_sss).
     commitment_init_multiplier_std: float = 0.0
     commitment_init_multiplier_clip: float = 25.0
 
@@ -276,6 +289,7 @@ class TrainConfig:
         """
         Author-like compute preset (closest to public Keras code semantics):
         - strict_author training mode
+        - author Hooks.py state initialization (exogenous + commitment)
         - single phase by default (episode+minibatch training analog)
         - GH=3, Adam lr=1e-5, minibatch size=128, episode length=10
         - no hard eps-stop (monitor loss / checkpoints)
@@ -288,6 +302,8 @@ class TrainConfig:
         base = TrainConfig(
             mode="author",
             training_mode="strict_author",
+            exogenous_init_mode="author_hooks",
+            commitment_init_mode="author_hooks",
             hidden_layers=hidden,
             activation="selu",
             use_two_phase=False,
