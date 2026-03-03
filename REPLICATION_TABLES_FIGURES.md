@@ -28,7 +28,12 @@ This repository keeps legacy notebooks and adds a paper-aligned layer.
 ## Notes
 
 - Existing notebooks (`91/92/93/94/96/99/100`) are preserved.
-- Paper table construction now supports two SSS sources:
+- Paper table construction supports two SSS sources:
   - `sim_conditional` (author-style long-simulation conditional means),
   - `fixed_point` (policy fixed-point regime values).
-- If ZLB runs are not available yet, Table 4 is generated with `NaN` placeholders and a warning.
+- `115_paper_figures_2_14.ipynb` now encodes article-style scenarios per figure:
+  - regime-switch figures start at normal SSS and set temporary innovations to zero,
+  - cost-push IRFs use an initial `xi` jump and zero later innovations (AR(1) propagation),
+  - Figure 9 uses `eta_bar=0` and fixed normal regime,
+  - Figure 12 uses up to 10,000 simulated quarters.
+- If ZLB runs are not available yet, Table 4 and Figures 10/11/14 cannot be fully populated.
