@@ -72,6 +72,7 @@ def build_paper_tables_2_4(
     strict_selected: bool = False,
     weights_source: str = "auto",
     sss_source: str = "sim_conditional",
+    strict_author_table2: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """
     Build paper-style Table 2/3/4 using the common table builder and reshape to article layout.
@@ -92,6 +93,7 @@ def build_paper_tables_2_4(
             include_rules=True,
             include_zlb=True,
             sss_source=sss_source,
+            strict_author_table2=strict_author_table2,
         )
     except FileNotFoundError as e:
         msg = str(e).lower()
@@ -108,6 +110,7 @@ def build_paper_tables_2_4(
             include_rules=True,
             include_zlb=False,
             sss_source=sss_source,
+            strict_author_table2=strict_author_table2,
         )
         cols = list(df.columns)
         extras = []

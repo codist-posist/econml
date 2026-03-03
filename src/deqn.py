@@ -915,7 +915,25 @@ class Trainer:
                 max_steps = max_steps_default
             max_steps = max(0, int(max_steps))
             hit_safety_cap = eps_stop is not None
+            use_author_lr_scheduler = bool(getattr(self.cfg, "use_author_lr_scheduler", False)) and (train_mode == "author")
+            author_lr_decay = float(getattr(self.cfg, "author_lr_decay", 1.0))
+            author_lr_min = float(getattr(self.cfg, "author_lr_min", 1e-7))
+            author_lr_warmup_episodes = max(0, int(getattr(self.cfg, "author_lr_warmup_episodes", 0)))
             keys = self.res_keys
+            current_lr = float(lr)
+            current_episode_idx = 0
+
+            def _set_opt_lr(v: float) -> None:
+                vv = float(v)
+                for pg in opt.param_groups:
+                    pg["lr"] = vv
+
+            def _author_sched_lr(ep_idx_zero_based: int) -> float:
+                if author_lr_warmup_episodes > 0 and ep_idx_zero_based < author_lr_warmup_episodes:
+                    frac = float(ep_idx_zero_based + 1) / float(author_lr_warmup_episodes)
+                    return max(author_lr_min, float(lr) * frac)
+                k = max(0, ep_idx_zero_based - author_lr_warmup_episodes)
+                return max(author_lr_min, float(lr) * (author_lr_decay ** k))
 
             def _opt_step(X_step: torch.Tensor, need_log: bool) -> Tuple[float, torch.Tensor | None, torch.Tensor | None]:
                 opt.zero_grad(set_to_none=True)
@@ -986,7 +1004,13 @@ class Trainer:
                     with torch.no_grad():
                         metr = residual_metrics(resid_for_log, keys, tol=1e-4)
                         metr.update(residual_metrics_by_regime(X_for_log, resid_for_log, keys, tol=1e-4, policy=self.policy))
-                        metr.update({"global_step": float(global_step)})
+                        metr.update(
+                            {
+                                "global_step": float(global_step),
+                                "episode": float(current_episode_idx),
+                                "lr": float(current_lr),
+                            }
+                        )
                         try:
                             rms = float(metr.get("rms", float("nan")))
                             mx = float(metr.get("max", float("nan")))
@@ -1027,9 +1051,12 @@ class Trainer:
             else:
                 max_episodes = None
 
-            pbar_total = int(max_steps) if int(max_steps) > 0 else (
-                int(max_episodes) * int(updates_per_episode) if max_episodes is not None else 1
-            )
+            if train_mode == "author" and max_episodes is not None:
+                pbar_total = int(max_episodes) * int(updates_per_episode)
+            elif int(max_steps) > 0:
+                pbar_total = int(max_steps)
+            else:
+                pbar_total = 1
             pbar = trange(max(1, pbar_total), desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False)
             try:
                 episode_count = 0
@@ -1041,6 +1068,14 @@ class Trainer:
                     else:
                         if global_step >= int(max_steps):
                             break
+
+                    # Author Hooks.py-style per-episode scheduler.
+                    if use_author_lr_scheduler:
+                        current_lr = _author_sched_lr(episode_count)
+                    else:
+                        current_lr = float(lr)
+                    _set_opt_lr(current_lr)
+                    current_episode_idx = int(episode_count + 1)
 
                     with torch.no_grad():
                         xs = []
@@ -1093,6 +1128,11 @@ class Trainer:
                     print(
                         f"[{self.policy} | {tag}] author episodes (derived): "
                         f"{episode_count} from step budget={int(max_steps)}"
+                    )
+                if reached_step_cap and explicit_author_episodes is not None:
+                    print(
+                        f"[{self.policy} | {tag}] WARNING: hit step safety cap "
+                        f"(max_steps={int(max_steps)}) before finishing episodes={int(max_episodes)}."
                     )
             print(f"[{self.policy} | {tag}] best_loss={best_loss:.3e} at step={best_step}")
             return losses, x_pop

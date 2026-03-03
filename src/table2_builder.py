@@ -673,6 +673,7 @@ def build_table2(
     include_rules: bool = True,
     include_zlb: bool = False,
     sss_source: str = "sim_conditional",
+    strict_author_table2: bool = False,
 ) -> pd.DataFrame:
     """
     Build a Table-2-like summary after trainings.
@@ -690,6 +691,8 @@ def build_table2(
             long-simulation moments (prefer author `simulated_definitions_NT/SS.npz`,
             fallback to conditional moments from `sim_paths.npz`).
           * "fixed_point": regime-conditional policy fixed points (diagnostic mode).
+      - If `strict_author_table2=True` and `sss_source='sim_conditional'`,
+        require author NT/SS files for trained policies (no silent fallback).
       - Weights source controlled by `weights_source`:
           * "auto" (default): infer best/last policy from run config (fallback canonical),
           * "canonical": always load weights.pt,
@@ -773,6 +776,12 @@ def build_table2(
         # Prefer author post-process fixed-regime moment files in sim_conditional mode.
         if (sss_source_norm == "sim_conditional") and (run_dir is not None):
             am = _load_author_regime_moments(run_dir, regime)
+            if strict_author_table2 and am is None:
+                fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
+                raise FileNotFoundError(
+                    f"strict_author_table2=True requires '{fname}' for policy='{policy_key}' in run_dir={run_dir}. "
+                    "Generate author post-process files first (scripts/build_author_postprocess_like.py)."
+                )
             if am is not None:
                 pi_m = am["pi"]
                 i_m = am["i"]

@@ -58,6 +58,12 @@ def main():
         choices=["auto", "canonical", "best", "last"],
         help="Which checkpoint to load from each run.",
     )
+    ap.add_argument(
+        "--strict_author_table2",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Require author NT/SS simulation files for sim_conditional mode (no fallback).",
+    )
     # Backward compatibility with previous CLI.
     ap.add_argument("--no_selected", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -71,6 +77,7 @@ def main():
         use_selected=use_selected,
         strict_selected=bool(args.strict_selected),
         weights_source=args.weights_source,
+        strict_author_table2=bool(args.strict_author_table2),
     )
     print(df.to_string(index=False))
     path = save_table2_csv(df, args.artifacts_root)

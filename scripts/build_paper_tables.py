@@ -43,6 +43,12 @@ def main() -> int:
         choices=["auto", "canonical", "best", "last"],
         help="Which checkpoint to load from each run.",
     )
+    ap.add_argument(
+        "--strict_author_table2",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Require author NT/SS simulation files for sim_conditional mode (no fallback).",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.artifacts_root, exist_ok=True)
@@ -61,6 +67,7 @@ def main() -> int:
         strict_selected=bool(args.strict_selected),
         weights_source=args.weights_source,
         sss_source=args.sss_source,
+        strict_author_table2=bool(args.strict_author_table2),
     )
 
     for key, df in tables.items():

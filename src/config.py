@@ -107,8 +107,8 @@ class TrainConfig:
     # - "author": episode-oriented DEQN loop (closest to author code)
     # - "ours": step-oriented loop with optional strict epsilon stop
     training_mode: TrainingMode = "author"
-    # Optional explicit number of episodes for author mode.
-    # If None, we derive an episode budget from phase.steps for backward compatibility.
+    # Explicit number of episodes for author mode.
+    # If None, episode budget is derived from phase.steps for backward compatibility.
     n_episodes: int | None = None
     seed: int = 123
 
@@ -148,6 +148,11 @@ class TrainConfig:
     # Optional micro-batch size for residual backpropagation.
     # This does not change the objective, only memory/throughput behavior.
     residual_chunk_size: int | None = None
+    # Author-like per-episode LR scheduler (Hooks.py-compatible when decay=1.0).
+    use_author_lr_scheduler: bool = False
+    author_lr_decay: float = 1.0
+    author_lr_min: float = 1e-7
+    author_lr_warmup_episodes: int = 0
 
     # ---- Artifacts ----
     artifacts_root: str = "../artifacts"
@@ -313,6 +318,7 @@ class TrainConfig:
             exogenous_init_mode="author_hooks",
             commitment_init_mode="author_hooks",
             weights_selection="last",
+            n_episodes=20_000,
             hidden_layers=hidden,
             activation="selu",
             use_two_phase=False,
@@ -320,6 +326,10 @@ class TrainConfig:
             strict_eps_max_steps=None,
             n_path=10,
             n_paths_per_step=1,
+            use_author_lr_scheduler=True,
+            author_lr_decay=1.0,
+            author_lr_min=1e-7,
+            author_lr_warmup_episodes=0,
             log_every=100,
             val_size=1024,
             val_every=2000,
