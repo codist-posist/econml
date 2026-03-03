@@ -357,14 +357,16 @@ class Trainer:
             Delta_prev = torch.ones(B, device=dev, dtype=dt) + disp_std * torch.randn(B, device=dev, dtype=dt)
         else:
             # Initialize exogenous states from stationary laws of motion.
-            mu_logA = -(sig_A**2) / (2.0 * (1.0 - rho_A**2)) if abs(rho_A) < 1.0 else 0.0
-            mu_logg = -(sig_g**2) / (2.0 * (1.0 - rho_g**2)) if abs(rho_g) < 1.0 else 0.0
+            # Appendix A.1 / author code: stationary mean of AR(1)-in-log process is -sigma^2/2.
+            mu_logA = -(sig_A**2) / 2.0
+            mu_logg = -(sig_g**2) / 2.0
+            mu_xi = -(sig_xi**2) / 2.0
             sd_logA = sig_A / max(1e-12, (1.0 - rho_A**2))**0.5 if abs(rho_A) < 1.0 else sig_A
             sd_logg = sig_g / max(1e-12, (1.0 - rho_g**2))**0.5 if abs(rho_g) < 1.0 else sig_g
             sd_xi = sig_xi / max(1e-12, (1.0 - rho_xi**2))**0.5 if abs(rho_xi) < 1.0 else sig_xi
             logA = torch.tensor(mu_logA, device=dev, dtype=dt) + sd_logA * torch.randn(B, device=dev, dtype=dt)
             logg = torch.tensor(mu_logg, device=dev, dtype=dt) + sd_logg * torch.randn(B, device=dev, dtype=dt)
-            xi = sd_xi * torch.randn(B, device=dev, dtype=dt)
+            xi = torch.tensor(mu_xi, device=dev, dtype=dt) + sd_xi * torch.randn(B, device=dev, dtype=dt)
 
             # Markov regime: draw from stationary distribution.
             p12, p21 = float(self.params.p12), float(self.params.p21)

@@ -91,6 +91,11 @@ def identities(params: ModelParams, st: State, out: Dict[str, torch.Tensor]) -> 
     }
 
 
+def _ar1_lognorm_drift(rho: float, sigma: float) -> float:
+    """Paper/author-code drift term for AR(1) in logs."""
+    return float((1.0 - rho) * (-(sigma**2) / 2.0))
+
+
 def shock_laws_of_motion(
     params: ModelParams,
     st: State,
@@ -115,9 +120,10 @@ def shock_laws_of_motion(
     assert st.logA.ndim == 1 and st.loggtilde.ndim == 1 and st.xi.ndim == 1, \
         "State shock components must be 1D (B,) at this stage"
 
-    # Drift corrections for log AR(1) so that levels have the intended mean under lognormality
-    driftA = (1.0 - params.rho_A) * (-(params.sigma_A ** 2) / (2.0 * (1.0 - params.rho_A ** 2)))
-    driftg = (1.0 - params.rho_g) * (-(params.sigma_g ** 2) / (2.0 * (1.0 - params.rho_g ** 2)))
+    # Drift corrections per paper (Appendix A.1) and author code.
+    driftA = _ar1_lognorm_drift(float(params.rho_A), float(params.sigma_A))
+    driftg = _ar1_lognorm_drift(float(params.rho_g), float(params.sigma_g))
+    drift_xi = _ar1_lognorm_drift(float(params.rho_tau), float(params.sigma_tau))
 
     B = st.logA.shape[0]
     view_shape = (B,) + (1,) * (epsA.ndim - 1)  # (B,1,1,...)
@@ -128,7 +134,6 @@ def shock_laws_of_motion(
 
     logA_next = driftA + params.rho_A * logA + params.sigma_A * epsA
     logg_next = driftg + params.rho_g * logg + params.sigma_g * epsg
-    drift_xi = (1.0 - params.rho_tau) * (-(params.sigma_tau ** 2) / (2.0 * (1.0 - params.rho_tau ** 2)))
     xi_next = drift_xi + params.rho_tau * xi + params.sigma_tau * epstau
 
     return logA_next, logg_next, xi_next, s_next.long()

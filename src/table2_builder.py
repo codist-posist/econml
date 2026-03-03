@@ -56,6 +56,16 @@ def _tensor_grid(nodes: torch.Tensor, weights: torch.Tensor) -> Tuple[torch.Tens
     w = (weights.view(n, 1, 1) * weights.view(1, n, 1) * weights.view(1, 1, n)).reshape(-1)
     return a.reshape(-1), b.reshape(-1), c.reshape(-1), w
 
+
+def _ar1_lognorm_mean(sigma: float) -> float:
+    """Stationary mean for paper/author AR(1)-in-log process."""
+    return float(-(sigma**2) / 2.0)
+
+
+def _ar1_lognorm_drift(rho: float, sigma: float) -> float:
+    """Per-period drift term in Appendix A.1 / author code."""
+    return float((1.0 - rho) * _ar1_lognorm_mean(sigma))
+
 def _solve_flex_c_batch(
     params: ModelParams,
     *,
@@ -132,15 +142,16 @@ def _simulate_flex_prices_for_table2(
     flex = solve_flexprice_sss(params)
     h0 = torch.tensor(flex.by_regime[0]["h"], device=dev, dtype=dt)
 
-    logA = torch.full((B,), float(-(params.sigma_A**2)/(2.0*(1.0-params.rho_A**2))), device=dev, dtype=dt)
-    logg = torch.full((B,), float(-(params.sigma_g**2)/(2.0*(1.0-params.rho_g**2))), device=dev, dtype=dt)
-    xi = torch.zeros((B,), device=dev, dtype=dt)
+    logA = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_A)), device=dev, dtype=dt)
+    logg = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_g)), device=dev, dtype=dt)
+    xi = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_tau)), device=dev, dtype=dt)
     s = torch.zeros((B,), device=dev, dtype=torch.long)  # start normal
     h_guess = h0.expand(B)
 
     # drift corrections (same as in model_common)
-    driftA = (1.0 - params.rho_A) * (-(params.sigma_A**2) / (2.0 * (1.0 - params.rho_A**2)))
-    driftg = (1.0 - params.rho_g) * (-(params.sigma_g**2) / (2.0 * (1.0 - params.rho_g**2)))
+    driftA = _ar1_lognorm_drift(float(params.rho_A), float(params.sigma_A))
+    driftg = _ar1_lognorm_drift(float(params.rho_g), float(params.sigma_g))
+    drift_xi = _ar1_lognorm_drift(float(params.rho_tau), float(params.sigma_tau))
 
     c_list = []
     s_list = []
@@ -158,7 +169,7 @@ def _simulate_flex_prices_for_table2(
         # Build next exogenous states for each node (broadcast B x N)
         logA_n = driftA + params.rho_A * logA[:, None] + params.sigma_A * epsA_nodes[None, :]
         logg_n = driftg + params.rho_g * logg[:, None] + params.sigma_g * epsg_nodes[None, :]
-        xi_n   = params.rho_tau * xi[:, None] + params.sigma_tau * epst_nodes[None, :]
+        xi_n = drift_xi + params.rho_tau * xi[:, None] + params.sigma_tau * epst_nodes[None, :]
 
         # Two possible next regimes
         P = params.P  # shape (2,2) with orientation P[s_current, s_next] (row-stochastic)
@@ -215,7 +226,7 @@ def _simulate_flex_prices_for_table2(
         epst = torch.randn((B,), device=dev, dtype=dt)
         logA = driftA + params.rho_A * logA + params.sigma_A * epsA
         logg = driftg + params.rho_g * logg + params.sigma_g * epsg
-        xi = params.rho_tau * xi + params.sigma_tau * epst
+        xi = drift_xi + params.rho_tau * xi + params.sigma_tau * epst
 
         # Markov draw for next regime
         u = torch.rand((B,), device=dev, dtype=dt)

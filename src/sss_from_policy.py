@@ -19,12 +19,10 @@ class PolicySSS:
 
 def _uncond_mean_log_ar1(rho: float, sigma: float) -> float:
     """Mean of log state under the drift-corrected AR(1) used in shock_laws_of_motion."""
-    # With drift correction in model_common.shock_laws_of_motion, the stationary mean is:
-    #   E[log x] = -(sigma^2)/(2*(1-rho^2))
-    # (when innovations are N(0,1)).
-    if abs(1.0 - rho) < 1e-12:
-        return 0.0
-    return float(-(sigma**2) / (2.0 * (1.0 - rho**2)))
+    # Appendix A.1 / author code: stationary mean is -sigma^2 / 2.
+    # Keep rho in the signature for call-site compatibility.
+    _ = rho
+    return float(-(sigma**2) / 2.0)
 
 
 
@@ -120,7 +118,7 @@ def switching_policy_sss_by_regime_from_policy(
     # Exogenous states fixed at unconditional means (drift-corrected AR(1))
     logA0 = _uncond_mean_log_ar1(float(params.rho_A), float(params.sigma_A))
     logg0 = _uncond_mean_log_ar1(float(params.rho_g), float(params.sigma_g))
-    xi0 = 0.0
+    xi0 = _uncond_mean_log_ar1(float(params.rho_tau), float(params.sigma_tau))
 
     if policy == "commitment":
         d_in = _infer_policy_input_dim(net) or 7
