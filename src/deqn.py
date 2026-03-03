@@ -17,10 +17,11 @@ from .config import ModelParams, TrainConfig, set_seeds, PolicyName
 from .quadrature import gauss_hermite
 from .model_common import unpack_state, shock_laws_of_motion, identities
 from .transforms import decode_outputs
-from .policy_rules import i_taylor, fisher_euler_term
 from .residuals_a1 import residuals_a1
 from .residuals_a2 import residuals_a2
 from .residuals_a3 import residuals_a3
+from .residuals_a2_zlb import residuals_a2_zlb
+from .residuals_a3_zlb import residuals_a3_zlb
 from .io_utils import save_csv, ensure_dir, make_run_dir, save_run_metadata, _normalize_artifacts_root, pack_config, save_torch
 
 
@@ -128,19 +129,8 @@ def _gh_grid_3d(params: ModelParams, gh_n: int) -> Tuple[torch.Tensor, torch.Ten
 def _transition_probs_to_next(params: ModelParams, st) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Return transition probabilities (to regime 0, to regime 1) as vectors of shape (B,).
-
-    In the author taylor-para setup, p21 is state-dependent and carried in the state.
-    Other models use the fixed Markov matrix params.P.
     """
-    if getattr(st, "p21", None) is None:
-        p0 = params.P[st.s, 0]
-    else:
-        p21 = torch.clamp(st.p21, min=1e-12, max=1.0 - 1e-12)
-        p0 = torch.where(
-            st.s == 0,
-            torch.full_like(p21, 1.0 - float(params.p12)),
-            p21,
-        )
+    p0 = params.P[st.s, 0]
     p1 = 1.0 - p0
     return p0, p1
 
@@ -214,10 +204,6 @@ def implied_nominal_rate_from_euler(
     def x_next(epsA, epsg, epst, s_next):
         logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params, st, epsA, epsg, epst, s_next)
         Delta_cur = out_t["Delta"].view(-1, 1, 1).expand_as(logA_n)
-        if policy == "mod_taylor" and st.i_prev is not None and st.p21 is not None:
-            i_cur = out_t["i_nom"].view(-1, 1, 1).expand_as(logA_n)
-            p21_cur = st.p21.view(-1, 1, 1).expand_as(logA_n)
-            return torch.stack([Delta_cur, i_cur, logA_n, xi_n, logg_n, s_n.to(x_t.dtype), p21_cur], dim=-1)
         if policy == "commitment":
             vartheta_cur = out_t["vartheta"].view(-1, 1, 1).expand_as(logA_n)
             varrho_cur = out_t["varrho"].view(-1, 1, 1).expand_as(logA_n)
@@ -226,6 +212,16 @@ def implied_nominal_rate_from_euler(
                 c_prev_cur = out_t["c"].view(-1, 1, 1).expand_as(logA_n)
                 return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vartheta_cur, varrho_cur, c_prev_cur], dim=-1)
             return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vartheta_cur, varrho_cur], dim=-1)
+        if policy == "commitment_zlb":
+            vartheta_cur = out_t["vartheta"].view(-1, 1, 1).expand_as(logA_n)
+            varrho_cur = out_t["varrho"].view(-1, 1, 1).expand_as(logA_n)
+            c_prev_cur = out_t["c"].view(-1, 1, 1).expand_as(logA_n)
+            i_nom_cur = out_t["i_nom"].view(-1, 1, 1).expand_as(logA_n)
+            varphi_cur = out_t["varphi"].view(-1, 1, 1).expand_as(logA_n)
+            return torch.stack(
+                [Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vartheta_cur, varrho_cur, c_prev_cur, i_nom_cur, varphi_cur],
+                dim=-1,
+            )
         return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype)], dim=-1)
 
     def f_term(epsA, epsg, epst, s_next):
@@ -288,58 +284,36 @@ class Trainer:
         if self.rbar_by_regime is not None:
             self.rbar_by_regime = self.rbar_by_regime.to(device=self.params.device, dtype=self.params.dtype)
 
-        # Author commitment code can include c_old in the state.
-        # Keep backward compatibility: detect whether the current network expects it.
+        # Detect optional state extensions expected by the current network.
         self._commitment_has_c_prev = False
-        self._modt_has_extended_state = False
-        self._mod_taylor_variant = str(getattr(self.cfg, "mod_taylor_variant", "author_repo_param_i")).strip().lower()
-        if self._mod_taylor_variant == "legacy_rule_rbar":
-            self._mod_taylor_variant = "rule_rbar"
+        self._commitment_zlb_has_full_state = False
         if self.policy == "commitment":
             try:
                 self._commitment_has_c_prev = int(self.net.net[0].in_features) >= 8
             except Exception:
                 self._commitment_has_c_prev = False
-        if self.policy == "mod_taylor":
-            # If variant was not explicitly set, infer from network output size.
-            if self._mod_taylor_variant in ("", "auto"):
-                try:
-                    d_out = int(self.net.net[-1].out_features)
-                    self._mod_taylor_variant = "author_repo_param_i" if d_out in (5, 6, 9) else "rule_rbar"
-                except Exception:
-                    self._mod_taylor_variant = "author_repo_param_i"
+        if self.policy == "commitment_zlb":
             try:
-                self._modt_has_extended_state = int(self.net.net[0].in_features) >= 7
+                self._commitment_zlb_has_full_state = int(self.net.net[0].in_features) >= 10
             except Exception:
-                self._modt_has_extended_state = False
-            if self._mod_taylor_variant in ("rule_rbar", "rule_rbar_zlb"):
-                if self.rbar_by_regime is None:
-                    raise ValueError(
-                        f"mod_taylor_variant={self._mod_taylor_variant} requires rbar_by_regime from flex-price SSS"
-                    )
-                if self.rbar_by_regime.numel() != 2:
-                    raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
+                self._commitment_zlb_has_full_state = False
 
-        if self.policy == "taylor":
-            # Author equations set (A.1): eq_1, eq_2, eq_3, eq_7.
+        if self.policy in ("mod_taylor", "mod_taylor_zlb"):
+            if self.rbar_by_regime is None:
+                raise ValueError(f"policy={self.policy} requires rbar_by_regime from flex-price SSS")
+            if self.rbar_by_regime.numel() != 2:
+                raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
+
+        if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
-        elif self.policy == "mod_taylor":
-            if self._mod_taylor_variant == "author_repo_param_i":
-                # Author dsge_taylor_para-style set: eq_1, eq_2, eq_3, eq_5, eq_7, eq_8.
-                self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_Delta", "res_pstar_def", "res_i_rule"]
-            elif self._mod_taylor_variant in ("rule_rbar", "rule_rbar_zlb"):
-                # Paper modified-Taylor rule as identity:
-                # i_t = rbar_s + psi*(pi_t-pi_bar) [optionally with ZLB].
-                # This does not add extra equilibrium residual equations.
-                self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
-            else:
-                raise ValueError(f"Unknown mod_taylor_variant={self._mod_taylor_variant!r}")
         elif self.policy == "discretion":
-            # Author equations set (A.2): eq_1, eq_2, eq_3, eq_4, eq_7.
             self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
+        elif self.policy == "discretion_zlb":
+            self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_zlb_comp", "res_pstar_def"]
         elif self.policy == "commitment":
-            # Author equations set (A.3): eq_1, eq_2, eq_3, eq_4, eq_7.
             self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
+        elif self.policy == "commitment_zlb":
+            self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_euler_i", "res_zlb_comp", "res_pstar_def"]
         else:
             raise ValueError(self.policy)
 
@@ -382,37 +356,46 @@ class Trainer:
             torch.zeros(B, device=dev, dtype=torch.long),
             torch.ones(B, device=dev, dtype=torch.long),
         )
-        disp_std = 1e-4 if self.policy == "commitment" else 1e-3
+        disp_std = 1e-4 if self.policy in ("commitment", "commitment_zlb") else 1e-3
         Delta_prev = torch.ones(B, device=dev, dtype=dt) + disp_std * torch.randn(B, device=dev, dtype=dt)
 
-        if self.policy == "mod_taylor" and bool(getattr(self, "_modt_has_extended_state", False)):
-            i_nom_ss = (1.0 + float(self.params.pi_bar)) / float(self.params.beta) - 1.0
-            i_prev = torch.tensor(i_nom_ss, device=dev, dtype=dt) + 0.008 * torch.randn(B, device=dev, dtype=dt)
-            p21_low = float(getattr(self.cfg, "mod_taylor_p21_low", 1.0 / 60.0))
-            p21_high = float(getattr(self.cfg, "mod_taylor_p21_high", 1.0))
-            p21 = torch.empty(B, device=dev, dtype=dt).uniform_(p21_low, p21_high)
-            Delta_prev = torch.ones(B, device=dev, dtype=dt) + 0.002 * torch.randn(B, device=dev, dtype=dt)
-            # author-style para order: [Delta_prev, i_prev, logA, xi, logg, s, p21]
-            return torch.stack([Delta_prev, i_prev, logA, xi, logg, s.to(dt), p21], dim=-1)
-
-        if self.policy != "commitment":
+        if self.policy not in ("commitment", "commitment_zlb"):
             return torch.stack([Delta_prev, logA, logg, xi, s.to(dt)], dim=-1)
 
         # Keep API compatibility, but this path intentionally ignores commitment_sss.
         _ = commitment_sss
 
-        # Keras commitment Hooks.py constants:
-        # vartheta_old=-0.019182, rho_old=0.016500, c_old=0.921336 + Gaussian noise.
-        normal_noise = torch.randn(B, 3, device=dev, dtype=dt) * torch.tensor(
-            [0.027, 0.023, 0.052], device=dev, dtype=dt
+        if self.policy == "commitment":
+            # Keras commitment Hooks.py constants:
+            # vartheta_old=-0.019182, rho_old=0.016500, c_old=0.921336 + Gaussian noise.
+            normal_noise = torch.randn(B, 3, device=dev, dtype=dt) * torch.tensor(
+                [0.027, 0.023, 0.052], device=dev, dtype=dt
+            )
+            vartheta_old = torch.tensor(-0.019182, device=dev, dtype=dt) + normal_noise[:, 0]
+            rho_old = torch.tensor(0.016500, device=dev, dtype=dt) + normal_noise[:, 1]
+            c_old = torch.clamp(torch.tensor(0.921336, device=dev, dtype=dt) + normal_noise[:, 2], min=1e-8)
+
+            if self._commitment_has_c_prev:
+                return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vartheta_old, rho_old, c_old], dim=-1)
+            return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vartheta_old, rho_old], dim=-1)
+
+        # commitment_zlb hooks constants (author dsge_zlb_commitment/Hooks.py)
+        normal_noise = torch.randn(B, 6, device=dev, dtype=dt) * torch.tensor(
+            [0.027, 0.023, 0.052, 0.0001, 0.001, 0.001], device=dev, dtype=dt
         )
         vartheta_old = torch.tensor(-0.019182, device=dev, dtype=dt) + normal_noise[:, 0]
         rho_old = torch.tensor(0.016500, device=dev, dtype=dt) + normal_noise[:, 1]
         c_old = torch.clamp(torch.tensor(0.921336, device=dev, dtype=dt) + normal_noise[:, 2], min=1e-8)
-
-        if self._commitment_has_c_prev:
-            return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vartheta_old, rho_old, c_old], dim=-1)
-        return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vartheta_old, rho_old], dim=-1)
+        Delta_prev = torch.tensor(1.0, device=dev, dtype=dt) + normal_noise[:, 3]
+        i_nom_old = torch.clamp(torch.tensor(0.002461, device=dev, dtype=dt) + normal_noise[:, 4], min=0.0)
+        varphi_old = torch.minimum(
+            torch.zeros(B, device=dev, dtype=dt),
+            torch.tensor(-0.000012, device=dev, dtype=dt) + normal_noise[:, 5],
+        )
+        return torch.stack(
+            [Delta_prev, logA, logg, xi, s.to(dt), vartheta_old, rho_old, c_old, i_nom_old, varphi_old],
+            dim=-1,
+        )
 
     def _policy_outputs(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         # If x was created under torch.inference_mode(), it is an 'inference tensor' and
@@ -436,8 +419,7 @@ class Trainer:
             floors=floors,
             params=self.params,
             st=st,
-            mod_taylor_variant=self._mod_taylor_variant if self.policy == "mod_taylor" else None,
-            rbar_by_regime=self.rbar_by_regime if self.policy == "mod_taylor" else None,
+            rbar_by_regime=self.rbar_by_regime if self.policy in ("mod_taylor", "mod_taylor_zlb") else None,
         )
 
     def _bounds_penalty(self, out: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -461,7 +443,7 @@ class Trainer:
 
         # Wider author-like variable penalties
         _add_bound("c", 0.6, 1.4)
-        if self.policy in ("taylor", "mod_taylor"):
+        if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             _add_bound("Delta", 0.9, 1.1)
             _add_bound("XiN", 1.0, 8.0)
             _add_bound("XiD", 1.0, 8.0)
@@ -469,7 +451,7 @@ class Trainer:
             _add_bound("Delta", 0.6, 1.4)
             _add_bound("XiN", 0.0, 12.0)
             _add_bound("XiD", 0.0, 12.0)
-        if self.policy == "commitment":
+        if self.policy in ("commitment", "commitment_zlb"):
             _add_bound("vartheta", -2.0, 1.0)
             _add_bound("varrho", -1.0, 1.0)
 
@@ -517,8 +499,22 @@ class Trainer:
                 )
             return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"]], dim=-1)
 
-        if self.policy == "mod_taylor" and st.i_prev is not None and st.p21 is not None:
-            return torch.stack([out["Delta"], out["i_nom"], logA_n, xi_n, logg_n, s_n.to(dt), st.p21], dim=-1)
+        if self.policy == "commitment_zlb":
+            return torch.stack(
+                [
+                    out["Delta"],
+                    logA_n,
+                    logg_n,
+                    xi_n,
+                    s_n.to(dt),
+                    out["vartheta"],
+                    out["varrho"],
+                    out["c"],
+                    out["i_nom"],
+                    out["varphi"],
+                ],
+                dim=-1,
+            )
 
         return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
 
@@ -529,31 +525,19 @@ class Trainer:
         # Ensure x is a normal tensor when computing residuals with autograd.
         if torch.is_grad_enabled() and getattr(x, 'is_inference', False):
             x = x.clone()
-        if self.policy == "discretion" and torch.is_grad_enabled() and (not x.requires_grad):
+        if self.policy in ("discretion", "discretion_zlb") and torch.is_grad_enabled() and (not x.requires_grad):
             x = x.clone().detach().requires_grad_(True)
         out = self._policy_outputs(x)
         st = unpack_state(x, self.policy)
 
-        if self.policy in ["taylor", "mod_taylor"]:
+        if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             lam_t = out["lam"]
             lam_tg = lam_t.view(-1, 1, 1)
-
-            if self.policy == "taylor":
-                i_t = out["i_nom"]
-                i_rule_target = None
-            else:
-                i_t = out["i_nom"]
-                i_rule_target = out.get("i_rule_target", None)
-
+            i_t = out["i_nom"]
             i_tg = i_t.view(-1, 1, 1)
 
             def x_next(epsA, epsg, epst, s_next):
                 logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)
-                if self.policy == "mod_taylor" and st.i_prev is not None and st.p21 is not None:
-                    Delta_cur = out["Delta"].view(-1, 1, 1).expand_as(logA_n)
-                    i_cur = out["i_nom"].view(-1, 1, 1).expand_as(logA_n)
-                    p21_cur = st.p21.view(-1, 1, 1).expand_as(logA_n)
-                    return torch.stack([Delta_cur, i_cur, logA_n, xi_n, logg_n, s_n.to(x.dtype), p21_cur], dim=-1)
                 Delta_cur = out["Delta"].view(-1, 1, 1).expand_as(logA_n)
                 return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype)], dim=-1)
 
@@ -572,19 +556,7 @@ class Trainer:
             Et_XiD = Et_all[..., 1]
             Et_eul = Et_all[..., 2]
 
-            if self.policy == "mod_taylor" and self._mod_taylor_variant == "author_repo_param_i":
-                res = residuals_a1(
-                    self.params,
-                    st,
-                    out,
-                    Et_XiN,
-                    Et_XiD,
-                    Et_eul,
-                    i_t_current=i_t,
-                    i_rule_target=i_rule_target,
-                )
-            else:
-                res = residuals_a1(self.params, st, out, Et_XiN, Et_XiD, Et_eul)
+            res = residuals_a1(self.params, st, out, Et_XiN, Et_XiD, Et_eul)
             return stack_residuals(res, self.res_keys)
 
         if self.policy == "discretion":
@@ -628,6 +600,61 @@ class Trainer:
             res = residuals_a2(self.params, st, out, Et_F, Et_G, Et_dF, Et_dG, Et_theta, Et_XiN, Et_XiD)
             return stack_residuals(res, self.res_keys)
 
+        if self.policy == "discretion_zlb":
+            lam_t = out["lam"]
+            lam_tg = lam_t.view(-1, 1, 1)
+
+            def x_next(epsA, epsg, epst, s_next):
+                logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)
+                Delta_cur = out["Delta"].view(-1, 1, 1).expand_as(logA_n)
+                return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype)], dim=-1)
+
+            def f_all(epsA, epsg, epst, s_next):
+                xn = x_next(epsA, epsg, epst, s_next)
+                on = self._policy_outputs(xn)
+
+                pi_aux_n = on["pi_aux"]
+                lam_ratio = on["lam"] / lam_tg
+
+                F = self.params.theta * self.params.beta * on["c"].pow(-self.params.gamma) * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) * on["XiD"]
+                G = self.params.theta * self.params.beta * on["c"].pow(-self.params.gamma) * pi_aux_n * on["XiN"]
+                H = on["lam"] / pi_aux_n.pow(1.0 / self.params.eps)
+
+                theta_term = self.params.theta * pi_aux_n * on["zeta"]
+                XiN_rec = self.params.beta * self.params.theta * lam_ratio * pi_aux_n * on["XiN"]
+                XiD_rec = self.params.beta * self.params.theta * lam_ratio * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) * on["XiD"]
+
+                return torch.stack([F, G, theta_term, XiN_rec, XiD_rec, H], dim=-1)
+
+            Et_all = expectation_operator_appendixB(self.params, st, self.gh_n, f_all, eps_grid=self._eps_grid, w_grid=self._w_grid)
+            Et_F = Et_all[..., 0]
+            Et_G = Et_all[..., 1]
+            Et_theta = Et_all[..., 2]
+            Et_XiN = Et_all[..., 3]
+            Et_XiD = Et_all[..., 4]
+            Et_H = Et_all[..., 5]
+
+            dEtF_dx = torch.autograd.grad(Et_F.sum(), x, create_graph=True, retain_graph=True)[0]
+            dEtG_dx = torch.autograd.grad(Et_G.sum(), x, create_graph=True)[0]
+            Et_dF = dEtF_dx[..., 0]
+            Et_dG = dEtG_dx[..., 0]
+
+            res = residuals_a2_zlb(
+                self.params,
+                st,
+                out,
+                Et_F,
+                Et_G,
+                Et_dF,
+                Et_dG,
+                Et_theta,
+                Et_XiN,
+                Et_XiD,
+                Et_H,
+                eps_cc=0.0,
+            )
+            return stack_residuals(res, self.res_keys)
+
         if self.policy == "commitment":
             c_t = out["c"]
             lam_t = out["lam"]
@@ -667,6 +694,63 @@ class Trainer:
             Et_theta = Et_all[..., 4]
 
             res = residuals_a3(self.params, st, out, Et_XiN, Et_XiD, Et_termN, Et_termD, Et_theta)
+            return stack_residuals(res, self.res_keys)
+
+        if self.policy == "commitment_zlb":
+            c_t = out["c"]
+            lam_t = out["lam"]
+            lam_tg = lam_t.view(-1, 1, 1)
+            gamma = self.params.gamma
+            c_tg = c_t.view(-1, 1, 1)
+
+            def x_next(epsA, epsg, epst, s_next):
+                logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)
+                Delta_cur = out["Delta"].view(-1, 1, 1).expand_as(logA_n)
+                vartheta_cur = out["vartheta"].view(-1, 1, 1).expand_as(logA_n)
+                varrho_cur = out["varrho"].view(-1, 1, 1).expand_as(logA_n)
+                c_prev_cur = out["c"].view(-1, 1, 1).expand_as(logA_n)
+                i_nom_cur = out["i_nom"].view(-1, 1, 1).expand_as(logA_n)
+                varphi_cur = out["varphi"].view(-1, 1, 1).expand_as(logA_n)
+                return torch.stack(
+                    [Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vartheta_cur, varrho_cur, c_prev_cur, i_nom_cur, varphi_cur],
+                    dim=-1,
+                )
+
+            def f_all(epsA, epsg, epst, s_next):
+                xn = x_next(epsA, epsg, epst, s_next)
+                on = self._policy_outputs(xn)
+                pi_aux_n = on["pi_aux"]
+                lam_ratio = on["lam"] / lam_tg
+
+                XiN_rec = self.params.beta * self.params.theta * lam_ratio * pi_aux_n * on["XiN"]
+                XiD_rec = self.params.beta * self.params.theta * lam_ratio * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) * on["XiD"]
+                theta_term = self.params.theta * on["zeta"] * pi_aux_n
+                H = on["lam"] / pi_aux_n.pow(1.0 / self.params.eps)
+
+                termN = self.params.beta * self.params.theta * gamma * c_tg.pow(gamma - 1.0) * on["c"].pow(-gamma) * pi_aux_n * on["XiN"]
+                termD = self.params.beta * self.params.theta * gamma * c_tg.pow(gamma - 1.0) * on["c"].pow(-gamma) * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) * on["XiD"]
+                return torch.stack([XiN_rec, XiD_rec, termN, termD, theta_term, H], dim=-1)
+
+            Et_all = expectation_operator_appendixB(self.params, st, self.gh_n, f_all, eps_grid=self._eps_grid, w_grid=self._w_grid)
+            Et_XiN = Et_all[..., 0]
+            Et_XiD = Et_all[..., 1]
+            Et_termN = Et_all[..., 2]
+            Et_termD = Et_all[..., 3]
+            Et_theta = Et_all[..., 4]
+            Et_H = Et_all[..., 5]
+
+            res = residuals_a3_zlb(
+                self.params,
+                st,
+                out,
+                Et_XiN,
+                Et_XiD,
+                Et_termN,
+                Et_termD,
+                Et_theta,
+                Et_H,
+                eps_cc=0.0,
+            )
             return stack_residuals(res, self.res_keys)
 
         raise ValueError(self.policy)
@@ -748,7 +832,7 @@ class Trainer:
             ensure_dir(run_dir)
         metrics_rows: List[Dict[str, float]] | None = [] if run_dir is not None else None
         global_step = 0
-        self._commitment_sss_for_init = commitment_sss if self.policy == "commitment" else None
+        self._commitment_sss_for_init = commitment_sss if self.policy in ("commitment", "commitment_zlb") else None
 
         def run_stage(
             *,
@@ -780,7 +864,7 @@ class Trainer:
             if x_init is None or int(x_init.shape[0]) != int(batch_size):
                 x_pop = self.simulate_initial_state(
                     int(batch_size),
-                    commitment_sss=commitment_sss if self.policy == "commitment" else None,
+                    commitment_sss=commitment_sss if self.policy in ("commitment", "commitment_zlb") else None,
                 ).to(device=dev, dtype=self.params.dtype)
             else:
                 x_pop = x_init
@@ -810,9 +894,9 @@ class Trainer:
                 # CUDA memory guard: evaluate residual loss in micro-batches.
                 chunk_size = int(getattr(self.cfg, "residual_chunk_size", 0) or 0)
                 if chunk_size <= 0 and str(dev).startswith("cuda"):
-                    if self.policy == "discretion":
+                    if self.policy in ("discretion", "discretion_zlb"):
                         chunk_size = min(int(X_step.shape[0]), 1024)
-                    elif self.policy == "commitment" and self.params.dtype == torch.float64:
+                    elif self.policy in ("commitment", "commitment_zlb") and self.params.dtype == torch.float64:
                         chunk_size = min(int(X_step.shape[0]), 512)
                 use_chunks = (0 < chunk_size < int(X_step.shape[0]))
 
@@ -950,7 +1034,7 @@ class Trainer:
         npps_p1 = _phase_npps(1)
         x = self.simulate_initial_state(
             int(self.cfg.phase1.batch_size) * npps_p1,
-            commitment_sss=commitment_sss if self.policy == "commitment" else None,
+            commitment_sss=commitment_sss if self.policy in ("commitment", "commitment_zlb") else None,
         ).to(device=dev, dtype=self.params.dtype)
 
         losses_all: List[float] = []
@@ -1028,7 +1112,6 @@ def simulate_paths(
     x0: torch.Tensor,
     rbar_by_regime: torch.Tensor | None = None,
     *,
-    mod_taylor_variant: str | None = None,
     compute_implied_i: bool = False,
     gh_n: int = 3,
     thin: int = 1,
@@ -1037,8 +1120,8 @@ def simulate_paths(
 ) -> Dict[str, np.ndarray]:
     """Forward simulation under a trained policy network."""
 
-    # Safety: for discretion/commitment, nominal rate i_t is not an explicit control; it is implied by the Euler equation. If compute_implied_i is left False, downstream Table-2 moments for nominal/real rates will be invalid.
-    if (policy in ("discretion", "commitment")) and (not compute_implied_i):
+    # For discretion/discretion_zlb/commitment, nominal rate is implied by Euler unless requested otherwise.
+    if (policy in ("discretion", "discretion_zlb", "commitment")) and (not compute_implied_i):
         print("[simulate_paths] compute_implied_i was False for policy=%s; enabling it to compute nominal rates from Euler." % policy)
         compute_implied_i = True
 
@@ -1071,17 +1154,6 @@ def simulate_paths(
         cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
     else:
         cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
-    if policy == "mod_taylor":
-        var = (mod_taylor_variant or "").strip().lower()
-        if not var:
-            d_out = None
-            try:
-                d_out = int(net.net[-1].out_features)
-            except Exception:
-                pass
-            var = "author_repo_param_i" if d_out in (5, 6, 9) else "rule_rbar"
-        cfg_sim = TrainConfig.author_like(policy="mod_taylor", seed=0, mod_taylor_variant=var)
-
     trainer = Trainer(params=params_sim, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
 
     assert thin >= 1
@@ -1099,35 +1171,32 @@ def simulate_paths(
         "tau": np.zeros((keep, B)),
         "s": np.zeros((keep, B), dtype=np.int64),
     }
-    if (policy not in ["taylor", "mod_taylor"]) and compute_implied_i:
-        store["i"] = np.zeros((keep, B))
-    elif policy in ["taylor", "mod_taylor"]:
+    explicit_i_policies = ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb")
+    if (policy in explicit_i_policies) or compute_implied_i:
         store["i"] = np.zeros((keep, B))
     if store_states:
         store["logA"] = np.zeros((keep, B))
         store["loggtilde"] = np.zeros((keep, B))
         store["xi"] = np.zeros((keep, B))
 
-    if policy == "commitment":
+    if policy in ("commitment", "commitment_zlb"):
         store["vartheta_prev"] = np.zeros((keep, B))
         store["varrho_prev"] = np.zeros((keep, B))
+    if policy == "commitment_zlb":
+        store["i_nom_prev"] = np.zeros((keep, B))
+        store["varphi_prev"] = np.zeros((keep, B))
 
     k = 0
     iterator = trange(T, desc=f"simulate[{policy}]", leave=False) if show_progress else range(T)
     for t in iterator:
         out = trainer._policy_outputs(x)
         st = unpack_state(x, policy)
-        ids = identities(params, st, out)
+        ids = identities(params_sim, st, out)
 
-        if policy in ["taylor", "mod_taylor"]:
-            if policy == "taylor":
-                i_t = i_taylor(params_sim, out["pi"])
-            else:
-                if "i_nom" not in out:
-                    raise RuntimeError(
-                        "mod_taylor could not produce nominal rate 'i_nom' (check mod_taylor_variant and rbar_by_regime)."
-                    )
-                i_t = out["i_nom"]
+        if policy in explicit_i_policies:
+            if "i_nom" not in out:
+                raise RuntimeError(f"policy={policy} expected explicit i_nom in decoded outputs.")
+            i_t = out["i_nom"]
         else:
             if compute_implied_i:
                 i_t = implied_nominal_rate_from_euler(params_sim, policy, x, out, int(gh_n), trainer)
@@ -1151,9 +1220,12 @@ def simulate_paths(
                 store["logA"][k] = st.logA.cpu().numpy()
                 store["loggtilde"][k] = st.loggtilde.cpu().numpy()
                 store["xi"][k] = st.xi.cpu().numpy()
-            if policy == "commitment":
+            if policy in ("commitment", "commitment_zlb"):
                 store["vartheta_prev"][k] = st.vartheta_prev.cpu().numpy()
                 store["varrho_prev"][k] = st.varrho_prev.cpu().numpy()
+            if policy == "commitment_zlb":
+                store["i_nom_prev"][k] = st.i_nom_prev.cpu().numpy()
+                store["varphi_prev"][k] = st.varphi_prev.cpu().numpy()
             k += 1
 
         x = trainer._step_state(x)

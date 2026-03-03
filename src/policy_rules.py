@@ -8,6 +8,15 @@ def i_taylor(params: ModelParams, pi: torch.Tensor) -> torch.Tensor:
     return (1.0 + params.pi_bar) / params.beta - 1.0 + params.psi * (pi - params.pi_bar)
 
 
+def i_taylor_zlb(
+    params: ModelParams,
+    pi: torch.Tensor,
+    *,
+    zlb_floor: float = 0.0,
+) -> torch.Tensor:
+    return torch.clamp(i_taylor(params, pi), min=float(zlb_floor))
+
+
 def i_modified_taylor(params: ModelParams, pi: torch.Tensor, rbar_by_regime: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
     rbar = rbar_by_regime[s]
     return rbar + params.psi * (pi - params.pi_bar)
@@ -33,7 +42,7 @@ def i_taylor_plus_zlb(
     *,
     zlb_floor: float = 0.0,
 ) -> torch.Tensor:
-    # Same economic object as "modified Taylor + ZLB" in the paper-style taxonomy.
+    # Backward-compatible alias used in old scripts.
     return i_modified_taylor_zlb(
         params,
         pi,

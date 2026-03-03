@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from .config import ModelParams
 from .model_common import State
-from .policy_rules import i_modified_taylor, i_modified_taylor_zlb
+from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
 
 
 def _safe_exp(x: torch.Tensor) -> torch.Tensor:
@@ -105,25 +105,21 @@ def decode_outputs(
     *,
     params: Optional[ModelParams] = None,
     st: Optional[State] = None,
-    mod_taylor_variant: Optional[str] = None,
     rbar_by_regime: Optional[torch.Tensor] = None,
 ) -> Dict[str, torch.Tensor]:
     # Legacy fallback: keep backward compatibility for utility call-sites that do
     # not provide state/params.
     if params is None or st is None:
-        if policy == "taylor":
+        if policy in ("taylor", "taylor_zlb", "mod_taylor", "mod_taylor_zlb"):
             names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta"]
-        elif policy == "mod_taylor":
-            if raw.shape[-1] == 8:
-                names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta"]
-            elif raw.shape[-1] == 9:
-                names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta", "i_nom"]
-            else:
-                raise ValueError(f"decode_outputs legacy mod_taylor raw dim {raw.shape[-1]} unsupported")
         elif policy == "discretion":
             names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta", "mu", "rho", "zeta"]
+        elif policy == "discretion_zlb":
+            names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta", "mu", "rho", "zeta", "varphi"]
         elif policy == "commitment":
             names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta", "mu", "nu", "zeta", "vartheta", "varrho"]
+        elif policy == "commitment_zlb":
+            names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta", "mu", "nu", "zeta", "vartheta", "varrho", "i_nom", "varphi"]
         else:
             raise ValueError(policy)
 
@@ -151,9 +147,9 @@ def decode_outputs(
 
     # Strict author-style decoding: policy net outputs auxiliary objects and
     # economic variables are built in Definitions-style formulas.
-    if policy == "taylor":
+    if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
         if raw.shape[-1] != 4:
-            raise ValueError(f"policy=taylor expects d_out=4 (author), got {raw.shape[-1]}")
+            raise ValueError(f"policy={policy} expects d_out=4, got {raw.shape[-1]}")
         num_raw, den_raw, pstar_aux_raw, cons_raw = [raw[..., i] for i in range(4)]
         XiN = num_raw
         XiD = den_raw
@@ -161,97 +157,22 @@ def decode_outputs(
         c = c_ss + cons_raw
         p_star_aux = 1.0 + pstar_aux_raw
         out = _common_derived(params, st, c=c, XiN=XiN, XiD=XiD, p_star_aux=p_star_aux)
-        out["i_nom"] = (1.0 + params.pi_bar) / params.beta - 1.0 + params.psi * (out["pi"] - params.pi_bar)
+
+        if policy == "taylor":
+            out["i_nom"] = i_taylor(params, out["pi"])
+        elif policy == "taylor_zlb":
+            out["i_nom"] = i_taylor_zlb(params, out["pi"], zlb_floor=0.0)
+        elif policy == "mod_taylor":
+            if rbar_by_regime is None:
+                raise ValueError("policy=mod_taylor requires rbar_by_regime from flex-price SSS")
+            out["i_nom"] = i_modified_taylor(params, out["pi"], rbar_by_regime, st.s)
+        else:
+            if rbar_by_regime is None:
+                raise ValueError("policy=mod_taylor_zlb requires rbar_by_regime from flex-price SSS")
+            out["i_nom"] = i_modified_taylor_zlb(params, out["pi"], rbar_by_regime, st.s, zlb_floor=0.0)
+
         out["i_rule_target"] = out["i_nom"]
         return out
-
-    if policy == "mod_taylor":
-        variant = (mod_taylor_variant or "").strip().lower()
-        if not variant:
-            # shape-based fallback for old call-sites/artifacts
-            variant = "author_repo_param_i" if raw.shape[-1] in (5, 6) else "rule_rbar"
-
-        # ----- Variant A: author repo parametric i_t output -----
-        if variant == "author_repo_param_i":
-            # Author taylor_para has 6 outputs with an unused disp entry.
-            if raw.shape[-1] == 6:
-                num_raw, den_raw, _disp_unused, pstar_aux_raw, cons_raw, i_nom_raw = [raw[..., i] for i in range(6)]
-            elif raw.shape[-1] == 5:
-                num_raw, den_raw, pstar_aux_raw, cons_raw, i_nom_raw = [raw[..., i] for i in range(5)]
-            else:
-                raise ValueError(
-                    f"policy=mod_taylor variant=author_repo_param_i expects d_out=6 (or 5 compatibility), got {raw.shape[-1]}"
-                )
-            XiN = torch.clamp(num_raw, min=1e-12)
-            XiD = torch.clamp(den_raw, min=1e-12)
-            c_ss = (1.0 / params.M) ** (1.0 / (params.omega + params.gamma))
-            c = torch.clamp(c_ss + cons_raw, min=1e-12)
-            p_star_aux = 1.0 + pstar_aux_raw
-
-            pstar = torch.clamp(params.M * XiN / XiD, min=1e-12)
-            pi_aux = _pi_aux_from_pstar(params, pstar)
-            one_plus_pi = torch.clamp(pi_aux, min=1e-12).pow(1.0 / float(params.eps))
-            pi = one_plus_pi - 1.0
-            Delta = float(params.theta) * pi_aux * st.Delta_prev + (1.0 - float(params.theta)) * p_star_aux
-            Delta = torch.clamp(Delta, min=1e-12)
-            lam = c.pow(-params.gamma)
-            A = torch.exp(st.logA)
-            g = params.g_bar * torch.exp(st.loggtilde)
-            y = c + g
-            h = y * Delta / torch.clamp(A, min=1e-12)
-            w = h.pow(params.omega) / torch.clamp(lam, min=1e-12)
-
-            out = {
-                "c": c,
-                "XiN": XiN,
-                "XiD": XiD,
-                "p_star_aux": p_star_aux,
-                "pi_aux": pi_aux,
-                "one_plus_pi": one_plus_pi,
-                "pi": pi,
-                "Delta": Delta,
-                "pstar": pstar,
-                "lam": lam,
-                "w": w,
-                "A": A,
-                "g": g,
-                "y": y,
-                "h": h,
-            }
-            i_base = (1.0 + params.pi_bar) / params.beta - 1.0
-            out["i_nom"] = i_base + i_nom_raw
-            out["i_nom_shift"] = i_nom_raw
-            i_rule = (1.0 + params.pi_bar) / params.beta - 1.0 + params.psi * (out["pi"] - params.pi_bar)
-            i_old = st.i_prev if st.i_prev is not None else torch.zeros_like(out["i_nom"])
-            out["i_rule_target"] = params.rho_i * i_old + (1.0 - params.rho_i) * i_rule
-            return out
-
-        # ----- Variant B/C: modified Taylor rule with regime-specific rbar -----
-        # legacy_rule_rbar is an alias kept for backward compatibility.
-        if variant in ("rule_rbar", "legacy_rule_rbar", "rule_rbar_zlb"):
-            if raw.shape[-1] != 4:
-                raise ValueError(
-                    f"policy=mod_taylor variant={variant} expects d_out=4 (same economic block as Taylor), got {raw.shape[-1]}"
-                )
-            if rbar_by_regime is None:
-                raise ValueError(f"policy=mod_taylor variant={variant} requires rbar_by_regime from flex-price SSS")
-
-            num_raw, den_raw, pstar_aux_raw, cons_raw = [raw[..., i] for i in range(4)]
-            XiN = num_raw
-            XiD = den_raw
-            c_ss = (1.0 / params.M) ** (1.0 / (params.omega + params.gamma))
-            c = c_ss + cons_raw
-            p_star_aux = 1.0 + pstar_aux_raw
-            out = _common_derived(params, st, c=c, XiN=XiN, XiD=XiD, p_star_aux=p_star_aux)
-
-            if variant == "rule_rbar_zlb":
-                out["i_nom"] = i_modified_taylor_zlb(params, out["pi"], rbar_by_regime, st.s, zlb_floor=0.0)
-            else:
-                out["i_nom"] = i_modified_taylor(params, out["pi"], rbar_by_regime, st.s)
-            out["i_rule_target"] = out["i_nom"]
-            return out
-
-        raise ValueError(f"Unknown mod_taylor variant: {mod_taylor_variant!r}")
 
     if policy == "discretion":
         if raw.shape[-1] != 5:
@@ -263,6 +184,23 @@ def decode_outputs(
         p_star_aux = 1.0 + pstar_aux_raw
         out = _common_derived(params, st, c=c, XiN=XiN, XiD=XiD, p_star_aux=p_star_aux)
         out["eta"] = eta_raw
+        out["zeta"] = -(
+            out["eta"] * (params.eps - 1.0)
+        ) / (params.eps * torch.clamp(out["one_plus_pi"], min=1e-12) * torch.clamp(st.Delta_prev, min=1e-12))
+        out["mu"] = torch.zeros_like(out["c"])
+        return out
+
+    if policy == "discretion_zlb":
+        if raw.shape[-1] != 6:
+            raise ValueError(f"policy=discretion_zlb expects d_out=6, got {raw.shape[-1]}")
+        num_raw, den_raw, pstar_aux_raw, cons_raw, eta_raw, varphi_raw = [raw[..., i] for i in range(6)]
+        XiN = F.softplus(num_raw)
+        XiD = F.softplus(den_raw)
+        c = 1.0 + cons_raw
+        p_star_aux = 1.0 + pstar_aux_raw
+        out = _common_derived(params, st, c=c, XiN=XiN, XiD=XiD, p_star_aux=p_star_aux)
+        out["eta"] = eta_raw
+        out["varphi"] = -F.softplus(varphi_raw)
         out["zeta"] = -(
             out["eta"] * (params.eps - 1.0)
         ) / (params.eps * torch.clamp(out["one_plus_pi"], min=1e-12) * torch.clamp(st.Delta_prev, min=1e-12))
@@ -307,6 +245,56 @@ def decode_outputs(
         out["varrho"] = (
             -out["mu"] * out["pstar"]
             + varrho_old * params.theta * c_prev.pow(params.gamma) * out["c"].pow(-params.gamma) * out["pi_aux"].pow((params.eps - 1.0) / params.eps)
+        )
+        out["nu"] = torch.zeros_like(out["c"])
+        return out
+
+    if policy == "commitment_zlb":
+        if raw.shape[-1] != 7:
+            raise ValueError(f"policy=commitment_zlb expects d_out=7, got {raw.shape[-1]}")
+        cons_raw, num_raw, den_raw, i_nom_raw, pstar_aux_raw, eta_raw, varphi_raw = [raw[..., i] for i in range(7)]
+        XiN = F.softplus(num_raw)
+        XiD = F.softplus(den_raw)
+        c = 1.0 + cons_raw
+        p_star_aux = 1.0 + pstar_aux_raw
+        out = _common_derived(params, st, c=c, XiN=XiN, XiD=XiD, p_star_aux=p_star_aux)
+        out["eta"] = eta_raw
+        out["i_nom"] = F.softplus(i_nom_raw)
+        out["varphi"] = -F.softplus(varphi_raw)
+
+        c_prev = st.c_prev if st.c_prev is not None else out["c"]
+        vartheta_old = st.vartheta_prev if st.vartheta_prev is not None else torch.zeros_like(out["c"])
+        varrho_old = st.varrho_prev if st.varrho_prev is not None else torch.zeros_like(out["c"])
+        i_nom_old = st.i_nom_prev if st.i_nom_prev is not None else torch.zeros_like(out["c"])
+        varphi_old = st.varphi_prev if st.varphi_prev is not None else torch.zeros_like(out["c"])
+        Delta_prev = torch.clamp(st.Delta_prev, min=1e-12)
+
+        zeta_num = out["c"].pow(-params.gamma) * (
+            vartheta_old * params.eps * out["pi_aux"].pow((params.eps + 1.0) / params.eps) * out["XiN"] * c_prev.pow(params.gamma)
+            + (params.eps - 1.0) * out["eta"] * out["c"].pow(params.gamma) * out["pi_aux"]
+            + (params.eps - 1.0) * varrho_old * out["XiD"] * c_prev.pow(params.gamma) * out["pi_aux"]
+            - varphi_old * (1.0 + i_nom_old) / params.beta
+        )
+        out["zeta"] = -zeta_num / (
+            params.eps * torch.clamp(out["pi_aux"].pow((params.eps + 1.0) / params.eps), min=1e-12) * Delta_prev
+        )
+
+        out["mu"] = (
+            out["eta"] * (1.0 - params.theta) * (1.0 - params.eps) * out["p_star_aux"]
+            + out["zeta"] * (1.0 - params.theta) * (-params.eps) * out["p_star_aux"].pow((params.eps + 1.0) / params.eps)
+        ) / torch.clamp(out["XiD"], min=1e-12)
+
+        out["vartheta"] = (
+            params.M * out["mu"]
+            + vartheta_old * params.theta * c_prev.pow(params.gamma) * out["c"].pow(-params.gamma) * out["pi_aux"]
+        )
+        out["varrho"] = (
+            -out["mu"] * out["pstar"]
+            + varrho_old
+            * params.theta
+            * c_prev.pow(params.gamma)
+            * out["c"].pow(-params.gamma)
+            * out["pi_aux"].pow((params.eps - 1.0) / params.eps)
         )
         out["nu"] = torch.zeros_like(out["c"])
         return out

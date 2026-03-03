@@ -68,8 +68,11 @@ def _deterministic_step(
             return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"], out["c"]], dim=-1)
         return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"]], dim=-1)
 
-    if policy == "mod_taylor" and st.i_prev is not None and st.p21 is not None:
-        return torch.stack([out["Delta"], out["i_nom"], logA_n, xi_n, logg_n, s_n.to(dt), st.p21], dim=-1)
+    if policy == "commitment_zlb":
+        return torch.stack(
+            [out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"], out["c"], out["i_nom"], out["varphi"]],
+            dim=-1,
+        )
 
     return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
 
@@ -82,7 +85,6 @@ def simulate_deterministic_path(
     x0: torch.Tensor,
     spec: DeterministicPathSpec,
     rbar_by_regime: Optional[torch.Tensor] = None,
-    mod_taylor_variant: Optional[str] = None,
     compute_implied_i: bool = True,
     gh_n: int = 3,
 ) -> Dict[str, np.ndarray]:
@@ -96,16 +98,6 @@ def simulate_deterministic_path(
         cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
     else:
         cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
-    if policy == "mod_taylor":
-        var = (mod_taylor_variant or "").strip().lower()
-        if not var:
-            d_out = None
-            try:
-                d_out = int(net.net[-1].out_features)
-            except Exception:
-                pass
-            var = "author_repo_param_i" if d_out in (5, 6, 9) else "rule_rbar"
-        cfg_sim = TrainConfig.author_like(policy="mod_taylor", seed=0, mod_taylor_variant=var)
     tr = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
 
     T = int(spec.T)
@@ -120,20 +112,11 @@ def simulate_deterministic_path(
         st = unpack_state(x, policy)
         ids = identities(params, st, out)
 
-        if policy in ["taylor","mod_taylor"]:
-            if policy == "taylor":
-                i_t = tr.params.beta**(-1) - 1.0 + tr.params.psi*(out["pi"] - tr.params.pi_bar) + (1.0+tr.params.pi_bar)/tr.params.beta - 1.0 - (tr.params.beta**(-1) - 1.0)
-                # above reduces to (1+pi_bar)/beta -1 + psi*(pi-pi_bar) but keep safe
-                from .policy_rules import i_taylor
-                i_t = i_taylor(params, out["pi"])
-            else:
-                # Author repo parametric Taylor variant: i_t is a direct policy output.
-                if "i_nom" in out:
-                    i_t = out["i_nom"]
-                else:
-                    from .policy_rules import i_modified_taylor
-                    assert rbar_by_regime is not None
-                    i_t = i_modified_taylor(params, out["pi"], rbar_by_regime, st.s)
+        explicit_i_policies = ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb")
+        if policy in explicit_i_policies:
+            if "i_nom" not in out:
+                raise RuntimeError(f"policy={policy} expected explicit i_nom in decoded outputs.")
+            i_t = out["i_nom"]
         else:
             if compute_implied_i:
                 i_t = implied_nominal_rate_from_euler(params, policy, x, out, int(gh_n), tr)

@@ -3,12 +3,20 @@ from dataclasses import dataclass, replace
 from typing import Literal, Tuple
 import torch
 
-PolicyName = Literal["taylor", "mod_taylor", "discretion", "commitment"]
+PolicyName = Literal[
+    "taylor",
+    "mod_taylor",
+    "discretion",
+    "commitment",
+    "taylor_zlb",
+    "mod_taylor_zlb",
+    "discretion_zlb",
+    "commitment_zlb",
+]
 RunMode = Literal["full", "mid", "dev", "author"]
 TrainingMode = Literal["strict_author"]
 ExogenousInitMode = Literal["author_hooks"]
 CommitmentInitMode = Literal["author_hooks"]
-ModTaylorVariant = Literal["author_repo_param_i", "rule_rbar", "rule_rbar_zlb", "legacy_rule_rbar"]
 
 
 @dataclass(frozen=True)
@@ -194,16 +202,6 @@ class TrainConfig:
     # ---- Initialization (author Hooks.py semantics only) ----
     exogenous_init_mode: ExogenousInitMode = "author_hooks"
     commitment_init_mode: CommitmentInitMode = "author_hooks"
-    # Author taylor-para Hook: p21 drawn uniformly in [p21_l, p21_u].
-    mod_taylor_p21_low: float = 1.0 / 60.0
-    mod_taylor_p21_high: float = 1.0
-    # Explicitly separate modified-Taylor variants:
-    # - author_repo_param_i: i_t is direct policy output (author repo taylor_para style)
-    # - rule_rbar:          i_t = rbar_s + psi*(pi_t - pi_bar)
-    # - rule_rbar_zlb:      i_t = max(0, rbar_s + psi*(pi_t - pi_bar))
-    # - legacy_rule_rbar:   backward-compatible alias of rule_rbar
-    mod_taylor_variant: ModTaylorVariant = "author_repo_param_i"
-
     @staticmethod
     def full(**overrides) -> "TrainConfig":
         """
@@ -294,7 +292,7 @@ class TrainConfig:
         # In the public Keras repo:
         # - taylor uses 2x128 hidden layers
         # - discretion/commitment use 2x512
-        hidden = (128, 128) if policy == "taylor" else (512, 512)
+        hidden = (128, 128) if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb") else (512, 512)
 
         base = TrainConfig(
             mode="author",

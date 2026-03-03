@@ -16,16 +16,20 @@ from .deqn import PolicyNetwork, implied_nominal_rate_from_euler
 from .deqn import Trainer
 from .config import TrainConfig
 from .metrics import output_gap_from_consumption
-from .policy_rules import i_taylor, i_modified_taylor, i_modified_taylor_zlb
+from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
 
 
 
 # Network dimensions used across notebooks/training
 DIMS: Dict[str, Tuple[int, int]] = {
     "taylor": (5, 4),
-    "mod_taylor": (7, 6),
+    "mod_taylor": (5, 4),
     "discretion": (5, 5),
     "commitment": (8, 5),
+    "taylor_zlb": (5, 4),
+    "mod_taylor_zlb": (5, 4),
+    "discretion_zlb": (5, 6),
+    "commitment_zlb": (10, 7),
 }
 
 
@@ -315,14 +319,11 @@ def _candidate_run_dirs(
     policy: str,
     *,
     use_selected: bool,
-    mod_taylor_variant: str | None = "author_repo_param_i",
 ) -> Tuple[List[str], Optional[str]]:
     preferred = resolve_analysis_run_dir(
         artifacts_root,
         policy,
         prefer_selected=use_selected,
-        require_paper_mod_taylor=False,
-        mod_taylor_variant=mod_taylor_variant if policy == "mod_taylor" else None,
     )
     selected = load_selected_run(artifacts_root, policy) if use_selected else None
     latest = find_latest_run_dir(artifacts_root, policy)
@@ -366,13 +367,11 @@ def _load_run_dir(
     *,
     use_selected: bool = True,
     required_files: Sequence[str] = ("sim_paths.npz",),
-    mod_taylor_variant: str | None = "author_repo_param_i",
 ) -> str:
     cands, selected = _candidate_run_dirs(
         artifacts_root,
         policy,
         use_selected=use_selected,
-        mod_taylor_variant=mod_taylor_variant,
     )
     if not cands:
         raise FileNotFoundError(f"No run directory found for policy='{policy}' under {artifacts_root}")
@@ -471,6 +470,8 @@ def _policy_sss_for_policy(
     policy: PolicyName,
     net: PolicyNetwork,
     regime: int,
+    *,
+    rbar_by_regime: torch.Tensor | None = None,
 ) -> Dict[str, float]:
     """Paper-faithful 'SSS by regime' for any policy.
 
@@ -485,7 +486,12 @@ def _policy_sss_for_policy(
     if policy == "commitment":
         sss_all = solve_commitment_sss_from_policy(params, net)
         return sss_all.by_regime[int(regime)]
-    sss_all = switching_policy_sss_by_regime_from_policy(params, net, policy=policy)
+    sss_all = switching_policy_sss_by_regime_from_policy(
+        params,
+        net,
+        policy=policy,
+        rbar_by_regime=rbar_by_regime if policy in ("mod_taylor", "mod_taylor_zlb") else None,
+    )
     return sss_all.by_regime[int(regime)]
 
 def _implied_i_at_sss(
@@ -510,17 +516,6 @@ def _implied_i_at_sss(
         if int(commit_d_in or 8) >= 8:
             xvals.append(sss.get("c_prev", sss.get("c", 1.0)))
         x = torch.tensor(xvals, device=dev, dtype=dt).view(1, -1)
-    elif policy == "mod_taylor":
-        try:
-            mod_d_in = int(getattr(net.net[0], "in_features", 7))
-        except Exception:
-            mod_d_in = 7
-        if mod_d_in >= 7:
-            i_prev = float(sss.get("i_prev", sss.get("i_nom", (1.0 + float(params.pi_bar)) / float(params.beta) - 1.0)))
-            p21 = float(sss.get("p21", params.p21))
-            x = torch.tensor([sss["Delta_prev"], i_prev, sss["logA"], sss["xi"], sss["loggtilde"], float(regime), p21], device=dev, dtype=dt).view(1, -1)
-        else:
-            x = torch.tensor([sss["Delta_prev"], sss["logA"], sss["loggtilde"], sss["xi"], float(regime)], device=dev, dtype=dt).view(1, -1)
     else:
         x = torch.tensor([sss["Delta_prev"], sss["logA"], sss["loggtilde"], sss["xi"], float(regime)], device=dev, dtype=dt).view(1, -1)
 
@@ -559,7 +554,7 @@ def build_table2(
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
     include_rules: bool = True,
-    mod_taylor_variant: str | None = "author_repo_param_i",
+    include_zlb: bool = False,
 ) -> pd.DataFrame:
     """
     Build a Table-2-like summary after trainings.
@@ -605,6 +600,13 @@ def build_table2(
     ]
     if include_rules:
         policies += [("taylor", "taylor"), ("mod_taylor", "mod_taylor")]
+        if include_zlb:
+            policies += [
+                ("taylor_zlb", "taylor_zlb"),
+                ("mod_taylor_zlb", "mod_taylor_zlb"),
+                ("discretion_zlb", "discretion_zlb"),
+                ("commitment_zlb", "commitment_zlb"),
+            ]
 
     rows: List[Dict[str, Any]] = []
 
@@ -625,18 +627,20 @@ def build_table2(
                 ).detach().cpu()
             )
         elif policy_key == "mod_taylor":
-            # Author dsge_taylor_para uses i_nom as a direct policy output.
-            # For rule-based modified Taylor runs, reconstruct i_ss from rbar_by_regime.
-            if "i_nom" in sss:
-                i_ss = float(sss["i_nom"])
-            else:
-                pi_t = torch.tensor(pi_ss, device=params.device, dtype=params.dtype)
-                s_t = torch.tensor([int(regime)], device=params.device, dtype=torch.long)
-                variant = str(mod_taylor_variant or "rule_rbar").strip().lower()
-                if variant == "rule_rbar_zlb":
-                    i_ss = float(i_modified_taylor_zlb(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
-                else:
-                    i_ss = float(i_modified_taylor(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
+            pi_t = torch.tensor(pi_ss, device=params.device, dtype=params.dtype)
+            s_t = torch.tensor([int(regime)], device=params.device, dtype=torch.long)
+            i_ss = float(i_modified_taylor(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
+        elif policy_key == "taylor_zlb":
+            i_ss = float(
+                i_taylor_zlb(
+                    params,
+                    torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
+                ).detach().cpu()
+            )
+        elif policy_key == "mod_taylor_zlb":
+            pi_t = torch.tensor(pi_ss, device=params.device, dtype=params.dtype)
+            s_t = torch.tensor([int(regime)], device=params.device, dtype=torch.long)
+            i_ss = float(i_modified_taylor_zlb(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
         else:
             net = nets[policy_key]
             i_ss = _implied_i_at_sss(
@@ -708,7 +712,6 @@ def build_table2(
             artifacts_root,
             pkey,
             use_selected=use_selected,
-            mod_taylor_variant=mod_taylor_variant if pkey == "mod_taylor" else None,
         )
         nets[pkey] = _load_net_from_run(run_dir, params, pkey)
         sims[pkey] = _load_sim_paths(run_dir)
@@ -759,7 +762,13 @@ def build_table2(
         if pkey is None:
             continue
         for s in [0, 1]:
-            sss = _policy_sss_for_policy(params, pkey, nets[pkey], s)
+            sss = _policy_sss_for_policy(
+                params,
+                pkey,
+                nets[pkey],
+                s,
+                rbar_by_regime=rbar_by_regime,
+            )
             # add required fields for commitment (vartheta_prev,varrho_prev) if missing
             if pkey == "commitment":
                 # solve_commitment_sss_from_policy returns them already
@@ -769,7 +778,17 @@ def build_table2(
 
     df = pd.DataFrame(rows)
     # Order like paper: by policy then regime
-    pol_order = ["flex", "commitment", "discretion", "taylor", "mod_taylor"]
+    pol_order = [
+        "flex",
+        "commitment",
+        "discretion",
+        "taylor",
+        "mod_taylor",
+        "taylor_zlb",
+        "mod_taylor_zlb",
+        "discretion_zlb",
+        "commitment_zlb",
+    ]
     df["policy"] = pd.Categorical(df["policy"], categories=pol_order, ordered=True)
     df["regime"] = pd.Categorical(df["regime"], categories=["normal", "bad"], ordered=True)
     df = df.sort_values(["policy", "regime"]).reset_index(drop=True)

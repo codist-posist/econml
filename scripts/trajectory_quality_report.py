@@ -38,7 +38,21 @@ from src.table2_builder import _load_run_dir, _load_net_from_run, _load_sim_path
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--artifacts_root", type=str, required=True)
-    ap.add_argument("--policy", type=str, required=True, choices=["taylor", "mod_taylor", "discretion", "commitment"])
+    ap.add_argument(
+        "--policy",
+        type=str,
+        required=True,
+        choices=[
+            "taylor",
+            "mod_taylor",
+            "discretion",
+            "commitment",
+            "taylor_zlb",
+            "mod_taylor_zlb",
+            "discretion_zlb",
+            "commitment_zlb",
+        ],
+    )
     ap.add_argument(
         "--use_selected",
         action=argparse.BooleanOptionalAction,
@@ -57,7 +71,7 @@ def main() -> None:
     sim = _load_sim_paths(run_dir)
 
     rbar_by_regime: torch.Tensor | None = None
-    if args.policy == "mod_taylor":
+    if args.policy in ("mod_taylor", "mod_taylor_zlb"):
         flex = solve_flexprice_sss(params)
         rbar_by_regime = export_rbar_tensor(params, flex).to(device=params.device, dtype=params.dtype)
 

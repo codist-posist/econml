@@ -10,17 +10,17 @@ class State:
     """
     STATE ORDER CONTRACT (must be consistent project-wide):
 
-    For policies: "taylor", "discretion"
+    For policies: "taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb",
+                  "discretion", "discretion_zlb"
         x = [Delta_prev, logA, loggtilde, xi, s]            (dim=5)
-
-    For policy: "mod_taylor"
-        legacy: x = [Delta_prev, logA, loggtilde, xi, s]    (dim=5)
-        author: x = [Delta_prev, i_prev, logA, xi, loggtilde, s, p21] (dim=7)
 
     For policy: "commitment"
         x = [Delta_prev, logA, loggtilde, xi, s, vartheta_prev, varrho_prev] (dim=7)
         or
         x = [Delta_prev, logA, loggtilde, xi, s, vartheta_prev, varrho_prev, c_prev] (dim=8)
+
+    For policy: "commitment_zlb"
+        x = [Delta_prev, logA, loggtilde, xi, s, vartheta_prev, varrho_prev, c_prev, i_nom_prev, varphi_prev] (dim=10)
 
     Convention: s in {0,1}, with s=0 normal, s=1 bad (params.bad_state=1 by default).
     """
@@ -32,33 +32,21 @@ class State:
     vartheta_prev: torch.Tensor | None = None
     varrho_prev: torch.Tensor | None = None
     c_prev: torch.Tensor | None = None
-    i_prev: torch.Tensor | None = None
-    p21: torch.Tensor | None = None
+    i_nom_prev: torch.Tensor | None = None
+    varphi_prev: torch.Tensor | None = None
 
 
 def unpack_state(x: torch.Tensor, policy: str) -> State:
-    if policy in ["taylor", "mod_taylor", "discretion"]:
-        if x.shape[-1] == 5:
-            return State(
-                Delta_prev=x[..., 0],
-                logA=x[..., 1],
-                loggtilde=x[..., 2],
-                xi=x[..., 3],
-                s=x[..., 4].long(),
-            )
-        if policy == "mod_taylor" and x.shape[-1] == 7:
-            # Optional author-para extended state:
-            # [Delta_prev, i_prev, logA, xi, loggtilde, s, p21]
-            return State(
-                Delta_prev=x[..., 0],
-                i_prev=x[..., 1],
-                logA=x[..., 2],
-                xi=x[..., 3],
-                loggtilde=x[..., 4],
-                s=x[..., 5].long(),
-                p21=x[..., 6],
-            )
-        raise AssertionError(f"Expected state dim 5 (or 7 for mod_taylor), got {x.shape[-1]}")
+    if policy in ["taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"]:
+        if x.shape[-1] != 5:
+            raise AssertionError(f"Expected state dim 5 for policy={policy}, got {x.shape[-1]}")
+        return State(
+            Delta_prev=x[..., 0],
+            logA=x[..., 1],
+            loggtilde=x[..., 2],
+            xi=x[..., 3],
+            s=x[..., 4].long(),
+        )
     if policy == "commitment":
         if x.shape[-1] not in (7, 8):
             raise AssertionError(f"Expected state dim 7 or 8 for commitment, got {x.shape[-1]}")
@@ -71,6 +59,21 @@ def unpack_state(x: torch.Tensor, policy: str) -> State:
             vartheta_prev=x[..., 5],
             varrho_prev=x[..., 6],
             c_prev=x[..., 7] if x.shape[-1] == 8 else None,
+        )
+    if policy == "commitment_zlb":
+        if x.shape[-1] != 10:
+            raise AssertionError(f"Expected state dim 10 for commitment_zlb, got {x.shape[-1]}")
+        return State(
+            Delta_prev=x[..., 0],
+            logA=x[..., 1],
+            loggtilde=x[..., 2],
+            xi=x[..., 3],
+            s=x[..., 4].long(),
+            vartheta_prev=x[..., 5],
+            varrho_prev=x[..., 6],
+            c_prev=x[..., 7],
+            i_nom_prev=x[..., 8],
+            varphi_prev=x[..., 9],
         )
     raise ValueError(f"Unknown policy: {policy}")
 

@@ -101,73 +101,13 @@ def list_run_dirs(artifacts_root: str, policy: str) -> List[str]:
     return cand
 
 
-def _run_config_safe(run_dir: str) -> Dict[str, Any]:
-    p = os.path.join(run_dir, "config.json")
-    if not os.path.exists(p):
-        return {}
-    try:
-        return load_json(p)
-    except Exception:
-        return {}
-
-
-def _infer_net_output_dim_from_weights(run_dir: str) -> int | None:
-    for wname in ("weights.pt", "weights_best.pt"):
-        wp = os.path.join(run_dir, wname)
-        if not os.path.exists(wp):
-            continue
-        try:
-            state = load_torch(wp, map_location="cpu")
-            if isinstance(state, dict):
-                w = state.get("net.4.weight")
-                if isinstance(w, torch.Tensor) and w.ndim == 2:
-                    return int(w.shape[0])
-        except Exception:
-            pass
-    return None
-
-
-def infer_mod_taylor_variant(run_dir: str) -> str | None:
-    """Infer mod_taylor variant from metadata, with checkpoint-shape fallback."""
-    cfg = _run_config_safe(run_dir)
-    extra = cfg.get("extra", {}) if isinstance(cfg, dict) else {}
-    v = extra.get("mod_taylor_variant")
-    if v:
-        return str(v)
-    train_cfg = cfg.get("train_cfg", {}) if isinstance(cfg, dict) else {}
-    v2 = train_cfg.get("mod_taylor_variant") if isinstance(train_cfg, dict) else None
-    if v2:
-        return str(v2)
-    d_out = _infer_net_output_dim_from_weights(run_dir)
-    if d_out in (6, 9):
-        return "author_repo_param_i"
-    if d_out in (4,):
-        return "rule_rbar"
-    if d_out in (5, 8):
-        # Legacy local variant kept for backward compatibility with old artifacts.
-        return "legacy_rule_rbar"
-    return None
-
-
-def is_paper_mod_taylor_run(run_dir: str) -> bool:
-    """Backward-compatible helper for old artifacts."""
-    v = infer_mod_taylor_variant(run_dir)
-    return v == "legacy_rule_rbar"
-
-
 def resolve_analysis_run_dir(
     artifacts_root: str,
     policy: str,
     *,
     prefer_selected: bool = True,
-    require_paper_mod_taylor: bool = False,
-    mod_taylor_variant: str | None = None,
 ) -> str | None:
-    """
-    Resolve the *correct* run directory for analysis/figures.
-
-    For mod_taylor, project default is author_repo_param_i.
-    """
+    """Resolve the run directory for analysis/figures."""
     artifacts_root = _normalize_artifacts_root(artifacts_root)
     cands: List[str] = []
     if prefer_selected:
@@ -181,14 +121,7 @@ def resolve_analysis_run_dir(
     if not cands:
         return None
 
-    effective_variant = mod_taylor_variant
-    if policy == "mod_taylor" and effective_variant is None:
-        effective_variant = "author_repo_param_i"
-
     for rd in cands:
-        if policy == "mod_taylor" and effective_variant is not None:
-            if infer_mod_taylor_variant(rd) != str(effective_variant):
-                continue
         return rd
     return None
 
