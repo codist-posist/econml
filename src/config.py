@@ -5,9 +5,9 @@ import torch
 
 PolicyName = Literal["taylor", "mod_taylor", "discretion", "commitment"]
 RunMode = Literal["full", "mid", "dev", "author"]
-TrainingMode = Literal["robust", "strict_author"]
-ExogenousInitMode = Literal["stationary", "author_hooks"]
-CommitmentInitMode = Literal["sss_or_ours", "author_hooks", "ours_no_sss"]
+TrainingMode = Literal["strict_author"]
+ExogenousInitMode = Literal["author_hooks"]
+CommitmentInitMode = Literal["author_hooks"]
 
 
 @dataclass(frozen=True)
@@ -92,9 +92,8 @@ class TrainConfig:
     Training / compute configuration with a fixed network architecture and two phases.
     """
     mode: RunMode = "full"
-    # "robust": current stable training defaults for Colab/GPU.
-    # "strict_author": closer to the public Keras pipeline semantics.
-    training_mode: TrainingMode = "robust"
+    # Project policy: always author semantics.
+    training_mode: TrainingMode = "strict_author"
     seed: int = 123
 
     # ---- Network (FIXED across phases) ----
@@ -190,25 +189,9 @@ class TrainConfig:
         eps_stop=1e-12,
     )
 
-    # ---- Commitment (timeless) initialization ----
-    # Under commitment, lagged Ramsey multipliers are part of the state. If
-    # `commitment_sss` is provided to Trainer.train/simulate_initial_state, the
-    # lagged multipliers can be initialized from SSS values (timeless-style init),
-    # depending on `commitment_init_mode`.
-    #
-    # exogenous_init_mode:
-    #   - "stationary": sample around stationary means/variances (our baseline).
-    #   - "author_hooks": public Keras Hooks.py style (centered at zero, 50/50 regime).
-    #
-    # commitment_init_mode:
-    #   - "sss_or_ours": if commitment_sss is passed -> use SSS; else use our fallback.
-    #   - "author_hooks": always use author Hooks.py constants/noise (ignore commitment_sss).
-    #   - "ours_no_sss": always use our fallback (ignore commitment_sss).
-    exogenous_init_mode: ExogenousInitMode = "stationary"
-    commitment_init_mode: CommitmentInitMode = "sss_or_ours"
-    # Our fallback init knobs (used by sss_or_ours when commitment_sss is None, or by ours_no_sss).
-    commitment_init_multiplier_std: float = 0.0
-    commitment_init_multiplier_clip: float = 25.0
+    # ---- Initialization (author Hooks.py semantics only) ----
+    exogenous_init_mode: ExogenousInitMode = "author_hooks"
+    commitment_init_mode: CommitmentInitMode = "author_hooks"
 
     @staticmethod
     def full(**overrides) -> "TrainConfig":
@@ -221,14 +204,15 @@ class TrainConfig:
         base = TrainConfig(
             mode="full",
             hidden_layers=(512, 512),
-            activation="selu",val_size=1024,
+            activation="selu",
+            val_size=1024,
             val_every=2000,
             strict_eps_stop=True,
             strict_eps_max_steps=200_000,
             # NOTE: We keep GH orders aligned with the paper's DEQN description.
             # "full" is intentionally larger than "mid" so there is a meaningful gap.
-            phase1 = PhaseConfig(steps=12_000, lr=1e-5, batch_size=256, gh_n_train=2, use_float64=False, eps_stop=1e-8),
-            phase2 = PhaseConfig(steps=6_000, lr=1e-5, batch_size=256, gh_n_train=3, use_float64=True, eps_stop=1e-12),
+            phase1=PhaseConfig(steps=12_000, lr=1e-5, batch_size=256, gh_n_train=2, use_float64=False, eps_stop=1e-8),
+            phase2=PhaseConfig(steps=6_000, lr=1e-5, batch_size=256, gh_n_train=3, use_float64=True, eps_stop=1e-12),
         )
         return replace(base, **overrides)
 
@@ -248,7 +232,8 @@ class TrainConfig:
         base = TrainConfig(
             mode="mid",
             hidden_layers=(512, 512),
-            activation="selu",val_size=1024,
+            activation="selu",
+            val_size=1024,
             val_every=1500,
             strict_eps_stop=False,
             strict_eps_max_steps=None,
@@ -256,8 +241,8 @@ class TrainConfig:
             cpu_num_interop_threads=1,
             log_every=100,
             n_path=50,
-            phase1 = PhaseConfig(steps=6_000, lr=1e-5, batch_size=128, gh_n_train=2, use_float64=False, eps_stop=1e-7),
-            phase2 = PhaseConfig(steps=1000, lr=3e-6, batch_size=128, gh_n_train=3, use_float64=True, eps_stop=1e-6),
+            phase1=PhaseConfig(steps=6_000, lr=1e-5, batch_size=128, gh_n_train=2, use_float64=False, eps_stop=1e-7),
+            phase2=PhaseConfig(steps=1000, lr=3e-6, batch_size=128, gh_n_train=3, use_float64=True, eps_stop=1e-6),
         )
         return replace(base, **overrides)
 
@@ -272,15 +257,16 @@ class TrainConfig:
         base = TrainConfig(
             mode="dev",
             hidden_layers=(256, 256),
-            activation="selu",val_size=1024,
+            activation="selu",
+            val_size=1024,
             val_every=1000,
             strict_eps_stop=False,
             strict_eps_max_steps=None,
             cpu_num_threads=16,
             cpu_num_interop_threads=1,
             n_path=50,
-            phase1 = PhaseConfig(steps=2_000, lr=1e-5, batch_size=64, gh_n_train=2, use_float64=False, eps_stop=5e-7),
-            phase2 = PhaseConfig(steps=400, lr=1e-5, batch_size=64, gh_n_train=3, use_float64=True, eps_stop=1e-9),
+            phase1=PhaseConfig(steps=2_000, lr=1e-5, batch_size=64, gh_n_train=2, use_float64=False, eps_stop=5e-7),
+            phase2=PhaseConfig(steps=400, lr=1e-5, batch_size=64, gh_n_train=3, use_float64=True, eps_stop=1e-9),
         )
         return replace(base, **overrides)
 

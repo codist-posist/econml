@@ -17,7 +17,7 @@ from .config import ModelParams, TrainConfig, set_seeds, PolicyName
 from .quadrature import gauss_hermite
 from .model_common import unpack_state, shock_laws_of_motion, identities
 from .transforms import decode_outputs
-from .policy_rules import i_taylor, i_modified_taylor, fisher_euler_term
+from .policy_rules import i_taylor, fisher_euler_term
 from .residuals_a1 import residuals_a1
 from .residuals_a2 import residuals_a2
 from .residuals_a3 import residuals_a3
@@ -264,9 +264,7 @@ class Trainer:
         if self.rbar_by_regime is not None:
             self.rbar_by_regime = self.rbar_by_regime.to(device=self.params.device, dtype=self.params.dtype)
 
-        if self.policy == "mod_taylor":
-            if self.rbar_by_regime is None:
-                raise ValueError("mod_taylor requires rbar_by_regime from export_rbar_tensor(solve_flexprice_sss(params))")
+        if self.policy == "mod_taylor" and self.rbar_by_regime is not None:
             if self.rbar_by_regime.numel() != 2:
                 raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
 
@@ -279,36 +277,18 @@ class Trainer:
             except Exception:
                 self._commitment_has_c_prev = False
 
-        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
         if self.policy == "taylor":
-            if strict_author:
-                # Closer to author equations set (A.1): eq_1, eq_2, eq_3, eq_7.
-                self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
-            else:
-                self.res_keys = ["res_c_lam", "res_labor", "res_euler", "res_XiN", "res_XiD", "res_pstar_def", "res_calvo", "res_Delta"]
+            # Author equations set (A.1): eq_1, eq_2, eq_3, eq_7.
+            self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
         elif self.policy == "mod_taylor":
-            self.res_keys = ["res_c_lam", "res_labor", "res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
-            if strict_author:
-                # Author dsge_taylor_para keeps Delta law and rule residual (eq_5, eq_8).
-                self.res_keys += ["res_Delta", "res_i_rule"]
-            else:
-                self.res_keys += ["res_calvo", "res_Delta"]
+            # Author dsge_taylor_para-style set: eq_1, eq_2, eq_3, eq_5, eq_7, eq_8.
+            self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_Delta", "res_pstar_def", "res_i_rule"]
         elif self.policy == "discretion":
-            if strict_author:
-                # Closer to author equations set (A.2): eq_1, eq_2, eq_3, eq_4, eq_7.
-                self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
-            else:
-                self.res_keys = ["res_c_foc", "res_pi_foc", "res_pstar_foc", "res_Delta_foc",
-                                 "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
-                                 "res_pstar_def", "res_calvo", "res_Delta_law"]
+            # Author equations set (A.2): eq_1, eq_2, eq_3, eq_4, eq_7.
+            self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
         elif self.policy == "commitment":
-            if strict_author:
-                # Closer to author equations set (A.3): eq_1, eq_2, eq_3, eq_4, eq_7.
-                self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
-            else:
-                self.res_keys = ["res_c_foc", "res_Delta_foc", "res_pi_foc", "res_pstar_foc", "res_XiN_foc", "res_XiD_foc",
-                                 "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
-                                 "res_pstar_def", "res_calvo", "res_Delta_law"]
+            # Author equations set (A.3): eq_1, eq_2, eq_3, eq_4, eq_7.
+            self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
         else:
             raise ValueError(self.policy)
 
@@ -316,7 +296,8 @@ class Trainer:
 
         # timers
         self._t_accum = {}
-        self.last_train_stats = None        # initialize GH grid to phase1 by default unless user overrides gh_n
+        self.last_train_stats = None
+        # initialize GH grid to phase1 by default unless user overrides gh_n
         if self.gh_n is None:
             self.gh_n = int(self.cfg.phase1.gh_n_train)
         self._set_gh(int(self.gh_n))
@@ -331,153 +312,50 @@ class Trainer:
     # --------------------
     def simulate_initial_state(self, B: int, commitment_sss: Dict | None = None) -> torch.Tensor:
         dev, dt = self.params.device, self.params.dtype
-        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
-        exog_init_mode = str(
-            getattr(
-                self.cfg,
-                "exogenous_init_mode",
-                "author_hooks" if strict_author else "stationary",
-            )
-        )
-        commitment_init_mode = str(
-            getattr(
-                self.cfg,
-                "commitment_init_mode",
-                "author_hooks" if strict_author else "sss_or_ours",
-            )
-        )
-
         rho_A, sig_A = float(self.params.rho_A), float(self.params.sigma_A)
         rho_g, sig_g = float(self.params.rho_g), float(self.params.sigma_g)
         rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
 
-        if exog_init_mode not in ("stationary", "author_hooks"):
-            raise ValueError(
-                f"Unknown exogenous_init_mode={exog_init_mode}. "
-                "Use 'stationary' or 'author_hooks'."
-            )
-
-        if exog_init_mode == "author_hooks":
-            # Public Keras Hooks.py semantics:
-            # - exogenous states centered at zero
-            # - equal regime mix 50/50 at init
-            # - small noise around disp_old_x = 1
-            sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
-            sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
-            sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
-            logA = sd_logA * torch.randn(B, device=dev, dtype=dt)
-            logg = sd_logg * torch.randn(B, device=dev, dtype=dt)
-            xi = sd_xi * torch.randn(B, device=dev, dtype=dt)
-            s = torch.where(
-                torch.rand(B, device=dev, dtype=dt) < 0.5,
-                torch.zeros(B, device=dev, dtype=torch.long),
-                torch.ones(B, device=dev, dtype=torch.long),
-            )
-            disp_std = 1e-4 if self.policy == "commitment" else 1e-3
-            Delta_prev = torch.ones(B, device=dev, dtype=dt) + disp_std * torch.randn(B, device=dev, dtype=dt)
-        else:
-            # Initialize exogenous states from stationary laws of motion.
-            # Appendix A.1 / author code: stationary mean of AR(1)-in-log process is -sigma^2/2.
-            mu_logA = -(sig_A**2) / 2.0
-            mu_logg = -(sig_g**2) / 2.0
-            mu_xi = -(sig_xi**2) / 2.0
-            sd_logA = sig_A / max(1e-12, (1.0 - rho_A**2))**0.5 if abs(rho_A) < 1.0 else sig_A
-            sd_logg = sig_g / max(1e-12, (1.0 - rho_g**2))**0.5 if abs(rho_g) < 1.0 else sig_g
-            sd_xi = sig_xi / max(1e-12, (1.0 - rho_xi**2))**0.5 if abs(rho_xi) < 1.0 else sig_xi
-            logA = torch.tensor(mu_logA, device=dev, dtype=dt) + sd_logA * torch.randn(B, device=dev, dtype=dt)
-            logg = torch.tensor(mu_logg, device=dev, dtype=dt) + sd_logg * torch.randn(B, device=dev, dtype=dt)
-            xi = torch.tensor(mu_xi, device=dev, dtype=dt) + sd_xi * torch.randn(B, device=dev, dtype=dt)
-
-            # Markov regime: draw from stationary distribution.
-            p12, p21 = float(self.params.p12), float(self.params.p21)
-            denom = p12 + p21
-            if denom <= 0.0:
-                raise ValueError(f"Invalid Markov switching parameters: p12+p21 must be > 0. Got p12={p12}, p21={p21}.")
-            pi_bad = p12 / denom
-            u = torch.rand(B, device=dev, dtype=dt)
-            s = torch.where(
-                u < (1.0 - pi_bad),
-                torch.zeros(B, device=dev, dtype=torch.long),
-                torch.ones(B, device=dev, dtype=torch.long),
-            )
-            Delta_prev = torch.ones(B, device=dev, dtype=dt)
+        # Public Keras Hooks.py semantics:
+        # - exogenous states centered at zero with author scaling
+        # - 50/50 initial regime mix
+        # - small noise around disp_old_x = 1
+        sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
+        sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
+        sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
+        logA = sd_logA * torch.randn(B, device=dev, dtype=dt)
+        logg = sd_logg * torch.randn(B, device=dev, dtype=dt)
+        xi = sd_xi * torch.randn(B, device=dev, dtype=dt)
+        s = torch.where(
+            torch.rand(B, device=dev, dtype=dt) < 0.5,
+            torch.zeros(B, device=dev, dtype=torch.long),
+            torch.ones(B, device=dev, dtype=torch.long),
+        )
+        disp_std = 1e-4 if self.policy == "commitment" else 1e-3
+        Delta_prev = torch.ones(B, device=dev, dtype=dt) + disp_std * torch.randn(B, device=dev, dtype=dt)
 
         if self.policy != "commitment":
             return torch.stack([Delta_prev, logA, logg, xi, s.to(dt)], dim=-1)
 
-        if commitment_init_mode not in ("sss_or_ours", "author_hooks", "ours_no_sss"):
-            raise ValueError(
-                f"Unknown commitment_init_mode={commitment_init_mode}. "
-                "Use 'sss_or_ours', 'author_hooks', or 'ours_no_sss'."
-            )
+        # Keep API compatibility, but this path intentionally ignores commitment_sss.
+        _ = commitment_sss
 
-        # Timeless commitment: lagged Ramsey multipliers are part of the state.
-        # Modes:
-        # - sss_or_ours: use commitment_sss when provided; otherwise our fallback.
-        # - author_hooks: strict author init, ignore commitment_sss.
-        # - ours_no_sss: always our fallback, ignore commitment_sss.
-        use_sss_init = (commitment_init_mode == "sss_or_ours") and (commitment_sss is not None)
-        if use_sss_init:
-            c0 = commitment_sss.get(0, commitment_sss.get("0")) if isinstance(commitment_sss, dict) else None
-            c1 = commitment_sss.get(1, commitment_sss.get("1")) if isinstance(commitment_sss, dict) else None
-            if c0 is not None and c1 is not None:
-                d0 = float(c0.get("Delta_prev", c0.get("Delta", 1.0)))
-                d1 = float(c1.get("Delta_prev", c1.get("Delta", 1.0)))
-                c_prev0 = float(c0.get("c_prev", c0.get("c", 1.0)))
-                c_prev1 = float(c1.get("c_prev", c1.get("c", 1.0)))
-                vp0 = float(c0["vartheta_prev"]); vp1 = float(c1["vartheta_prev"])
-                rp0 = float(c0["varrho_prev"]); rp1 = float(c1["varrho_prev"])
-                Delta_prev = torch.where(
-                    s == 0,
-                    torch.full((B,), d0, device=dev, dtype=dt),
-                    torch.full((B,), d1, device=dev, dtype=dt),
-                )
-                vp = torch.where(s == 0,
-                                 torch.full((B,), vp0, device=dev, dtype=dt),
-                                 torch.full((B,), vp1, device=dev, dtype=dt))
-                rp = torch.where(s == 0,
-                                 torch.full((B,), rp0, device=dev, dtype=dt),
-                                 torch.full((B,), rp1, device=dev, dtype=dt))
-                c_prev = torch.where(
-                    s == 0,
-                    torch.full((B,), c_prev0, device=dev, dtype=dt),
-                    torch.full((B,), c_prev1, device=dev, dtype=dt),
-                )
-            else:
-                d = float(commitment_sss.get("Delta_prev", commitment_sss.get("Delta", 1.0)))
-                Delta_prev = torch.full((B,), d, device=dev, dtype=dt)
-                vp = torch.full((B,), float(commitment_sss["vartheta_prev"]), device=dev, dtype=dt)
-                rp = torch.full((B,), float(commitment_sss["varrho_prev"]), device=dev, dtype=dt)
-                c_prev = torch.full((B,), float(commitment_sss.get("c_prev", commitment_sss.get("c", 1.0))), device=dev, dtype=dt)
-        elif commitment_init_mode == "author_hooks":
-            # Keras commitment Hooks.py constants:
-            # vartheta_old=-0.019182, rho_old=0.016500, c_old=0.921336 + Gaussian noise.
-            normal_noise = torch.randn(B, 3, device=dev, dtype=dt) * torch.tensor(
-                [0.027, 0.023, 0.052], device=dev, dtype=dt
-            )
-            vartheta_old = torch.tensor(-0.019182, device=dev, dtype=dt) + normal_noise[:, 0]
-            rho_old = torch.tensor(0.016500, device=dev, dtype=dt) + normal_noise[:, 1]
-            c_old = torch.clamp(torch.tensor(0.921336, device=dev, dtype=dt) + normal_noise[:, 2], min=1e-8)
-            vp = vartheta_old * c_old.pow(self.params.gamma)
-            rp = rho_old * c_old.pow(self.params.gamma)
-            c_prev = c_old
-        else:
-            std = float(getattr(self.cfg, 'commitment_init_multiplier_std', 0.0) or 0.0)
-            clip = float(getattr(self.cfg, 'commitment_init_multiplier_clip', 0.0) or 0.0)
-            if std > 0.0:
-                vp = std * torch.randn(B, device=dev, dtype=dt)
-                rp = std * torch.randn(B, device=dev, dtype=dt)
-                if clip > 0.0:
-                    vp = torch.clamp(vp, -clip, clip)
-                    rp = torch.clamp(rp, -clip, clip)
-            else:
-                vp = torch.zeros(B, device=dev, dtype=dt)
-                rp = torch.zeros(B, device=dev, dtype=dt)
-            c_prev = torch.ones(B, device=dev, dtype=dt)
+        # Keras commitment Hooks.py constants:
+        # vartheta_old=-0.019182, rho_old=0.016500, c_old=0.921336 + Gaussian noise.
+        normal_noise = torch.randn(B, 3, device=dev, dtype=dt) * torch.tensor(
+            [0.027, 0.023, 0.052], device=dev, dtype=dt
+        )
+        vartheta_old = torch.tensor(-0.019182, device=dev, dtype=dt) + normal_noise[:, 0]
+        rho_old = torch.tensor(0.016500, device=dev, dtype=dt) + normal_noise[:, 1]
+        c_old = torch.clamp(torch.tensor(0.921336, device=dev, dtype=dt) + normal_noise[:, 2], min=1e-8)
+        vp = vartheta_old * c_old.pow(self.params.gamma)
+        rp = rho_old * c_old.pow(self.params.gamma)
+        c_prev = c_old
 
         if self._commitment_has_c_prev:
             return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vp, rp, c_prev], dim=-1)
         return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vp, rp], dim=-1)
+
     def _policy_outputs(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         # If x was created under torch.inference_mode(), it is an 'inference tensor' and
         # cannot be used in autograd-tracked computations. Clone it when grad is enabled.
@@ -489,24 +367,12 @@ class Trainer:
             "Delta": self.cfg.delta_floor,
             "pstar": self.cfg.pstar_floor,
         }
-        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
-        if bool(getattr(self.cfg, "use_author_bounds", True)) and (not strict_author):
-            floors.update(
-                {
-                    "pi_low": float(getattr(self.cfg, "pi_low", -0.1)),
-                    "pi_high": float(getattr(self.cfg, "pi_high", 0.1)),
-                    "pstar_low": float(getattr(self.cfg, "pstar_low", 0.9)),
-                    "pstar_high": float(getattr(self.cfg, "pstar_high", 1.1)),
-                }
-            )
         return decode_outputs(self.policy, raw, floors=floors)
 
     def _bounds_penalty(self, out: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Author-like soft penalties for bound violations (Huber)."""
         delta = float(getattr(self.cfg, "huber_delta", 1.0))
         terms: List[torch.Tensor] = []
-
-        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
 
         def _add_bound(name: str, lo: float | None, hi: float | None) -> None:
             if name not in out:
@@ -523,19 +389,18 @@ class Trainer:
         _add_bound("pstar", float(getattr(self.cfg, "pstar_low", 0.9)), float(getattr(self.cfg, "pstar_high", 1.1)))
 
         # Wider author-like variable penalties
-        if strict_author:
-            _add_bound("c", 0.6, 1.4)
-            if self.policy == "taylor":
-                _add_bound("Delta", 0.9, 1.1)
-                _add_bound("XiN", 1.0, 8.0)
-                _add_bound("XiD", 1.0, 8.0)
-            else:
-                _add_bound("Delta", 0.6, 1.4)
-                _add_bound("XiN", 0.0, 12.0)
-                _add_bound("XiD", 0.0, 12.0)
-            if self.policy == "commitment":
-                _add_bound("vartheta", -2.0, 1.0)
-                _add_bound("varrho", -1.0, 1.0)
+        _add_bound("c", 0.6, 1.4)
+        if self.policy == "taylor":
+            _add_bound("Delta", 0.9, 1.1)
+            _add_bound("XiN", 1.0, 8.0)
+            _add_bound("XiD", 1.0, 8.0)
+        else:
+            _add_bound("Delta", 0.6, 1.4)
+            _add_bound("XiN", 0.0, 12.0)
+            _add_bound("XiD", 0.0, 12.0)
+        if self.policy == "commitment":
+            _add_bound("vartheta", -2.0, 1.0)
+            _add_bound("varrho", -1.0, 1.0)
 
         if not terms:
             # keep graph/device consistent
@@ -549,8 +414,7 @@ class Trainer:
             loss_type=getattr(self.cfg, "loss_type", "huber"),
             huber_delta=float(getattr(self.cfg, "huber_delta", 1.0)),
         )
-        strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
-        if strict_author and bool(getattr(self.cfg, "use_penalty_bounds", True)):
+        if bool(getattr(self.cfg, "use_penalty_bounds", True)):
             out = self._policy_outputs(x)
             w = float(getattr(self.cfg, "bounds_penalty_weight", 1.0))
             base = base + w * self._bounds_penalty(out)
@@ -597,21 +461,15 @@ class Trainer:
         if self.policy in ["taylor", "mod_taylor"]:
             lam_t = out["lam"]
             lam_tg = lam_t.view(-1, 1, 1)
-            strict_author = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
 
             if self.policy == "taylor":
                 i_rule_target = i_taylor(self.params, out["pi"])
                 i_t = i_rule_target
             else:
-                if strict_author:
-                    # Author dsge_taylor_para eq_8 target:
-                    # i_nom = (1+pi_bar)/beta - 1 + psi*(pi - pi_bar)
-                    i_rule_target = i_taylor(self.params, out["pi"])
-                    i_t = out.get("i_nom", i_rule_target)
-                else:
-                    assert self.rbar_by_regime is not None
-                    i_rule_target = i_modified_taylor(self.params, out["pi"], self.rbar_by_regime, st.s)
-                    i_t = i_rule_target
+                # Author dsge_taylor_para eq_8 target:
+                # i_nom = (1+pi_bar)/beta - 1 + psi*(pi - pi_bar)
+                i_rule_target = i_taylor(self.params, out["pi"])
+                i_t = out.get("i_nom", i_rule_target)
 
             i_tg = i_t.view(-1, 1, 1)
 
@@ -636,7 +494,7 @@ class Trainer:
             Et_XiD = Et_all[..., 1]
             Et_eul = Et_all[..., 2]
 
-            if (self.policy == "mod_taylor") and strict_author:
+            if self.policy == "mod_taylor":
                 res = residuals_a1(
                     self.params,
                     st,
@@ -851,7 +709,6 @@ class Trainer:
             best_step = -1
             best_state: Dict[str, torch.Tensor] | None = None
             strict_eps = bool(getattr(self.cfg, "strict_eps_stop", False))
-            strict_author_mode = str(getattr(self.cfg, "training_mode", "robust")) == "strict_author"
             max_steps_default = int(steps)
             max_steps_safety = getattr(self.cfg, "strict_eps_max_steps", None)
             if strict_eps and eps_stop is not None:
@@ -954,55 +811,37 @@ class Trainer:
                     hit_safety_cap = False
                 return False
 
-            if strict_author_mode:
-                # Author-like training loop: simulate one episode, shuffle states, optimize in minibatches.
-                mb = max(1, int(minibatch_size))
-                pbar = trange(max_steps, desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False)
-                try:
-                    while global_step < max_steps:
-                        with torch.no_grad():
-                            xs = []
-                            cur = x_pop
-                            for __ in range(N_path):
-                                xs.append(cur)
-                                cur = self._step_state(cur)
-                            x_pop = cur
-                            X = torch.cat(xs, dim=0)
-                            perm = torch.randperm(int(X.shape[0]), device=X.device)
-                            X = X.index_select(0, perm)
-
-                        stop_now = False
-                        for j in range(0, int(X.shape[0]), mb):
-                            if global_step >= max_steps:
-                                break
-                            Xi = X[j : j + mb]
-                            need_log = (global_step % log_every) == 0
-                            lv, resid_for_log, X_for_log = _opt_step(Xi, need_log)
-                            stop_now = _after_step(lv, need_log, resid_for_log, X_for_log)
-                            pbar.update(1)
-                            if stop_now:
-                                break
-                        if stop_now:
-                            break
-                finally:
-                    pbar.close()
-            else:
-                for _ in trange(max_steps, desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False):
-                    # --- 1) Simulate a path (stop-gradient / sampling step) ---
+            # Author-like training loop: simulate one episode, shuffle states, optimize in minibatches.
+            mb = max(1, int(minibatch_size))
+            pbar = trange(max_steps, desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False)
+            try:
+                while global_step < max_steps:
                     with torch.no_grad():
                         xs = []
                         cur = x_pop
                         for __ in range(N_path):
                             xs.append(cur)
                             cur = self._step_state(cur)
-                        x_pop = cur  # continue from last state next iteration
-                        X = torch.cat(xs, dim=0)  # (N_path*B, d)
+                        x_pop = cur
+                        X = torch.cat(xs, dim=0)
+                        perm = torch.randperm(int(X.shape[0]), device=X.device)
+                        X = X.index_select(0, perm)
 
-                    need_log = (global_step % log_every) == 0
-                    lv, resid_for_log, X_for_log = _opt_step(X, need_log)
-                    stop_now = _after_step(lv, need_log, resid_for_log, X_for_log)
+                    stop_now = False
+                    for j in range(0, int(X.shape[0]), mb):
+                        if global_step >= max_steps:
+                            break
+                        Xi = X[j : j + mb]
+                        need_log = (global_step % log_every) == 0
+                        lv, resid_for_log, X_for_log = _opt_step(Xi, need_log)
+                        stop_now = _after_step(lv, need_log, resid_for_log, X_for_log)
+                        pbar.update(1)
+                        if stop_now:
+                            break
                     if stop_now:
                         break
+            finally:
+                pbar.close()
 
             # Restore best phase checkpoint so end-of-phase weights are not degraded by late noise.
             if bool(getattr(self.cfg, "save_best", True)) and best_state is not None:
@@ -1192,11 +1031,11 @@ def simulate_paths(
             if policy == "taylor":
                 i_t = i_taylor(params_sim, out["pi"])
             else:
-                if "i_nom" in out:
-                    i_t = out["i_nom"]
-                else:
-                    assert rbar_by_regime is not None
-                    i_t = i_modified_taylor(params_sim, out["pi"], rbar_by_regime, st.s)
+                if "i_nom" not in out:
+                    raise RuntimeError(
+                        "mod_taylor expects direct nominal-rate output 'i_nom' (author_repo_param_i variant)."
+                    )
+                i_t = out["i_nom"]
         else:
             if compute_implied_i:
                 i_t = implied_nominal_rate_from_euler(params_sim, policy, x, out, int(gh_n), trainer)

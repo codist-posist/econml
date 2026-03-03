@@ -16,16 +16,16 @@ from .deqn import PolicyNetwork, implied_nominal_rate_from_euler
 from .deqn import Trainer
 from .config import TrainConfig
 from .metrics import output_gap_from_consumption
-from .policy_rules import i_taylor, i_modified_taylor
+from .policy_rules import i_taylor
 
 
 
 # Network dimensions used across notebooks/training
 DIMS: Dict[str, Tuple[int, int]] = {
     "taylor": (5, 8),
-    "mod_taylor": (5, 8),
+    "mod_taylor": (5, 9),
     "discretion": (5, 11),
-    "commitment": (7, 13),
+    "commitment": (8, 13),
 }
 
 
@@ -315,7 +315,7 @@ def _candidate_run_dirs(
     policy: str,
     *,
     use_selected: bool,
-    mod_taylor_variant: str | None = "paper_rule_rbar",
+    mod_taylor_variant: str | None = "author_repo_param_i",
 ) -> Tuple[List[str], Optional[str]]:
     preferred = resolve_analysis_run_dir(
         artifacts_root,
@@ -366,7 +366,7 @@ def _load_run_dir(
     *,
     use_selected: bool = True,
     required_files: Sequence[str] = ("sim_paths.npz",),
-    mod_taylor_variant: str | None = "paper_rule_rbar",
+    mod_taylor_variant: str | None = "author_repo_param_i",
 ) -> str:
     cands, selected = _candidate_run_dirs(
         artifacts_root,
@@ -545,7 +545,7 @@ def build_table2(
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
     include_rules: bool = True,
-    mod_taylor_variant: str | None = "paper_rule_rbar",
+    mod_taylor_variant: str | None = "author_repo_param_i",
 ) -> pd.DataFrame:
     """
     Build a Table-2-like summary after trainings.
@@ -611,29 +611,16 @@ def build_table2(
                 ).detach().cpu()
             )
         elif policy_key == "mod_taylor":
-            # Compatibility:
-            # - legacy mod_taylor runs (8 outputs): regime-contingent rbar rule
-            # - author-like para runs (9 outputs): Taylor-style rule eq_8 target
-            d_out = None
-            try:
-                d_out = int(getattr(nets[policy_key].net[-1], "out_features"))
-            except Exception:
-                d_out = None
-            if d_out == 9:
+            # Author dsge_taylor_para uses i_nom as a direct policy output.
+            # If unavailable in old artifacts, fallback to the eq_8 target.
+            if "i_nom" in sss:
+                i_ss = float(sss["i_nom"])
+            else:
                 i_ss = float(
                     i_taylor(
                         params,
                         torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
                     ).detach().cpu()
-                )
-            else:
-                i_ss = float(
-                    i_modified_taylor(
-                        params,
-                        torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
-                        rbar_by_regime,
-                        torch.tensor([int(regime)], device=params.device, dtype=torch.long),
-                    )[0].detach().cpu()
                 )
         else:
             net = nets[policy_key]

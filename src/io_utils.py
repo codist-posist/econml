@@ -138,14 +138,15 @@ def infer_mod_taylor_variant(run_dir: str) -> str | None:
     if d_out == 9:
         return "author_repo_param_i"
     if d_out == 8:
-        return "paper_rule_rbar"
+        # Legacy local variant kept for backward compatibility with old artifacts.
+        return "legacy_rule_rbar"
     return None
 
 
 def is_paper_mod_taylor_run(run_dir: str) -> bool:
-    """True for runs matching paper-style modified Taylor rule (rbar-by-regime rule)."""
+    """Backward-compatible helper for old artifacts."""
     v = infer_mod_taylor_variant(run_dir)
-    return v == "paper_rule_rbar"
+    return v == "legacy_rule_rbar"
 
 
 def resolve_analysis_run_dir(
@@ -153,13 +154,13 @@ def resolve_analysis_run_dir(
     policy: str,
     *,
     prefer_selected: bool = True,
-    require_paper_mod_taylor: bool = True,
+    require_paper_mod_taylor: bool = False,
     mod_taylor_variant: str | None = None,
 ) -> str | None:
     """
     Resolve the *correct* run directory for analysis/figures.
 
-    For mod_taylor, this can enforce paper-rule runs (rbar-by-regime) and skip author-like runs.
+    For mod_taylor, project default is author_repo_param_i.
     """
     artifacts_root = _normalize_artifacts_root(artifacts_root)
     cands: List[str] = []
@@ -175,8 +176,8 @@ def resolve_analysis_run_dir(
         return None
 
     effective_variant = mod_taylor_variant
-    if policy == "mod_taylor" and effective_variant is None and require_paper_mod_taylor:
-        effective_variant = "paper_rule_rbar"
+    if policy == "mod_taylor" and effective_variant is None:
+        effective_variant = "author_repo_param_i"
 
     for rd in cands:
         if policy == "mod_taylor" and effective_variant is not None:
