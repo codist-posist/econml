@@ -32,6 +32,12 @@ def main():
         help="Include ZLB variants when include_rules=True (use --no-include_zlb to disable).",
     )
     ap.add_argument(
+        "--include_para",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include taylor_para (rate as network output) robustness row.",
+    )
+    ap.add_argument(
         "--sss_source",
         default="sim_conditional",
         choices=["fixed_point", "sim_conditional"],
@@ -72,6 +78,7 @@ def main():
         args.artifacts_root,
         device=args.device,
         include_rules=args.include_rules,
+        include_para=args.include_para,
         include_zlb=args.include_zlb,
         sss_source=args.sss_source,
         use_selected=use_selected,

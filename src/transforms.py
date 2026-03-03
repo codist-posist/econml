@@ -110,7 +110,7 @@ def decode_outputs(
     # Legacy fallback: keep backward compatibility for utility call-sites that do
     # not provide state/params.
     if params is None or st is None:
-        if policy in ("taylor", "taylor_zlb", "mod_taylor", "mod_taylor_zlb"):
+        if policy in ("taylor", "taylor_para", "taylor_zlb", "mod_taylor", "mod_taylor_zlb"):
             names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta"]
         elif policy == "discretion":
             names = ["c", "pi", "pstar", "lam", "w", "XiN", "XiD", "Delta", "mu", "rho", "zeta"]
@@ -172,6 +172,32 @@ def decode_outputs(
             out["i_nom"] = i_modified_taylor_zlb(params, out["pi"], rbar_by_regime, st.s, zlb_floor=0.0)
 
         out["i_rule_target"] = out["i_nom"]
+        return out
+
+    if policy == "taylor_para":
+        # Author dsge_taylor_para: policy has explicit i_nom output and
+        # an equation tying it to the Taylor rule target.
+        if raw.shape[-1] != 5:
+            raise ValueError(f"policy={policy} expects d_out=5, got {raw.shape[-1]}")
+        num_raw, den_raw, pstar_aux_raw, cons_raw, i_nom_raw = [raw[..., i] for i in range(5)]
+        XiN = num_raw
+        XiD = den_raw
+        c_ss = (1.0 / params.M) ** (1.0 / (params.omega + params.gamma))
+        c = c_ss + cons_raw
+        p_star_aux = 1.0 + pstar_aux_raw
+        out = _common_derived(params, st, c=c, XiN=XiN, XiD=XiD, p_star_aux=p_star_aux)
+
+        # Definitions.i_nom_y in author taylor_para:
+        # i_t = (1+pi_bar)/beta - 1 + PolicyState.i_nom_y.
+        i_ss = (1.0 + params.pi_bar) / params.beta - 1.0
+        out["i_nom"] = i_ss + i_nom_raw
+
+        # Equations.eq_8 target with optional interest-rate smoothing term.
+        i_old = torch.zeros_like(out["i_nom"])
+        out["i_rule_target"] = (
+            params.rho_i * i_old
+            + (1.0 - params.rho_i) * i_taylor(params, out["pi"])
+        )
         return out
 
     if policy == "discretion":

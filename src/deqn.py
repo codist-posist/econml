@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 import time
 import os
+import random
 
 import numpy as np
 import pandas as pd
@@ -36,6 +37,9 @@ class PolicyNetwork(nn.Module):
         d_out: int,
         hidden: Tuple[int, int] = (512, 512),
         activation: str = "selu",
+        *,
+        init_mode: str = "default",
+        init_scale: float = 0.01,
     ):
         super().__init__()
         act = nn.SELU if activation.lower() == "selu" else nn.ReLU
@@ -45,6 +49,23 @@ class PolicyNetwork(nn.Module):
             nn.Linear(h1, h2), act(),
             nn.Linear(h2, d_out)
         )
+        self._apply_init(init_mode=init_mode, init_scale=float(init_scale))
+
+    def _apply_init(self, *, init_mode: str, init_scale: float) -> None:
+        mode = str(init_mode).strip().lower()
+        if mode != "author_variance_scaling":
+            return
+        for m in self.modules():
+            if not isinstance(m, nn.Linear):
+                continue
+            fan_in = float(m.weight.shape[1])
+            fan_out = float(m.weight.shape[0])
+            fan_avg = max(1.0, 0.5 * (fan_in + fan_out))
+            # TensorFlow VarianceScaling(scale=s, mode='fan_avg', distribution='uniform'):
+            # var = s / fan_avg, bound = sqrt(3*var)
+            bound = float(np.sqrt(3.0 * float(init_scale) / fan_avg))
+            nn.init.uniform_(m.weight, -bound, bound)
+            nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
@@ -306,6 +327,8 @@ class Trainer:
 
         if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
+        elif self.policy == "taylor_para":
+            self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def", "res_i_rule"]
         elif self.policy == "discretion":
             self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
         elif self.policy == "discretion_zlb":
@@ -457,7 +480,7 @@ class Trainer:
 
         # Wider author-like variable penalties
         _add_bound("c", 0.6, 1.4)
-        if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+        if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             _add_bound("Delta", 0.9, 1.1)
             _add_bound("XiN", 1.0, 8.0)
             _add_bound("XiD", 1.0, 8.0)
@@ -480,6 +503,40 @@ class Trainer:
             return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
         return torch.stack(terms).sum()
 
+    def _raw_policy_penalty(self, raw: torch.Tensor) -> torch.Tensor:
+        """
+        Author-style penalty on policy outputs in raw/policy space.
+        This mirrors Equilibrium.py spirit (bounds in policy/definition spaces).
+        """
+        if raw.ndim != 2:
+            return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+        delta = float(getattr(self.cfg, "huber_delta", 1.0))
+        terms: List[torch.Tensor] = []
+
+        def _add(col: int, lo: float | None, hi: float | None) -> None:
+            if col < 0 or col >= int(raw.shape[-1]):
+                return
+            z = raw[:, col]
+            if lo is not None:
+                below = torch.clamp(float(lo) - z, min=0.0)
+                terms.append(huber_elementwise(below, delta).sum())
+            if hi is not None:
+                above = torch.clamp(z - float(hi), min=0.0)
+                terms.append(huber_elementwise(above, delta).sum())
+
+        # Taylor-family policy vectors in current code:
+        # [num, den, p_star_aux_shift, cons_shift] (+ i_nom_shift for taylor_para)
+        if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+            c_ss = float((1.0 / self.params.M) ** (1.0 / (self.params.omega + self.params.gamma)))
+            _add(0, 1.0, 8.0)  # XiN
+            _add(1, 1.0, 8.0)  # XiD
+            _add(2, float(max(1e-12, 0.9 ** (-self.params.eps)) - 1.0), float(1.1 ** (-self.params.eps) - 1.0))
+            _add(3, 0.6 - c_ss, 1.4 - c_ss)  # c = c_ss + cons_shift
+
+        if not terms:
+            return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+        return torch.stack(terms).sum()
+
     def _training_loss_from_states(self, x: torch.Tensor, resid: torch.Tensor) -> torch.Tensor:
         """Combined training objective under selected training_mode."""
         base = loss_from_residuals(
@@ -491,6 +548,9 @@ class Trainer:
             out = self._policy_outputs(x)
             w = float(getattr(self.cfg, "bounds_penalty_weight", 1.0))
             base = base + w * self._bounds_penalty(out)
+            if bool(getattr(self.cfg, "use_author_raw_penalty", True)):
+                raw = self.net(x)
+                base = base + w * self._raw_policy_penalty(raw)
         return base
 
     @torch.no_grad()
@@ -504,6 +564,15 @@ class Trainer:
         epsA = torch.randn(B, device=dev, dtype=dt)
         epsg = torch.randn(B, device=dev, dtype=dt)
         epst = torch.randn(B, device=dev, dtype=dt)
+        if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+            nss = int(getattr(self.cfg, "author_n_steady_state_batches", 0) or 0)
+            min_b = int(getattr(self.cfg, "author_n_steady_state_min_batch", 500) or 500)
+            if nss > 0 and B > min_b:
+                nss_eff = min(int(B), int(nss))
+                if nss_eff > 0:
+                    epsA[-nss_eff:] = 0.0
+                    epsg[-nss_eff:] = 0.0
+                    epst[-nss_eff:] = 0.0
 
         u = torch.rand(B, device=dev, dtype=dt)
         p0, _ = _transition_probs_to_next(self.params, st)
@@ -550,7 +619,7 @@ class Trainer:
         out = self._policy_outputs(x)
         st = unpack_state(x, self.policy)
 
-        if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+        if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             lam_t = out["lam"]
             lam_tg = lam_t.view(-1, 1, 1)
             i_t = out["i_nom"]
@@ -576,7 +645,19 @@ class Trainer:
             Et_XiD = Et_all[..., 1]
             Et_eul = Et_all[..., 2]
 
-            res = residuals_a1(self.params, st, out, Et_XiN, Et_XiD, Et_eul)
+            if self.policy == "taylor_para":
+                res = residuals_a1(
+                    self.params,
+                    st,
+                    out,
+                    Et_XiN,
+                    Et_XiD,
+                    Et_eul,
+                    i_t_current=out.get("i_nom"),
+                    i_rule_target=out.get("i_rule_target"),
+                )
+            else:
+                res = residuals_a1(self.params, st, out, Et_XiN, Et_XiD, Et_eul)
             return stack_residuals(res, self.res_keys)
 
         if self.policy == "discretion":
@@ -981,7 +1062,12 @@ class Trainer:
                         X_for_log = torch.cat(x_chunks, dim=0)
 
                 if self.cfg.grad_clip is not None and float(self.cfg.grad_clip) > 0:
-                    torch.nn.utils.clip_grad_norm_(self.net.parameters(), float(self.cfg.grad_clip))
+                    clip_v = float(self.cfg.grad_clip)
+                    clip_mode = str(getattr(self.cfg, "grad_clip_mode", "norm")).strip().lower()
+                    if clip_mode == "value":
+                        torch.nn.utils.clip_grad_value_(self.net.parameters(), clip_v)
+                    else:
+                        torch.nn.utils.clip_grad_norm_(self.net.parameters(), clip_v)
                 opt.step()
                 return lv, resid_for_log, X_for_log
 
@@ -1058,6 +1144,26 @@ class Trainer:
             else:
                 pbar_total = 1
             pbar = trange(max(1, pbar_total), desc=f"{self.policy} | train | {tag} | {x_pop.dtype}", leave=False)
+            use_limited_shuffle = bool(getattr(self.cfg, "author_limited_shuffle", True)) and (train_mode == "author")
+
+            def _limited_shuffle_indices(n_total: int, buffer_size: int, device: torch.device) -> torch.Tensor:
+                n = int(n_total)
+                k = max(1, int(buffer_size))
+                if n <= 1:
+                    return torch.arange(n, device=device, dtype=torch.long)
+                if k >= n:
+                    return torch.randperm(n, device=device)
+
+                buf = list(range(k))
+                out_idx: List[int] = []
+                for i_in in range(k, n):
+                    j = random.randrange(0, len(buf))
+                    out_idx.append(buf[j])
+                    buf[j] = i_in
+                random.shuffle(buf)
+                out_idx.extend(buf)
+                return torch.tensor(out_idx, device=device, dtype=torch.long)
+
             try:
                 episode_count = 0
                 reached_step_cap = False
@@ -1085,7 +1191,13 @@ class Trainer:
                             cur = self._step_state(cur)
                         x_pop = cur
                         X = torch.cat(xs, dim=0)
-                        perm = torch.randperm(int(X.shape[0]), device=X.device)
+                        if use_limited_shuffle:
+                            eff = int(X.shape[0])
+                            # Author Main.py: shuffle(buffer_size = effective_size / minibatch_size)
+                            buf = max(1, eff // max(1, int(mb)))
+                            perm = _limited_shuffle_indices(eff, buf, X.device)
+                        else:
+                            perm = torch.randperm(int(X.shape[0]), device=X.device)
                         X = X.index_select(0, perm)
                     episode_count += 1
 
@@ -1265,6 +1377,9 @@ def simulate_paths(
     store_states: bool = False,
     show_progress: bool = False,
     force_regime: int | None = None,
+    force_logA: float | None = None,
+    force_loggtilde: float | None = None,
+    force_xi: float | None = None,
 ) -> Dict[str, np.ndarray]:
     """Forward simulation under a trained policy network."""
 
@@ -1319,7 +1434,7 @@ def simulate_paths(
         "tau": np.zeros((keep, B)),
         "s": np.zeros((keep, B), dtype=np.int64),
     }
-    explicit_i_policies = ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb")
+    explicit_i_policies = ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb")
     if (policy in explicit_i_policies) or compute_implied_i:
         store["i"] = np.zeros((keep, B))
     if store_states:
@@ -1390,7 +1505,7 @@ def simulate_paths(
             epst = torch.randn(Bcur, device=dev, dtype=dt)
             s_next = torch.full_like(st.s, int(force_regime))
             logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params_sim, st, epsA, epsg, epst, s_next)
-            if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"):
+            if policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"):
                 x = torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
             elif policy == "commitment":
                 if st.c_prev is not None or bool(getattr(trainer, "_commitment_has_c_prev", False)):
@@ -1415,5 +1530,13 @@ def simulate_paths(
                 )
             else:
                 raise ValueError(f"Unsupported policy for simulate_paths: {policy}")
+
+        # Author post_process branch controls: optionally pin selected exogenous states.
+        if force_logA is not None:
+            x[:, 1] = float(force_logA)
+        if force_loggtilde is not None:
+            x[:, 2] = float(force_loggtilde)
+        if force_xi is not None:
+            x[:, 3] = float(force_xi)
 
     return store

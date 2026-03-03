@@ -157,3 +157,38 @@ def build_paper_tables_2_4(
         "table3": table3,
         "table4": table4,
     }
+
+
+def build_taylor_para_robustness_table(
+    artifacts_root: str,
+    *,
+    device: str = "cpu",
+    dtype: torch.dtype = torch.float64,
+    use_selected: bool = True,
+    strict_selected: bool = False,
+    weights_source: str = "auto",
+    sss_source: str = "sim_conditional",
+    strict_author_table2: bool = False,
+) -> pd.DataFrame:
+    """
+    Robustness-only table: compare Taylor variants, including taylor_para
+    (rate as explicit network output). Not part of the main paper tables.
+    """
+    df = build_table2(
+        artifacts_root,
+        device=device,
+        dtype=dtype,
+        use_selected=use_selected,
+        strict_selected=strict_selected,
+        weights_source=weights_source,
+        include_rules=True,
+        include_para=True,
+        include_zlb=False,
+        sss_source=sss_source,
+        strict_author_table2=strict_author_table2,
+    )
+    keep = ["taylor", "taylor_para", "mod_taylor"]
+    out = df[df["policy"].isin(keep)].copy()
+    out["policy"] = pd.Categorical(out["policy"], categories=keep, ordered=True)
+    out["regime"] = pd.Categorical(out["regime"], categories=["normal", "bad"], ordered=True)
+    return out.sort_values(["policy", "regime"]).reset_index(drop=True)

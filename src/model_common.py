@@ -10,7 +10,7 @@ class State:
     """
     STATE ORDER CONTRACT (must be consistent project-wide):
 
-    For policies: "taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb",
+    For policies: "taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb",
                   "discretion", "discretion_zlb"
         x = [Delta_prev, logA, loggtilde, xi, s]            (dim=5)
 
@@ -37,7 +37,7 @@ class State:
 
 
 def unpack_state(x: torch.Tensor, policy: str) -> State:
-    if policy in ["taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"]:
+    if policy in ["taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "discretion", "discretion_zlb"]:
         if x.shape[-1] != 5:
             raise AssertionError(f"Expected state dim 5 for policy={policy}, got {x.shape[-1]}")
         return State(

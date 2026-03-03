@@ -11,19 +11,15 @@ This repository keeps legacy notebooks and adds a paper-aligned layer.
 
 ## Figures
 
+- Figure 1: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
 - Figure 2: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
-- Figure 3: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
 - Figure 4: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
-- Figure 5: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
-- Figure 6: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
 - Figure 7: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
 - Figure 8: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
 - Figure 9: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
 - Figure 10: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
-- Figure 11: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
 - Figure 12: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
-- Figure 13: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
-- Figure 14: [115_paper_figures_2_14.ipynb](/c:/Users/User/Desktop/econml/notebooks/115_paper_figures_2_14.ipynb)
+- Supplementary (not core paper figures): regime-change Taylor plot, temporary-shock comparison plot, and ZLB plots.
 
 ## Notes
 
@@ -31,7 +27,7 @@ This repository keeps legacy notebooks and adds a paper-aligned layer.
 - Paper table construction supports two SSS sources:
   - `sim_conditional` (author-style long-simulation conditional means),
   - `fixed_point` (policy fixed-point regime values).
-- `115_paper_figures_2_14.ipynb` now encodes article-style scenarios per figure:
+- `115_paper_figures_2_14.ipynb` now encodes article-style scenarios for core figures and keeps extras as supplementary:
   - regime-switch figures start at normal SSS and set temporary innovations to zero,
   - cost-push IRFs use an initial `xi` jump and zero later innovations (AR(1) propagation),
   - Figure 9 uses `eta_bar=0` and fixed normal regime,

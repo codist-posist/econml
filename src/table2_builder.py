@@ -25,6 +25,7 @@ WeightLoadMode = Literal["auto", "canonical", "best", "last"]
 # Network dimensions used across notebooks/training
 DIMS: Dict[str, Tuple[int, int]] = {
     "taylor": (5, 4),
+    "taylor_para": (5, 5),
     "mod_taylor": (5, 4),
     "discretion": (5, 5),
     "commitment": (8, 5),
@@ -506,7 +507,14 @@ def _load_net_from_run(
     d_in, d_out = DIMS[str(policy)]
     d_in, d_out = _infer_net_input_output_dims(state, d_in, d_out)
 
-    net = PolicyNetwork(d_in, d_out, hidden=cfg.hidden_layers, activation=cfg.activation).to(
+    net = PolicyNetwork(
+        d_in,
+        d_out,
+        hidden=cfg.hidden_layers,
+        activation=cfg.activation,
+        init_mode=getattr(cfg, "init_mode", "default"),
+        init_scale=float(getattr(cfg, "init_scale", 0.01)),
+    ).to(
         device=params.device, dtype=params.dtype
     )
     net.load_state_dict(state)
@@ -571,6 +579,40 @@ def _load_author_regime_moments(
     if r_real is not None:
         out["r"] = _moments_with_skew(r_real)
     return out
+
+
+def _load_author_flex_regime_moments(
+    run_dir: str,
+    regime: int,
+    *,
+    c_hat: float,
+) -> Dict[str, Dict[str, float]] | None:
+    """
+    Flex row from author post-process files:
+      - cons_flex_y, i_flex_y from simulated_definitions_NT/SS.npz
+      - pi is identically zero under flex prices.
+    """
+    fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
+    p = _find_author_defs_file(run_dir, fname)
+    if p is None:
+        return None
+    data = np.load(p)
+    if ("cons_flex_y" not in data.files) or ("i_flex_y" not in data.files):
+        return None
+
+    c_flex = np.asarray(data["cons_flex_y"]).reshape(-1)
+    i_flex = np.asarray(data["i_flex_y"]).reshape(-1)
+    if c_flex.size == 0 or i_flex.size == 0:
+        return None
+    pi = np.zeros_like(i_flex)
+    x_gap = np.log(np.clip(c_flex, 1e-12, None) / float(c_hat))
+    r_real = i_flex.copy()
+    return {
+        "pi": _moments_with_skew(pi),
+        "x": _moments_with_skew(x_gap),
+        "i": _moments_with_skew(i_flex),
+        "r": _moments_with_skew(r_real),
+    }
 
 
 def _compute_real_rate_series(sim: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
@@ -671,6 +713,7 @@ def build_table2(
     strict_selected: bool = False,
     weights_source: WeightLoadMode = "auto",
     include_rules: bool = True,
+    include_para: bool = False,
     include_zlb: bool = False,
     sss_source: str = "sim_conditional",
     strict_author_table2: bool = False,
@@ -731,6 +774,8 @@ def build_table2(
     ]
     if include_rules:
         policies += [("taylor", "taylor"), ("mod_taylor", "mod_taylor")]
+        if include_para:
+            policies += [("taylor_para", "taylor_para")]
         if include_zlb:
             policies += [
                 ("taylor_zlb", "taylor_zlb"),
@@ -774,21 +819,35 @@ def build_table2(
             r_m = _moments_with_skew(r_series)
 
         # Prefer author post-process fixed-regime moment files in sim_conditional mode.
-        if (sss_source_norm == "sim_conditional") and (run_dir is not None):
-            am = _load_author_regime_moments(run_dir, regime)
-            if strict_author_table2 and am is None:
-                fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
-                raise FileNotFoundError(
-                    f"strict_author_table2=True requires '{fname}' for policy='{policy_key}' in run_dir={run_dir}. "
-                    "Generate author post-process files first (scripts/build_author_postprocess_like.py)."
-                )
-            if am is not None:
-                pi_m = am["pi"]
-                i_m = am["i"]
-                if "x" in am:
-                    x_m = am["x"]
-                if "r" in am:
-                    r_m = am["r"]
+        if sss_source_norm == "sim_conditional":
+            if (policy_key == "flex") and (run_dir is not None):
+                am_flex = _load_author_flex_regime_moments(run_dir, regime, c_hat=c_hat)
+                if strict_author_table2 and am_flex is None:
+                    fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
+                    raise FileNotFoundError(
+                        f"strict_author_table2=True requires '{fname}' with cons_flex_y/i_flex_y for flex row "
+                        f"(source run_dir={run_dir}). Generate author post-process files first."
+                    )
+                if am_flex is not None:
+                    pi_m = am_flex["pi"]
+                    i_m = am_flex["i"]
+                    x_m = am_flex["x"]
+                    r_m = am_flex["r"]
+            elif run_dir is not None:
+                am = _load_author_regime_moments(run_dir, regime)
+                if strict_author_table2 and am is None:
+                    fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
+                    raise FileNotFoundError(
+                        f"strict_author_table2=True requires '{fname}' for policy='{policy_key}' in run_dir={run_dir}. "
+                        "Generate author post-process files first (scripts/build_author_postprocess_like.py)."
+                    )
+                if am is not None:
+                    pi_m = am["pi"]
+                    i_m = am["i"]
+                    if "x" in am:
+                        x_m = am["x"]
+                    if "r" in am:
+                        r_m = am["r"]
 
         if sss_source_norm == "sim_conditional":
             # Paper/author object: stochastic steady state by regime as conditional means
@@ -817,6 +876,8 @@ def build_table2(
                 pi_t = torch.tensor(pi_ss, device=params.device, dtype=params.dtype)
                 s_t = torch.tensor([int(regime)], device=params.device, dtype=torch.long)
                 i_ss = float(i_modified_taylor(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
+            elif policy_key == "taylor_para":
+                i_ss = float(sss.get("i_nom", i_taylor(params, torch.tensor(pi_ss, device=params.device, dtype=params.dtype)).detach().cpu()))
             elif policy_key == "taylor_zlb":
                 i_ss = float(
                     i_taylor_zlb(
@@ -894,6 +955,40 @@ def build_table2(
         except Exception:
             pass
 
+    # Pick a source run for author flex moments (cons_flex_y/i_flex_y in NT/SS files).
+    flex_author_run_dir: str | None = None
+    for cand in (
+        "taylor",
+        "mod_taylor",
+        "discretion",
+        "commitment",
+        "taylor_para",
+        "taylor_zlb",
+        "mod_taylor_zlb",
+        "discretion_zlb",
+        "commitment_zlb",
+    ):
+        rd = run_dirs.get(cand)
+        if not rd:
+            continue
+        p_nt = _find_author_defs_file(rd, "simulated_definitions_NT.npz")
+        p_ss = _find_author_defs_file(rd, "simulated_definitions_SS.npz")
+        if (p_nt is None) or (p_ss is None):
+            continue
+        try:
+            d0 = np.load(p_nt)
+            d1 = np.load(p_ss)
+            if ("cons_flex_y" in d0.files) and ("i_flex_y" in d0.files) and ("cons_flex_y" in d1.files) and ("i_flex_y" in d1.files):
+                flex_author_run_dir = rd
+                break
+        except Exception:
+            continue
+    if strict_author_table2 and sss_source_norm == "sim_conditional" and flex_author_run_dir is None:
+        raise FileNotFoundError(
+            "strict_author_table2=True requires author NT/SS files containing cons_flex_y and i_flex_y "
+            "for at least one trained policy run."
+        )
+
     # flex block (paper reports ergodic moments for flex prices as well)
     flex_sim: Optional[Dict[str, np.ndarray]] = None
     flex_sim_path = os.path.join(artifacts_root, "flex", "sim_paths.npz")
@@ -906,7 +1001,7 @@ def build_table2(
         # Fallback: simulate flex prices directly (no network) using the model's switching + temporary shocks
         flex_sim = _simulate_flex_prices_for_table2(params)
     for s in [0, 1]:
-        add_block("flex", "flex", s, flex.by_regime[s], flex_sim, run_dir=None)
+        add_block("flex", "flex", s, flex.by_regime[s], flex_sim, run_dir=flex_author_run_dir)
 
     # ---- Diagnostic: frozen-regime SSS (P = I), printed only ----
     # This is NOT used in Table 2 calculations; it is a comparison object.
@@ -951,6 +1046,7 @@ def build_table2(
         "commitment",
         "discretion",
         "taylor",
+        "taylor_para",
         "mod_taylor",
         "taylor_zlb",
         "mod_taylor_zlb",

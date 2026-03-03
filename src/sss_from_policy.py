@@ -312,7 +312,7 @@ def switching_policy_sss_by_regime_from_policy(
             base["varphi"] = float(out["varphi"].item())
             base["i_nom_prev"] = float(x[0, 8].item())
             base["varphi_prev"] = float(x[0, 9].item())
-        if policy in ("mod_taylor", "mod_taylor_zlb") and ("i_nom" in out):
+        if policy in ("taylor_para", "mod_taylor", "mod_taylor_zlb") and ("i_nom" in out):
             base["i_nom"] = float(out["i_nom"].item())
         return base
 

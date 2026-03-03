@@ -112,7 +112,7 @@ def simulate_deterministic_path(
         st = unpack_state(x, policy)
         ids = identities(params, st, out)
 
-        explicit_i_policies = ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb")
+        explicit_i_policies = ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb")
         if policy in explicit_i_policies:
             if "i_nom" not in out:
                 raise RuntimeError(f"policy={policy} expected explicit i_nom in decoded outputs.")

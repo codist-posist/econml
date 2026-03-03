@@ -5,6 +5,7 @@ import torch
 
 PolicyName = Literal[
     "taylor",
+    "taylor_para",
     "mod_taylor",
     "discretion",
     "commitment",
@@ -18,6 +19,8 @@ TrainingMode = Literal["author", "ours"]
 ExogenousInitMode = Literal["author_hooks"]
 CommitmentInitMode = Literal["author_hooks"]
 WeightSelectionMode = Literal["best", "last"]
+GradClipMode = Literal["norm", "value"]
+InitMode = Literal["default", "author_variance_scaling"]
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,8 @@ class TrainConfig:
     # ---- Network (FIXED across phases) ----
     hidden_layers: Tuple[int, int] = (512, 512)
     activation: str = "selu"
+    init_mode: InitMode = "default"
+    init_scale: float = 0.01
 
     # ---- DEQN simulated path length (Appendix B: N_path_length) ----
     n_path: int = 128
@@ -138,10 +143,12 @@ class TrainConfig:
     pstar_high: float = 1.1
     # Penalty-based bounds (author-like): typically enabled for training_mode="author".
     use_penalty_bounds: bool = True
+    use_author_raw_penalty: bool = True
     bounds_penalty_weight: float = 1.0
 
     # ---- Optimization ----
     grad_clip: float = 1.0
+    grad_clip_mode: GradClipMode = "norm"
     # Author-like robust objective.
     loss_type: str = "huber"  # "huber" | "mse"
     huber_delta: float = 1.0
@@ -153,6 +160,11 @@ class TrainConfig:
     author_lr_decay: float = 1.0
     author_lr_min: float = 1e-7
     author_lr_warmup_episodes: int = 0
+    # Author Main.py-style shuffle (limited buffer) in episode loop.
+    author_limited_shuffle: bool = True
+    # Stabilization trick in author Taylor dynamics: keep some batches at zero shocks.
+    author_n_steady_state_batches: int = 50
+    author_n_steady_state_min_batch: int = 500
 
     # ---- Artifacts ----
     artifacts_root: str = "../artifacts"
@@ -310,7 +322,11 @@ class TrainConfig:
         # New paper (SSRN 5005047) states a unified architecture:
         # two hidden layers with 512 neurons each (SELU).
         _ = policy
-        hidden = (512, 512)
+        if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+            # Author dsge_taylor uses a smaller 128x128 network.
+            hidden = (128, 128)
+        else:
+            hidden = (512, 512)
 
         base = TrainConfig(
             mode="author",
@@ -318,18 +334,24 @@ class TrainConfig:
             exogenous_init_mode="author_hooks",
             commitment_init_mode="author_hooks",
             weights_selection="last",
-            n_episodes=20_000,
+            n_episodes=10_000_000,
             hidden_layers=hidden,
             activation="selu",
+            init_mode="author_variance_scaling",
+            init_scale=0.01,
             use_two_phase=False,
             strict_eps_stop=False,
             strict_eps_max_steps=None,
             n_path=10,
             n_paths_per_step=1,
+            grad_clip_mode="value",
             use_author_lr_scheduler=True,
             author_lr_decay=1.0,
             author_lr_min=1e-7,
             author_lr_warmup_episodes=0,
+            author_limited_shuffle=True,
+            author_n_steady_state_batches=50,
+            author_n_steady_state_min_batch=500,
             log_every=100,
             val_size=1024,
             val_every=2000,

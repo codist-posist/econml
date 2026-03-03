@@ -11,6 +11,7 @@ from .io_utils import find_latest_run_dir, load_selected_run
 
 TRAIN_NOTEBOOK_POLICIES: List[Tuple[str, str]] = [
     ("10_train_taylor.ipynb", "taylor"),
+    ("18_train_taylor_para.ipynb", "taylor_para"),
     ("11_train_mod_taylor.ipynb", "mod_taylor"),
     ("12_train_discretion.ipynb", "discretion"),
     ("13_train_commitment.ipynb", "commitment"),

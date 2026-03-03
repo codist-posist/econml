@@ -44,6 +44,7 @@ def main() -> None:
         required=True,
         choices=[
             "taylor",
+            "taylor_para",
             "mod_taylor",
             "discretion",
             "commitment",
