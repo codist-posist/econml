@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 
 from .config import ModelParams
-from .table2_builder import build_table2
+from .table2_builder import build_table0
 
 
 def build_table1_calibration(params: ModelParams | None = None) -> pd.DataFrame:
@@ -36,16 +36,28 @@ def build_table1_calibration(params: ModelParams | None = None) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Description", "Symbol", "Value"])
 
 
-def _paper_sss_wide_table(
+def _paper_moments_wide_table(
     df: pd.DataFrame,
     *,
     policies: List[Tuple[str, str]],
 ) -> pd.DataFrame:
     metrics = [
-        ("Inflation", "pi_sss_pct"),
-        ("Output gap", "x_sss_pct"),
-        ("Real interest rates", "r_sss_pct"),
-        ("Nominal interest rates", "i_sss_pct"),
+        ("Inflation (SSS)", "pi_sss_pct"),
+        ("Inflation (Mean)", "pi_mean_pct"),
+        ("Inflation (Std)", "pi_std_pct"),
+        ("Inflation (Skew)", "pi_skew"),
+        ("Output gap (SSS)", "x_sss_pct"),
+        ("Output gap (Mean)", "x_mean_pct"),
+        ("Output gap (Std)", "x_std_pct"),
+        ("Output gap (Skew)", "x_skew"),
+        ("Real interest rates (SSS)", "r_sss_pct"),
+        ("Real interest rates (Mean)", "r_mean_pct"),
+        ("Real interest rates (Std)", "r_std_pct"),
+        ("Real interest rates (Skew)", "r_skew"),
+        ("Nominal interest rates (SSS)", "i_sss_pct"),
+        ("Nominal interest rates (Mean)", "i_mean_pct"),
+        ("Nominal interest rates (Std)", "i_std_pct"),
+        ("Nominal interest rates (Skew)", "i_skew"),
     ]
     regimes = [("normal", "normal times"), ("bad", "persistent supply shock")]
 
@@ -77,13 +89,17 @@ def build_paper_tables_2_4(
     """
     Build paper-style Table 2/3/4 using the common table builder and reshape to article layout.
 
-    Recommended:
-      - `sss_source='sim_conditional'` for paper/author table values
-        (conditional means from long simulation by regime).
-      - `sss_source='fixed_point'` only as a diagnostic comparison.
+    Paper tables are always produced from `sim_conditional` moments.
     """
+    if str(sss_source).strip().lower() != "sim_conditional":
+        print(
+            "[build_paper_tables_2_4] WARNING: paper tables enforce "
+            "sss_source='sim_conditional'; overriding requested source."
+        )
+    sss_source_used = "sim_conditional"
+
     try:
-        df = build_table2(
+        df = build_table0(
             artifacts_root,
             device=device,
             dtype=dtype,
@@ -92,7 +108,7 @@ def build_paper_tables_2_4(
             weights_source=weights_source,
             include_rules=True,
             include_zlb=True,
-            sss_source=sss_source,
+            sss_source=sss_source_used,
             strict_author_table2=strict_author_table2,
         )
     except FileNotFoundError as e:
@@ -100,7 +116,7 @@ def build_paper_tables_2_4(
         if "zlb" not in msg:
             raise
         # Fallback: build non-ZLB part and append NaN placeholders for ZLB rows.
-        df = build_table2(
+        df = build_table0(
             artifacts_root,
             device=device,
             dtype=dtype,
@@ -109,7 +125,7 @@ def build_paper_tables_2_4(
             weights_source=weights_source,
             include_rules=True,
             include_zlb=False,
-            sss_source=sss_source,
+            sss_source=sss_source_used,
             strict_author_table2=strict_author_table2,
         )
         cols = list(df.columns)
@@ -120,12 +136,12 @@ def build_paper_tables_2_4(
                 row["policy"] = pol
                 row["regime"] = reg
                 if "sss_source" in row:
-                    row["sss_source"] = sss_source
+                    row["sss_source"] = sss_source_used
                 extras.append(row)
         df = pd.concat([df, pd.DataFrame(extras)], ignore_index=True)
         print("[build_paper_tables_2_4] WARNING: missing ZLB runs; Table 4 contains NaN placeholders.")
 
-    table2 = _paper_sss_wide_table(
+    table2 = _paper_moments_wide_table(
         df,
         policies=[
             ("flex", "Flex. prices"),
@@ -134,7 +150,7 @@ def build_paper_tables_2_4(
         ],
     )
 
-    table3 = _paper_sss_wide_table(
+    table3 = _paper_moments_wide_table(
         df,
         policies=[
             ("discretion", "Discretion"),
@@ -142,7 +158,7 @@ def build_paper_tables_2_4(
         ],
     )
 
-    table4 = _paper_sss_wide_table(
+    table4 = _paper_moments_wide_table(
         df,
         policies=[
             ("taylor_zlb", "Taylor rule"),
@@ -174,7 +190,12 @@ def build_taylor_para_robustness_table(
     Robustness-only table: compare Taylor variants, including taylor_para
     (rate as explicit network output). Not part of the main paper tables.
     """
-    df = build_table2(
+    if str(sss_source).strip().lower() != "sim_conditional":
+        print(
+            "[build_taylor_para_robustness_table] WARNING: enforcing "
+            "sss_source='sim_conditional' for robustness table."
+        )
+    df = build_table0(
         artifacts_root,
         device=device,
         dtype=dtype,
@@ -184,7 +205,7 @@ def build_taylor_para_robustness_table(
         include_rules=True,
         include_para=True,
         include_zlb=False,
-        sss_source=sss_source,
+        sss_source="sim_conditional",
         strict_author_table2=strict_author_table2,
     )
     keep = ["taylor", "taylor_para", "mod_taylor"]

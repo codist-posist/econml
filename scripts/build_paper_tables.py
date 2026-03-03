@@ -26,8 +26,11 @@ def main() -> int:
     ap.add_argument(
         "--sss_source",
         default="sim_conditional",
-        choices=["fixed_point", "sim_conditional"],
-        help="Source for SSS values.",
+        choices=["fixed_point", "sim_conditional", "deterministic_no_innovation"],
+        help=(
+            "Paper tables are built with sim_conditional; this flag is kept for "
+            "backward compatibility and will be ignored if different."
+        ),
     )
     ap.add_argument(
         "--use_selected",

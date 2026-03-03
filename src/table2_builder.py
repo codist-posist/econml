@@ -17,6 +17,8 @@ from .deqn import Trainer
 from .config import TrainConfig
 from .metrics import output_gap_from_consumption
 from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
+from .experiments import DeterministicPathSpec, simulate_deterministic_path
+from .sanity_checks import _state_from_policy_sss
 
 WeightLoadMode = Literal["auto", "canonical", "best", "last"]
 
@@ -301,6 +303,88 @@ def _annualize_pct(x: np.ndarray | float) -> np.ndarray | float:
     return 400.0 * x
 
 
+def _point_moments(v: float) -> Dict[str, float]:
+    """Moments of a deterministic point-mass variable."""
+    return {"mean": float(v), "std": 0.0, "skew": 0.0}
+
+
+def _deterministic_no_innovation_flex_moments(
+    *,
+    flex_sss: Dict[str, float],
+    c_hat: float,
+) -> Dict[str, Dict[str, float]]:
+    c = float(flex_sss["c"])
+    i = float(flex_sss["r_star"])  # pi=0 in flex allocation
+    pi = 0.0
+    x = float(np.log(max(c, 1e-12)) - np.log(max(float(c_hat), 1e-12)))
+    r = i
+    return {
+        "pi": _point_moments(pi),
+        "x": _point_moments(x),
+        "i": _point_moments(i),
+        "r": _point_moments(r),
+    }
+
+
+def _deterministic_no_innovation_policy_moments(
+    *,
+    params: ModelParams,
+    policy: PolicyName,
+    net: PolicyNetwork,
+    sss: Dict[str, float],
+    regime: int,
+    c_hat: float,
+    rbar_by_regime: torch.Tensor | None = None,
+    T: int = 160,
+    burn_in: int = 80,
+) -> Dict[str, Dict[str, float]]:
+    """
+    Deterministic/no-innovation moments by regime:
+      - epsA=epsg=epst=0 each period,
+      - regime fixed to 0 or 1.
+    """
+    # Keep state dimensionality compatible with commitment legacy/new state size.
+    commit_d_in = None
+    if policy == "commitment":
+        try:
+            commit_d_in = int(getattr(net.net[0], "in_features", 8))
+        except Exception:
+            commit_d_in = 8
+    x0 = _state_from_policy_sss(
+        params,
+        policy,
+        sss,
+        int(regime),
+        commitment_state_dim=commit_d_in,
+    )
+    reg_path = [int(regime)] * (int(T) + 1)
+    out = simulate_deterministic_path(
+        params,
+        policy,
+        net,
+        x0=x0,
+        spec=DeterministicPathSpec(T=int(T), epsA=0.0, epsg=0.0, epst=0.0, regime_path=reg_path),
+        rbar_by_regime=rbar_by_regime if policy in ("mod_taylor", "mod_taylor_zlb") else None,
+        compute_implied_i=True,
+        gh_n=3,
+    )
+    sl = slice(int(burn_in), None)
+    c = np.asarray(out["c"], dtype=np.float64).reshape(-1)[sl]
+    pi = np.asarray(out["pi"], dtype=np.float64).reshape(-1)[sl]
+    i_nom = np.asarray(out["i"], dtype=np.float64).reshape(-1)[sl]
+    x_gap = np.log(np.clip(c, 1e-12, None) / max(float(c_hat), 1e-12))
+    if i_nom.size >= 2 and pi.size >= 2:
+        r_real = (1.0 + i_nom[:-1]) / (1.0 + pi[1:]) - 1.0
+    else:
+        r_real = np.array([np.nan], dtype=np.float64)
+    return {
+        "pi": _moments_with_skew(pi),
+        "x": _moments_with_skew(x_gap),
+        "i": _moments_with_skew(i_nom),
+        "r": _moments_with_skew(r_real),
+    }
+
+
 def _normalize_sss_source(sss_source: str) -> str:
     key = str(sss_source).strip().lower()
     aliases = {
@@ -310,10 +394,14 @@ def _normalize_sss_source(sss_source: str) -> str:
         "sim_conditional": "sim_conditional",
         "simulation_conditional": "sim_conditional",
         "conditional": "sim_conditional",
+        "deterministic_no_innovation": "deterministic_no_innovation",
+        "deterministic": "deterministic_no_innovation",
+        "no_innovation": "deterministic_no_innovation",
+        "no-innovation": "deterministic_no_innovation",
     }
     if key not in aliases:
         raise ValueError(
-            "sss_source must be one of {'fixed_point','sim_conditional'} "
+            "sss_source must be one of {'fixed_point','sim_conditional','deterministic_no_innovation'} "
             f"(got {sss_source!r})"
         )
     return aliases[key]
@@ -419,7 +507,7 @@ def _load_run_dir(
         if not miss:
             if selected is not None and rd != selected and selected_missing:
                 print(
-                    f"[build_table2] WARNING: selected run for policy='{policy}' is incomplete "
+                    f"[build_table0] WARNING: selected run for policy='{policy}' is incomplete "
                     f"({', '.join(selected_missing)}). Falling back to latest complete run: {rd}"
                 )
             return rd
@@ -704,7 +792,7 @@ def _implied_i_at_sss(
     return float(i_t.item())
 
 
-def build_table2(
+def build_table0(
     artifacts_root: str,
     *,
     device: str = "cpu",
@@ -715,11 +803,11 @@ def build_table2(
     include_rules: bool = True,
     include_para: bool = False,
     include_zlb: bool = False,
-    sss_source: str = "sim_conditional",
+    sss_source: str = "deterministic_no_innovation",
     strict_author_table2: bool = False,
 ) -> pd.DataFrame:
     """
-    Build a Table-2-like summary after trainings.
+    Build a base summary table (`table0`) after trainings.
 
     Policies included:
       - flex prices
@@ -729,11 +817,13 @@ def build_table2(
 
     Uses:
       - Ergodic moments from saved sim_paths.npz in each run directory.
-      - SSS source controlled by `sss_source`:
+      - Source controlled by `sss_source`:
           * "sim_conditional" (paper/author default): regime-conditional
             long-simulation moments (prefer author `simulated_definitions_NT/SS.npz`,
             fallback to conditional moments from `sim_paths.npz`).
           * "fixed_point": regime-conditional policy fixed points (diagnostic mode).
+          * "deterministic_no_innovation": deterministic/no-innovation
+            regime-conditional path moments (diagnostic no-shock object).
       - If `strict_author_table2=True` and `sss_source='sim_conditional'`,
         require author NT/SS files for trained policies (no silent fallback).
       - Weights source controlled by `weights_source`:
@@ -785,6 +875,8 @@ def build_table2(
             ]
 
     rows: List[Dict[str, Any]] = []
+    deterministic_moments: Dict[Tuple[str, int], Dict[str, Dict[str, float]]] = {}
+    policy_sss: Dict[Tuple[str, int], Dict[str, float]] = {}
 
     def add_block(
         label: str,
@@ -849,9 +941,20 @@ def build_table2(
                     if "r" in am:
                         r_m = am["r"]
 
-        if sss_source_norm == "sim_conditional":
+        if sss_source_norm == "deterministic_no_innovation":
+            dm = deterministic_moments.get((policy_key, int(regime)))
+            if dm is None:
+                raise RuntimeError(
+                    f"deterministic_no_innovation moments missing for policy='{policy_key}', regime={int(regime)}."
+                )
+            pi_m = dm["pi"]
+            i_m = dm["i"]
+            x_m = dm["x"]
+            r_m = dm["r"]
+
+        if sss_source_norm in ("sim_conditional", "deterministic_no_innovation"):
             # Paper/author object: stochastic steady state by regime as conditional means
-            # from long simulated paths (or author fixed-regime NT/SS files).
+            # from long simulated paths (or deterministic no-innovation path means).
             pi_ss = float(pi_m["mean"])
             x_ss = float(x_m["mean"])
             i_ss = float(i_m["mean"])
@@ -931,6 +1034,8 @@ def build_table2(
     sims: Dict[str, Dict[str, np.ndarray]] = {}
     run_dirs: Dict[str, str] = {}
 
+    require_sim_paths = sss_source_norm in ("sim_conditional", "fixed_point")
+
     # load nets + sims for trained policies
     for label, pkey in policies:
         if pkey is None:
@@ -940,20 +1045,35 @@ def build_table2(
             pkey,
             use_selected=use_selected,
             strict_selected=strict_selected,
+            required_files=("sim_paths.npz",) if require_sim_paths else (),
         )
         run_dirs[pkey] = run_dir
         nets[pkey] = _load_net_from_run(run_dir, params, pkey, weights_source=weights_source)
-        sims[pkey] = _load_sim_paths(run_dir)
-        # Quick diagnostic: Table-2 skewness can be unstable with short saved sims.
-        try:
-            n = int(np.asarray(sims[pkey]["s"]).size)
-            if n < 5000:
-                print(
-                    f"[build_table2] WARNING: sim_paths for policy='{pkey}' has only {n} observations. "
-                    "Skewness and even means can deviate from the paper. Consider re-saving sim_paths with larger T/thin." 
-                )
-        except Exception:
-            pass
+        if require_sim_paths:
+            sims[pkey] = _load_sim_paths(run_dir)
+            # Quick diagnostic: skewness can be unstable with short saved sims.
+            try:
+                n = int(np.asarray(sims[pkey]["s"]).size)
+                if n < 5000:
+                    print(
+                        f"[build_table0] WARNING: sim_paths for policy='{pkey}' has only {n} observations. "
+                        "Skewness and even means can deviate from the paper. Consider re-saving sim_paths with larger T/thin."
+                    )
+            except Exception:
+                pass
+
+    # Pre-compute regime-conditional policy SSS objects once (used by fixed_point and deterministic modes).
+    for label, pkey in policies:
+        if pkey is None:
+            continue
+        for s in (0, 1):
+            policy_sss[(pkey, s)] = _policy_sss_for_policy(
+                params,
+                pkey,
+                nets[pkey],
+                s,
+                rbar_by_regime=rbar_by_regime,
+            )
 
     # Pick a source run for author flex moments (cons_flex_y/i_flex_y in NT/SS files).
     flex_author_run_dir: str | None = None
@@ -989,17 +1109,38 @@ def build_table2(
             "for at least one trained policy run."
         )
 
+    if sss_source_norm == "deterministic_no_innovation":
+        for s in (0, 1):
+            deterministic_moments[("flex", s)] = _deterministic_no_innovation_flex_moments(
+                flex_sss=flex.by_regime[s],
+                c_hat=c_hat,
+            )
+        for label, pkey in policies:
+            if pkey is None:
+                continue
+            for s in (0, 1):
+                deterministic_moments[(pkey, s)] = _deterministic_no_innovation_policy_moments(
+                    params=params,
+                    policy=pkey,
+                    net=nets[pkey],
+                    sss=policy_sss[(pkey, s)],
+                    regime=s,
+                    c_hat=c_hat,
+                    rbar_by_regime=rbar_by_regime,
+                )
+
     # flex block (paper reports ergodic moments for flex prices as well)
     flex_sim: Optional[Dict[str, np.ndarray]] = None
-    flex_sim_path = os.path.join(artifacts_root, "flex", "sim_paths.npz")
-    if os.path.exists(flex_sim_path):
-        try:
-            flex_sim = _load_sim_paths(os.path.join(artifacts_root, "flex"))
-        except Exception:
-            flex_sim = None
-    if flex_sim is None:
-        # Fallback: simulate flex prices directly (no network) using the model's switching + temporary shocks
-        flex_sim = _simulate_flex_prices_for_table2(params)
+    if require_sim_paths:
+        flex_sim_path = os.path.join(artifacts_root, "flex", "sim_paths.npz")
+        if os.path.exists(flex_sim_path):
+            try:
+                flex_sim = _load_sim_paths(os.path.join(artifacts_root, "flex"))
+            except Exception:
+                flex_sim = None
+        if flex_sim is None:
+            # Fallback: simulate flex prices directly (no network) using switching + temporary shocks
+            flex_sim = _simulate_flex_prices_for_table2(params)
     for s in [0, 1]:
         add_block("flex", "flex", s, flex.by_regime[s], flex_sim, run_dir=flex_author_run_dir)
 
@@ -1025,13 +1166,7 @@ def build_table2(
         if pkey is None:
             continue
         for s in [0, 1]:
-            sss = _policy_sss_for_policy(
-                params,
-                pkey,
-                nets[pkey],
-                s,
-                rbar_by_regime=rbar_by_regime,
-            )
+            sss = policy_sss[(pkey, s)]
             sim = sims.get(pkey)
             if (sss_source_norm == "sim_conditional") and (sim is None):
                 raise FileNotFoundError(
@@ -1059,8 +1194,46 @@ def build_table2(
     return df
 
 
-def save_table2_csv(df: pd.DataFrame, artifacts_root: str, *, filename: str = "table2_reproduced.csv") -> str:
+def save_table0_csv(df: pd.DataFrame, artifacts_root: str, *, filename: str = "table0_reproduced.csv") -> str:
     out_path = os.path.join(artifacts_root, filename)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_csv(out_path, index=False)
     return out_path
+
+
+def build_table2(
+    artifacts_root: str,
+    *,
+    device: str = "cpu",
+    dtype: torch.dtype = torch.float64,
+    use_selected: bool = True,
+    strict_selected: bool = False,
+    weights_source: WeightLoadMode = "auto",
+    include_rules: bool = True,
+    include_para: bool = False,
+    include_zlb: bool = False,
+    sss_source: str = "sim_conditional",
+    strict_author_table2: bool = False,
+) -> pd.DataFrame:
+    """
+    Backward-compatible alias.
+    Historically this function produced the Table-2 style frame.
+    """
+    return build_table0(
+        artifacts_root,
+        device=device,
+        dtype=dtype,
+        use_selected=use_selected,
+        strict_selected=strict_selected,
+        weights_source=weights_source,
+        include_rules=include_rules,
+        include_para=include_para,
+        include_zlb=include_zlb,
+        sss_source=sss_source,
+        strict_author_table2=strict_author_table2,
+    )
+
+
+def save_table2_csv(df: pd.DataFrame, artifacts_root: str, *, filename: str = "table2_reproduced.csv") -> str:
+    """Backward-compatible alias to preserve old scripts/notebooks."""
+    return save_table0_csv(df, artifacts_root, filename=filename)

@@ -13,7 +13,7 @@ import sys
 # Ensure project root is on sys.path when running as a script
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import torch
-from src.table2_builder import build_table2, save_table2_csv
+from src.table2_builder import build_table0, save_table0_csv
 
 def main():
     ap = argparse.ArgumentParser()
@@ -39,11 +39,11 @@ def main():
     )
     ap.add_argument(
         "--sss_source",
-        default="sim_conditional",
-        choices=["fixed_point", "sim_conditional"],
+        default="deterministic_no_innovation",
+        choices=["fixed_point", "sim_conditional", "deterministic_no_innovation"],
         help=(
-            "Table source mode: sim_conditional (paper default, conditional long-simulation means) "
-            "or fixed_point (diagnostic fixed-point values)."
+            "Table source mode: deterministic_no_innovation (table0 default), "
+            "sim_conditional (paper-author conditional moments), or fixed_point (diagnostic)."
         ),
     )
     ap.add_argument(
@@ -74,7 +74,7 @@ def main():
     ap.add_argument("--no_selected", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
     use_selected = bool(args.use_selected) and (not bool(args.no_selected))
-    df = build_table2(
+    df = build_table0(
         args.artifacts_root,
         device=args.device,
         include_rules=args.include_rules,
@@ -87,7 +87,7 @@ def main():
         strict_author_table2=bool(args.strict_author_table2),
     )
     print(df.to_string(index=False))
-    path = save_table2_csv(df, args.artifacts_root)
+    path = save_table0_csv(df, args.artifacts_root)
     print("Saved:", path)
 
 if __name__ == "__main__":
