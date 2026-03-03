@@ -125,6 +125,26 @@ def _gh_grid_3d(params: ModelParams, gh_n: int) -> Tuple[torch.Tensor, torch.Ten
     return eps_grid, w_grid
 
 
+def _transition_probs_to_next(params: ModelParams, st) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Return transition probabilities (to regime 0, to regime 1) as vectors of shape (B,).
+
+    In the author taylor-para setup, p21 is state-dependent and carried in the state.
+    Other models use the fixed Markov matrix params.P.
+    """
+    if getattr(st, "p21", None) is None:
+        p0 = params.P[st.s, 0]
+    else:
+        p21 = torch.clamp(st.p21, min=1e-12, max=1.0 - 1e-12)
+        p0 = torch.where(
+            st.s == 0,
+            torch.full_like(p21, 1.0 - float(params.p12)),
+            p21,
+        )
+    p1 = 1.0 - p0
+    return p0, p1
+
+
 def expectation_operator_appendixB(
     params: ModelParams,
     st,
@@ -138,7 +158,6 @@ def expectation_operator_appendixB(
     if eps_grid is None or w_grid is None:
         eps_grid, w_grid = _gh_grid_3d(params, gh_n)
 
-    P = params.P
     dev = params.device
 
     B = st.Delta_prev.shape[0]
@@ -161,13 +180,14 @@ def expectation_operator_appendixB(
     val = f(epsA, epsg, epst, s_next)  # (B,Q,2) or (B,Q,2,K)
 
     wq = w_grid.view(1, Q, 1)  # (1,Q,1)
-    pi = torch.stack([P[st.s, 0], P[st.s, 1]], dim=-1).view(B, 1, 2)  # (B,1,2)
+    p0, p1 = _transition_probs_to_next(params, st)
+    pi = torch.stack([p0, p1], dim=-1).view(B, 1, 2)  # (B,1,2)
 
     if val.ndim == 3:
         return (val * wq * pi).sum(dim=1).sum(dim=-1)  # (B,)
     if val.ndim == 4:
         wq4 = w_grid.view(1, Q, 1, 1)
-        pi4 = torch.stack([P[st.s, 0], P[st.s, 1]], dim=-1).view(B, 1, 2, 1)
+        pi4 = torch.stack([p0, p1], dim=-1).view(B, 1, 2, 1)
         return (val * wq4 * pi4).sum(dim=1).sum(dim=1)  # (B,K)
 
     raise ValueError(f"Unexpected f output ndim={val.ndim}; expected 3 or 4")
@@ -194,14 +214,18 @@ def implied_nominal_rate_from_euler(
     def x_next(epsA, epsg, epst, s_next):
         logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params, st, epsA, epsg, epst, s_next)
         Delta_cur = out_t["Delta"].view(-1, 1, 1).expand_as(logA_n)
+        if policy == "mod_taylor" and st.i_prev is not None and st.p21 is not None:
+            i_cur = out_t["i_nom"].view(-1, 1, 1).expand_as(logA_n)
+            p21_cur = st.p21.view(-1, 1, 1).expand_as(logA_n)
+            return torch.stack([Delta_cur, i_cur, logA_n, xi_n, logg_n, s_n.to(x_t.dtype), p21_cur], dim=-1)
         if policy == "commitment":
-            vp_cur = (out_t["vartheta"] * out_t["c"].pow(params.gamma)).view(-1, 1, 1).expand_as(logA_n)
-            rp_cur = (out_t["varrho"] * out_t["c"].pow(params.gamma)).view(-1, 1, 1).expand_as(logA_n)
+            vartheta_cur = out_t["vartheta"].view(-1, 1, 1).expand_as(logA_n)
+            varrho_cur = out_t["varrho"].view(-1, 1, 1).expand_as(logA_n)
             has_c_prev = bool(getattr(trainer, "_commitment_has_c_prev", False)) or (st.c_prev is not None)
             if has_c_prev:
                 c_prev_cur = out_t["c"].view(-1, 1, 1).expand_as(logA_n)
-                return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vp_cur, rp_cur, c_prev_cur], dim=-1)
-            return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vp_cur, rp_cur], dim=-1)
+                return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vartheta_cur, varrho_cur, c_prev_cur], dim=-1)
+            return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype), vartheta_cur, varrho_cur], dim=-1)
         return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x_t.dtype)], dim=-1)
 
     def f_term(epsA, epsg, epst, s_next):
@@ -271,11 +295,17 @@ class Trainer:
         # Author commitment code can include c_old in the state.
         # Keep backward compatibility: detect whether the current network expects it.
         self._commitment_has_c_prev = False
+        self._modt_has_extended_state = False
         if self.policy == "commitment":
             try:
                 self._commitment_has_c_prev = int(self.net.net[0].in_features) >= 8
             except Exception:
                 self._commitment_has_c_prev = False
+        if self.policy == "mod_taylor":
+            try:
+                self._modt_has_extended_state = int(self.net.net[0].in_features) >= 7
+            except Exception:
+                self._modt_has_extended_state = False
 
         if self.policy == "taylor":
             # Author equations set (A.1): eq_1, eq_2, eq_3, eq_7.
@@ -334,6 +364,16 @@ class Trainer:
         disp_std = 1e-4 if self.policy == "commitment" else 1e-3
         Delta_prev = torch.ones(B, device=dev, dtype=dt) + disp_std * torch.randn(B, device=dev, dtype=dt)
 
+        if self.policy == "mod_taylor" and bool(getattr(self, "_modt_has_extended_state", False)):
+            i_nom_ss = (1.0 + float(self.params.pi_bar)) / float(self.params.beta) - 1.0
+            i_prev = torch.tensor(i_nom_ss, device=dev, dtype=dt) + 0.008 * torch.randn(B, device=dev, dtype=dt)
+            p21_low = float(getattr(self.cfg, "mod_taylor_p21_low", 1.0 / 60.0))
+            p21_high = float(getattr(self.cfg, "mod_taylor_p21_high", 1.0))
+            p21 = torch.empty(B, device=dev, dtype=dt).uniform_(p21_low, p21_high)
+            Delta_prev = torch.ones(B, device=dev, dtype=dt) + 0.002 * torch.randn(B, device=dev, dtype=dt)
+            # author-style para order: [Delta_prev, i_prev, logA, xi, logg, s, p21]
+            return torch.stack([Delta_prev, i_prev, logA, xi, logg, s.to(dt), p21], dim=-1)
+
         if self.policy != "commitment":
             return torch.stack([Delta_prev, logA, logg, xi, s.to(dt)], dim=-1)
 
@@ -348,26 +388,28 @@ class Trainer:
         vartheta_old = torch.tensor(-0.019182, device=dev, dtype=dt) + normal_noise[:, 0]
         rho_old = torch.tensor(0.016500, device=dev, dtype=dt) + normal_noise[:, 1]
         c_old = torch.clamp(torch.tensor(0.921336, device=dev, dtype=dt) + normal_noise[:, 2], min=1e-8)
-        vp = vartheta_old * c_old.pow(self.params.gamma)
-        rp = rho_old * c_old.pow(self.params.gamma)
-        c_prev = c_old
 
         if self._commitment_has_c_prev:
-            return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vp, rp, c_prev], dim=-1)
-        return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vp, rp], dim=-1)
+            return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vartheta_old, rho_old, c_old], dim=-1)
+        return torch.stack([Delta_prev, logA, logg, xi, s.to(dt), vartheta_old, rho_old], dim=-1)
 
     def _policy_outputs(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         # If x was created under torch.inference_mode(), it is an 'inference tensor' and
         # cannot be used in autograd-tracked computations. Clone it when grad is enabled.
         if torch.is_grad_enabled() and getattr(x, 'is_inference', False):
             x = x.clone()
+        st = unpack_state(x, self.policy)
         raw = self.net(x)
         floors = {
             "c": self.cfg.c_floor,
             "Delta": self.cfg.delta_floor,
             "pstar": self.cfg.pstar_floor,
+            "pi_low": float(getattr(self.cfg, "pi_low", -0.1)),
+            "pi_high": float(getattr(self.cfg, "pi_high", 0.1)),
+            "pstar_low": float(getattr(self.cfg, "pstar_low", 0.9)),
+            "pstar_high": float(getattr(self.cfg, "pstar_high", 1.1)),
         }
-        return decode_outputs(self.policy, raw, floors=floors)
+        return decode_outputs(self.policy, raw, floors=floors, params=self.params, st=st)
 
     def _bounds_penalty(self, out: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Author-like soft penalties for bound violations (Huber)."""
@@ -379,10 +421,10 @@ class Trainer:
                 return
             if lo is not None:
                 below = torch.clamp(float(lo) - out[name], min=0.0)
-                terms.append(huber_elementwise(below, delta).mean())
+                terms.append(huber_elementwise(below, delta).sum())
             if hi is not None:
                 above = torch.clamp(out[name] - float(hi), min=0.0)
-                terms.append(huber_elementwise(above, delta).mean())
+                terms.append(huber_elementwise(above, delta).sum())
 
         # Common nominal bounds
         _add_bound("pi", float(getattr(self.cfg, "pi_low", -0.1)), float(getattr(self.cfg, "pi_high", 0.1)))
@@ -390,7 +432,7 @@ class Trainer:
 
         # Wider author-like variable penalties
         _add_bound("c", 0.6, 1.4)
-        if self.policy == "taylor":
+        if self.policy in ("taylor", "mod_taylor"):
             _add_bound("Delta", 0.9, 1.1)
             _add_bound("XiN", 1.0, 8.0)
             _add_bound("XiD", 1.0, 8.0)
@@ -405,7 +447,7 @@ class Trainer:
         if not terms:
             # keep graph/device consistent
             return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
-        return torch.stack(terms).mean()
+        return torch.stack(terms).sum()
 
     def _training_loss_from_states(self, x: torch.Tensor, resid: torch.Tensor) -> torch.Tensor:
         """Combined training objective under selected training_mode."""
@@ -433,18 +475,21 @@ class Trainer:
         epst = torch.randn(B, device=dev, dtype=dt)
 
         u = torch.rand(B, device=dev, dtype=dt)
-        P = self.params.P
-        p0 = P[st.s, 0]
+        p0, _ = _transition_probs_to_next(self.params, st)
         s_next = torch.where(u < p0, torch.zeros_like(st.s), torch.ones_like(st.s))
 
         logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)
 
         if self.policy == "commitment":
-            vp = out["vartheta"] * out["c"].pow(self.params.gamma)
-            rp = out["varrho"] * out["c"].pow(self.params.gamma)
             if st.c_prev is not None or self._commitment_has_c_prev:
-                return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), vp, rp, out["c"]], dim=-1)
-            return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), vp, rp], dim=-1)
+                return torch.stack(
+                    [out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"], out["c"]],
+                    dim=-1,
+                )
+            return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"]], dim=-1)
+
+        if self.policy == "mod_taylor" and st.i_prev is not None and st.p21 is not None:
+            return torch.stack([out["Delta"], out["i_nom"], logA_n, xi_n, logg_n, s_n.to(dt), st.p21], dim=-1)
 
         return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
 
@@ -455,6 +500,8 @@ class Trainer:
         # Ensure x is a normal tensor when computing residuals with autograd.
         if torch.is_grad_enabled() and getattr(x, 'is_inference', False):
             x = x.clone()
+        if self.policy == "discretion" and torch.is_grad_enabled() and (not x.requires_grad):
+            x = x.clone().detach().requires_grad_(True)
         out = self._policy_outputs(x)
         st = unpack_state(x, self.policy)
 
@@ -463,30 +510,32 @@ class Trainer:
             lam_tg = lam_t.view(-1, 1, 1)
 
             if self.policy == "taylor":
-                i_rule_target = i_taylor(self.params, out["pi"])
-                i_t = i_rule_target
+                i_t = out["i_nom"]
+                i_rule_target = None
             else:
-                # Author dsge_taylor_para eq_8 target:
-                # i_nom = (1+pi_bar)/beta - 1 + psi*(pi - pi_bar)
-                i_rule_target = i_taylor(self.params, out["pi"])
-                i_t = out.get("i_nom", i_rule_target)
+                i_t = out["i_nom"]
+                i_rule_target = out["i_rule_target"]
 
             i_tg = i_t.view(-1, 1, 1)
 
             def x_next(epsA, epsg, epst, s_next):
                 logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)
+                if self.policy == "mod_taylor" and st.i_prev is not None and st.p21 is not None:
+                    Delta_cur = out["Delta"].view(-1, 1, 1).expand_as(logA_n)
+                    i_cur = out["i_nom"].view(-1, 1, 1).expand_as(logA_n)
+                    p21_cur = st.p21.view(-1, 1, 1).expand_as(logA_n)
+                    return torch.stack([Delta_cur, i_cur, logA_n, xi_n, logg_n, s_n.to(x.dtype), p21_cur], dim=-1)
                 Delta_cur = out["Delta"].view(-1, 1, 1).expand_as(logA_n)
                 return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype)], dim=-1)
 
             def f_all(epsA, epsg, epst, s_next):
                 xn = x_next(epsA, epsg, epst, s_next)
                 on = self._policy_outputs(xn)
-                Lambda = self.params.beta * on["lam"] / lam_tg
-
-                one_plus_pi = on["one_plus_pi"]
-                term_XiN = self.params.theta * Lambda * one_plus_pi.pow(self.params.eps) * on["XiN"]
-                term_XiD = self.params.theta * Lambda * one_plus_pi.pow(self.params.eps - 1.0) * on["XiD"]
-                term_eul = self.params.beta * ((1.0 + i_tg) / one_plus_pi) * (on["lam"] / lam_tg)
+                lam_ratio = on["lam"] / lam_tg
+                pi_aux_n = on["pi_aux"]
+                term_XiN = self.params.beta * self.params.theta * lam_ratio * pi_aux_n * on["XiN"]
+                term_XiD = self.params.beta * self.params.theta * lam_ratio * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) * on["XiD"]
+                term_eul = self.params.beta * (on["lam"] * (1.0 + i_tg) * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) / pi_aux_n) / lam_tg
                 return torch.stack([term_XiN, term_XiD, term_eul], dim=-1)
 
             Et_all = expectation_operator_appendixB(self.params, st, self.gh_n, f_all, eps_grid=self._eps_grid, w_grid=self._w_grid)
@@ -522,15 +571,15 @@ class Trainer:
                 xn = x_next(epsA, epsg, epst, s_next)
                 on = self._policy_outputs(xn)
 
-                one_plus_pi = on["one_plus_pi"]
-                Lambda = self.params.beta * on["lam"] / lam_tg
+                pi_aux_n = on["pi_aux"]
+                lam_ratio = on["lam"] / lam_tg
 
-                F = self.params.theta * self.params.beta * on["c"].pow(-self.params.gamma) * one_plus_pi.pow(self.params.eps - 1.0) * on["XiD"]
-                G = self.params.theta * self.params.beta * on["c"].pow(-self.params.gamma) * one_plus_pi.pow(self.params.eps) * on["XiN"]
+                F = self.params.theta * self.params.beta * on["c"].pow(-self.params.gamma) * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) * on["XiD"]
+                G = self.params.theta * self.params.beta * on["c"].pow(-self.params.gamma) * pi_aux_n * on["XiN"]
 
-                theta_term = self.params.theta * one_plus_pi.pow(self.params.eps) * on["zeta"]
-                XiN_rec = self.params.theta * Lambda * one_plus_pi.pow(self.params.eps) * on["XiN"]
-                XiD_rec = self.params.theta * Lambda * one_plus_pi.pow(self.params.eps - 1.0) * on["XiD"]
+                theta_term = self.params.theta * pi_aux_n * on["zeta"]
+                XiN_rec = self.params.beta * self.params.theta * lam_ratio * pi_aux_n * on["XiN"]
+                XiD_rec = self.params.beta * self.params.theta * lam_ratio * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) * on["XiD"]
 
                 return torch.stack([F, G, theta_term, XiN_rec, XiD_rec], dim=-1)
 
@@ -541,8 +590,11 @@ class Trainer:
             Et_XiN = Et_all[..., 3]
             Et_XiD = Et_all[..., 4]
 
-            Et_dF = torch.autograd.grad(Et_F.sum(), out["Delta"], create_graph=True)[0]
-            Et_dG = torch.autograd.grad(Et_G.sum(), out["Delta"], create_graph=True)[0]
+            # Author code computes dF/dDelta and dG/dDelta w.r.t. lagged dispersion in state.
+            dEtF_dx = torch.autograd.grad(Et_F.sum(), x, create_graph=True, retain_graph=True)[0]
+            dEtG_dx = torch.autograd.grad(Et_G.sum(), x, create_graph=True)[0]
+            Et_dF = dEtF_dx[..., 0]
+            Et_dG = dEtG_dx[..., 0]
 
             res = residuals_a2(self.params, st, out, Et_F, Et_G, Et_dF, Et_dG, Et_theta, Et_XiN, Et_XiD)
             return stack_residuals(res, self.res_keys)
@@ -550,32 +602,32 @@ class Trainer:
         if self.policy == "commitment":
             c_t = out["c"]
             lam_t = out["lam"]
-            c_tg = c_t.view(-1, 1, 1)
             lam_tg = lam_t.view(-1, 1, 1)
             gamma = self.params.gamma
+            c_tg = c_t.view(-1, 1, 1)
 
             def x_next(epsA, epsg, epst, s_next):
                 logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)
                 Delta_cur = out["Delta"].view(-1, 1, 1).expand_as(logA_n)
-                vp_cur = (out["vartheta"] * out["c"].pow(gamma)).view(-1, 1, 1).expand_as(logA_n)
-                rp_cur = (out["varrho"] * out["c"].pow(gamma)).view(-1, 1, 1).expand_as(logA_n)
+                vartheta_cur = out["vartheta"].view(-1, 1, 1).expand_as(logA_n)
+                varrho_cur = out["varrho"].view(-1, 1, 1).expand_as(logA_n)
                 if st.c_prev is not None or self._commitment_has_c_prev:
                     c_prev_cur = out["c"].view(-1, 1, 1).expand_as(logA_n)
-                    return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vp_cur, rp_cur, c_prev_cur], dim=-1)
-                return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vp_cur, rp_cur], dim=-1)
+                    return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vartheta_cur, varrho_cur, c_prev_cur], dim=-1)
+                return torch.stack([Delta_cur, logA_n, logg_n, xi_n, s_n.to(x.dtype), vartheta_cur, varrho_cur], dim=-1)
 
             def f_all(epsA, epsg, epst, s_next):
                 xn = x_next(epsA, epsg, epst, s_next)
                 on = self._policy_outputs(xn)
-                one_plus_pi = on["one_plus_pi"]
-                Lambda = self.params.beta * on["lam"] / lam_tg
+                pi_aux_n = on["pi_aux"]
+                lam_ratio = on["lam"] / lam_tg
 
-                XiN_rec = self.params.theta * Lambda * one_plus_pi.pow(self.params.eps) * on["XiN"]
-                XiD_rec = self.params.theta * Lambda * one_plus_pi.pow(self.params.eps - 1.0) * on["XiD"]
-                theta_term = self.params.theta * one_plus_pi.pow(self.params.eps) * on["zeta"]
+                XiN_rec = self.params.beta * self.params.theta * lam_ratio * pi_aux_n * on["XiN"]
+                XiD_rec = self.params.beta * self.params.theta * lam_ratio * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) * on["XiD"]
+                theta_term = self.params.theta * on["zeta"] * pi_aux_n
 
-                termN = self.params.beta * self.params.theta * gamma * c_tg.pow(gamma - 1.0) * on["c"].pow(-gamma) * one_plus_pi.pow(self.params.eps) * on["XiN"]
-                termD = self.params.beta * self.params.theta * gamma * c_tg.pow(gamma - 1.0) * on["c"].pow(-gamma) * one_plus_pi.pow(self.params.eps - 1.0) * on["XiD"]
+                termN = self.params.beta * self.params.theta * gamma * c_tg.pow(gamma - 1.0) * on["c"].pow(-gamma) * pi_aux_n * on["XiN"]
+                termD = self.params.beta * self.params.theta * gamma * c_tg.pow(gamma - 1.0) * on["c"].pow(-gamma) * pi_aux_n.pow((self.params.eps - 1.0) / self.params.eps) * on["XiD"]
                 return torch.stack([XiN_rec, XiD_rec, termN, termD, theta_term], dim=-1)
 
             Et_all = expectation_operator_appendixB(self.params, st, self.gh_n, f_all, eps_grid=self._eps_grid, w_grid=self._w_grid)
@@ -888,7 +940,7 @@ class Trainer:
                     g_bar=self.params.g_bar, eta_bar=self.params.eta_bar,
                     bad_state=self.params.bad_state,
                     p12=self.params.p12, p21=self.params.p21,
-                    pi_bar=self.params.pi_bar, psi=self.params.psi,
+                    pi_bar=self.params.pi_bar, psi=self.params.psi, rho_i=self.params.rho_i,
                     device=self.params.device, dtype=torch.float64
                 ).to_torch()
                 self.net = self.net.to(dev).double()
@@ -973,7 +1025,7 @@ def simulate_paths(
             g_bar=params.g_bar, eta_bar=params.eta_bar,
             bad_state=params.bad_state,
             p12=params.p12, p21=params.p21,
-            pi_bar=params.pi_bar, psi=params.psi,
+            pi_bar=params.pi_bar, psi=params.psi, rho_i=params.rho_i,
             device=params.device, dtype=net_dtype,
         ).to_torch()
         if rbar_by_regime is not None:

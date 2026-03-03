@@ -135,9 +135,9 @@ def infer_mod_taylor_variant(run_dir: str) -> str | None:
     if v:
         return str(v)
     d_out = _infer_net_output_dim_from_weights(run_dir)
-    if d_out == 9:
+    if d_out in (6, 9):
         return "author_repo_param_i"
-    if d_out == 8:
+    if d_out in (5, 8):
         # Legacy local variant kept for backward compatibility with old artifacts.
         return "legacy_rule_rbar"
     return None

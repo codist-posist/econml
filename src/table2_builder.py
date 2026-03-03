@@ -22,10 +22,10 @@ from .policy_rules import i_taylor
 
 # Network dimensions used across notebooks/training
 DIMS: Dict[str, Tuple[int, int]] = {
-    "taylor": (5, 8),
-    "mod_taylor": (5, 9),
-    "discretion": (5, 11),
-    "commitment": (8, 13),
+    "taylor": (5, 4),
+    "mod_taylor": (7, 6),
+    "discretion": (5, 5),
+    "commitment": (8, 5),
 }
 
 
@@ -502,14 +502,25 @@ def _implied_i_at_sss(
     commit_d_in = None
     if policy == "commitment":
         try:
-            commit_d_in = int(getattr(net.net[0], "in_features", 7))
+            commit_d_in = int(getattr(net.net[0], "in_features", 8))
         except Exception:
-            commit_d_in = 7
+            commit_d_in = 8
     if policy == "commitment":
         xvals = [sss["Delta_prev"], sss["logA"], sss["loggtilde"], sss["xi"], float(regime), sss["vartheta_prev"], sss["varrho_prev"]]
-        if int(commit_d_in or 7) >= 8:
+        if int(commit_d_in or 8) >= 8:
             xvals.append(sss.get("c_prev", sss.get("c", 1.0)))
         x = torch.tensor(xvals, device=dev, dtype=dt).view(1, -1)
+    elif policy == "mod_taylor":
+        try:
+            mod_d_in = int(getattr(net.net[0], "in_features", 7))
+        except Exception:
+            mod_d_in = 7
+        if mod_d_in >= 7:
+            i_prev = float(sss.get("i_prev", sss.get("i_nom", (1.0 + float(params.pi_bar)) / float(params.beta) - 1.0)))
+            p21 = float(sss.get("p21", params.p21))
+            x = torch.tensor([sss["Delta_prev"], i_prev, sss["logA"], sss["xi"], sss["loggtilde"], float(regime), p21], device=dev, dtype=dt).view(1, -1)
+        else:
+            x = torch.tensor([sss["Delta_prev"], sss["logA"], sss["loggtilde"], sss["xi"], float(regime)], device=dev, dtype=dt).view(1, -1)
     else:
         x = torch.tensor([sss["Delta_prev"], sss["logA"], sss["loggtilde"], sss["xi"], float(regime)], device=dev, dtype=dt).view(1, -1)
 
@@ -523,6 +534,9 @@ def _implied_i_at_sss(
         "XiD": torch.tensor([sss["XiD"]], device=dev, dtype=dt),
         "Delta": torch.tensor([sss["Delta"]], device=dev, dtype=dt),
     }
+    if policy == "mod_taylor":
+        i_nom = float(sss.get("i_nom", (1.0 + float(params.pi_bar)) / float(params.beta) - 1.0))
+        out["i_nom"] = torch.tensor([i_nom], device=dev, dtype=dt)
     # Commitment also needs contemporaneous multipliers for the implied-i Euler inversion
     if policy == "commitment":
         out["vartheta"] = torch.tensor([sss["vartheta"]], device=dev, dtype=dt)

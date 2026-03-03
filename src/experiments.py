@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from .config import ModelParams, PolicyName, TrainConfig
-from .deqn import PolicyNetwork, Trainer, implied_nominal_rate_from_euler
+from .deqn import PolicyNetwork, Trainer, implied_nominal_rate_from_euler, _transition_probs_to_next
 from .model_common import unpack_state, shock_laws_of_motion, identities
 
 @dataclass
@@ -58,16 +58,18 @@ def _deterministic_step(
     if s_next is None:
         # default: follow Markov draw (stochastic). For deterministic IRFs, pass s_next explicitly.
         u = torch.rand(B, device=dev, dtype=dt)
-        P = params.P
-        p0 = P[st.s, 0]
+        p0, _ = _transition_probs_to_next(params, st)
         s_next = torch.where(u < p0, torch.zeros_like(st.s), torch.ones_like(st.s))
 
     logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params, st, epsA_t, epsg_t, epst_t, s_next)
 
     if policy == "commitment":
-        vp = out["vartheta"] * out["c"].pow(params.gamma)
-        rp = out["varrho"] * out["c"].pow(params.gamma)
-        return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), vp, rp], dim=-1)
+        if st.c_prev is not None:
+            return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"], out["c"]], dim=-1)
+        return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt), out["vartheta"], out["varrho"]], dim=-1)
+
+    if policy == "mod_taylor" and st.i_prev is not None and st.p21 is not None:
+        return torch.stack([out["Delta"], out["i_nom"], logA_n, xi_n, logg_n, s_n.to(dt), st.p21], dim=-1)
 
     return torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(dt)], dim=-1)
 
@@ -114,9 +116,13 @@ def simulate_deterministic_path(
                 from .policy_rules import i_taylor
                 i_t = i_taylor(params, out["pi"])
             else:
-                from .policy_rules import i_modified_taylor
-                assert rbar_by_regime is not None
-                i_t = i_modified_taylor(params, out["pi"], rbar_by_regime, st.s)
+                # Author repo parametric Taylor variant: i_t is a direct policy output.
+                if "i_nom" in out:
+                    i_t = out["i_nom"]
+                else:
+                    from .policy_rules import i_modified_taylor
+                    assert rbar_by_regime is not None
+                    i_t = i_modified_taylor(params, out["pi"], rbar_by_regime, st.s)
         else:
             if compute_implied_i:
                 i_t = implied_nominal_rate_from_euler(params, policy, x, out, int(gh_n), tr)
@@ -178,7 +184,7 @@ def calibrate_xi_jump_to_match_pi_impact(
             sigma_A=p.sigma_A, sigma_tau=p.sigma_tau, sigma_g=p.sigma_g,
             g_bar=p.g_bar, eta_bar=p.eta_bar, bad_state=p.bad_state,
             p12=p.p12, p21=p.p21,
-            pi_bar=p.pi_bar, psi=p.psi,
+            pi_bar=p.pi_bar, psi=p.psi, rho_i=p.rho_i,
             device=p.device, dtype=p.dtype
         ).to_torch()
 

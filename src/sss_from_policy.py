@@ -123,21 +123,34 @@ def switching_policy_sss_by_regime_from_policy(
     if policy == "commitment":
         d_in = _infer_policy_input_dim(net) or 7
         if d_in >= 8:
-            # State: (Delta_prev, logA, logg, xi, s, vp_prev, rp_prev, c_prev)
+            # State: (Delta_prev, logA, logg, xi, s, vartheta_prev, varrho_prev, c_prev)
             x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0, 0.0, 0.0, 1.0], device=dev, dtype=dt).view(1, -1)
             x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0, 0.0, 0.0, 1.0], device=dev, dtype=dt).view(1, -1)
         else:
-            # Backward-compatible state: (Delta_prev, logA, logg, xi, s, vp_prev, rp_prev)
+            # Backward-compatible state: (Delta_prev, logA, logg, xi, s, vartheta_prev, varrho_prev)
             x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0, 0.0, 0.0], device=dev, dtype=dt).view(1, -1)
             x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0, 0.0, 0.0], device=dev, dtype=dt).view(1, -1)
+    elif policy == "mod_taylor":
+        d_in = _infer_policy_input_dim(net) or 5
+        if d_in >= 7:
+            i_ss = (1.0 + float(params.pi_bar)) / float(params.beta) - 1.0
+            p21_bar = float(params.p21)
+            # State: [Delta_prev, i_prev, logA, xi, logg, s, p21]
+            x0 = torch.tensor([1.0, i_ss, logA0, xi0, logg0, 0.0, p21_bar], device=dev, dtype=dt).view(1, -1)
+            x1 = torch.tensor([1.0, i_ss, logA0, xi0, logg0, 1.0, p21_bar], device=dev, dtype=dt).view(1, -1)
+        else:
+            x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0], device=dev, dtype=dt).view(1, -1)
+            x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0], device=dev, dtype=dt).view(1, -1)
     else:
         # State: (Delta_prev, logA, logg, xi, s)
         x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0], device=dev, dtype=dt).view(1, -1)
         x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0], device=dev, dtype=dt).view(1, -1)
 
     for _ in range(int(max_iter)):
-        out0 = decode_outputs(policy, net(x0), floors=floors)
-        out1 = decode_outputs(policy, net(x1), floors=floors)
+        st0 = unpack_state(x0, policy)
+        st1 = unpack_state(x1, policy)
+        out0 = decode_outputs(policy, net(x0), floors=floors, params=params, st=st0)
+        out1 = decode_outputs(policy, net(x1), floors=floors, params=params, st=st1)
 
         Delta0 = out0["Delta"].view(())
         Delta1 = out1["Delta"].view(())
@@ -150,30 +163,37 @@ def switching_policy_sss_by_regime_from_policy(
         DeltaPrev1 = (wprev1[0] * Delta0 + wprev1[1] * Delta1).view(())
 
         if policy == "commitment":
-            gamma = params.gamma
-            vp0 = (out0["vartheta"] * out0["c"].pow(gamma)).view(())
-            vp1 = (out1["vartheta"] * out1["c"].pow(gamma)).view(())
-            rp0 = (out0["varrho"] * out0["c"].pow(gamma)).view(())
-            rp1 = (out1["varrho"] * out1["c"].pow(gamma)).view(())
+            vartheta0 = out0["vartheta"].view(())
+            vartheta1 = out1["vartheta"].view(())
+            varrho0 = out0["varrho"].view(())
+            varrho1 = out1["varrho"].view(())
 
-            vpPrev0 = (wprev0[0] * vp0 + wprev0[1] * vp1).view(())
-            vpPrev1 = (wprev1[0] * vp0 + wprev1[1] * vp1).view(())
-            rpPrev0 = (wprev0[0] * rp0 + wprev0[1] * rp1).view(())
-            rpPrev1 = (wprev1[0] * rp0 + wprev1[1] * rp1).view(())
+            varthetaPrev0 = (wprev0[0] * vartheta0 + wprev0[1] * vartheta1).view(())
+            varthetaPrev1 = (wprev1[0] * vartheta0 + wprev1[1] * vartheta1).view(())
+            varrhoPrev0 = (wprev0[0] * varrho0 + wprev0[1] * varrho1).view(())
+            varrhoPrev1 = (wprev1[0] * varrho0 + wprev1[1] * varrho1).view(())
             if int(x0.shape[-1]) >= 8:
                 cPrev0 = (wprev0[0] * out0["c"].view(()) + wprev0[1] * out1["c"].view(())).view(())
                 cPrev1 = (wprev1[0] * out0["c"].view(()) + wprev1[1] * out1["c"].view(())).view(())
                 x0_next = torch.tensor(
-                    [float(DeltaPrev0.item()), logA0, logg0, xi0, 0.0, float(vpPrev0.item()), float(rpPrev0.item()), float(cPrev0.item())],
+                    [float(DeltaPrev0.item()), logA0, logg0, xi0, 0.0, float(varthetaPrev0.item()), float(varrhoPrev0.item()), float(cPrev0.item())],
                     device=dev, dtype=dt
                 ).view(1, -1)
                 x1_next = torch.tensor(
-                    [float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0, float(vpPrev1.item()), float(rpPrev1.item()), float(cPrev1.item())],
+                    [float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0, float(varthetaPrev1.item()), float(varrhoPrev1.item()), float(cPrev1.item())],
                     device=dev, dtype=dt
                 ).view(1, -1)
             else:
-                x0_next = torch.tensor([float(DeltaPrev0.item()), logA0, logg0, xi0, 0.0, float(vpPrev0.item()), float(rpPrev0.item())], device=dev, dtype=dt).view(1, -1)
-                x1_next = torch.tensor([float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0, float(vpPrev1.item()), float(rpPrev1.item())], device=dev, dtype=dt).view(1, -1)
+                x0_next = torch.tensor([float(DeltaPrev0.item()), logA0, logg0, xi0, 0.0, float(varthetaPrev0.item()), float(varrhoPrev0.item())], device=dev, dtype=dt).view(1, -1)
+                x1_next = torch.tensor([float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0, float(varthetaPrev1.item()), float(varrhoPrev1.item())], device=dev, dtype=dt).view(1, -1)
+        elif policy == "mod_taylor" and int(x0.shape[-1]) >= 7:
+            i0 = out0.get("i_nom", torch.tensor(0.0, device=dev, dtype=dt)).view(())
+            i1 = out1.get("i_nom", torch.tensor(0.0, device=dev, dtype=dt)).view(())
+            iPrev0 = (wprev0[0] * i0 + wprev0[1] * i1).view(())
+            iPrev1 = (wprev1[0] * i0 + wprev1[1] * i1).view(())
+            p21_bar = float(x0[0, 6].item())
+            x0_next = torch.tensor([float(DeltaPrev0.item()), float(iPrev0.item()), logA0, xi0, logg0, 0.0, p21_bar], device=dev, dtype=dt).view(1, -1)
+            x1_next = torch.tensor([float(DeltaPrev1.item()), float(iPrev1.item()), logA0, xi0, logg0, 1.0, p21_bar], device=dev, dtype=dt).view(1, -1)
         else:
             x0_next = torch.tensor([float(DeltaPrev0.item()), logA0, logg0, xi0, 0.0], device=dev, dtype=dt).view(1, -1)
             x1_next = torch.tensor([float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0], device=dev, dtype=dt).view(1, -1)
@@ -185,10 +205,19 @@ def switching_policy_sss_by_regime_from_policy(
             break
 
     # report
-    out0 = decode_outputs(policy, net(x0), floors=floors)
-    out1 = decode_outputs(policy, net(x1), floors=floors)
+    out0 = decode_outputs(policy, net(x0), floors=floors, params=params, st=unpack_state(x0, policy))
+    out1 = decode_outputs(policy, net(x1), floors=floors, params=params, st=unpack_state(x1, policy))
 
     def _pack_out(x: torch.Tensor, out: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        if policy == "mod_taylor" and int(x.shape[-1]) >= 7:
+            logA = float(x[0, 2].item())
+            xi = float(x[0, 3].item())
+            logg = float(x[0, 4].item())
+        else:
+            logA = float(x[0, 1].item())
+            logg = float(x[0, 2].item())
+            xi = float(x[0, 3].item())
+
         base = {
             "c": float(out["c"].item()),
             "pi": float(out["pi"].item()),
@@ -202,9 +231,9 @@ def switching_policy_sss_by_regime_from_policy(
             "mu": float(out.get("mu", torch.tensor(0.0, device=dev, dtype=dt)).item()),
             "nu": float(out.get("nu", torch.tensor(0.0, device=dev, dtype=dt)).item()),
             "zeta": float(out.get("zeta", torch.tensor(0.0, device=dev, dtype=dt)).item()),
-            "logA": float(x[0, 1].item()),
-            "loggtilde": float(x[0, 2].item()),
-            "xi": float(x[0, 3].item()),
+            "logA": logA,
+            "loggtilde": logg,
+            "xi": xi,
         }
         if policy == "commitment":
             base.update({
@@ -217,6 +246,9 @@ def switching_policy_sss_by_regime_from_policy(
                 base["c_prev"] = float(x[0, 7].item())
         if policy == "mod_taylor" and ("i_nom" in out):
             base["i_nom"] = float(out["i_nom"].item())
+            if int(x.shape[-1]) >= 7:
+                base["i_prev"] = float(x[0, 1].item())
+                base["p21"] = float(x[0, 6].item())
         return base
 
     return PolicySSS(by_regime={0: _pack_out(x0, out0), 1: _pack_out(x1, out1)})

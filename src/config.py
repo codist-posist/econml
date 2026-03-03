@@ -43,6 +43,7 @@ class ModelParams:
     # Taylor-rule objects (paper uses pi_bar = 0)
     pi_bar: float = 0.0
     psi: float = 2.0
+    rho_i: float = 0.0
 
     device: str = "cpu"
     dtype: torch.dtype = torch.float32
@@ -192,6 +193,9 @@ class TrainConfig:
     # ---- Initialization (author Hooks.py semantics only) ----
     exogenous_init_mode: ExogenousInitMode = "author_hooks"
     commitment_init_mode: CommitmentInitMode = "author_hooks"
+    # Author taylor-para Hook: p21 drawn uniformly in [p21_l, p21_u].
+    mod_taylor_p21_low: float = 1.0 / 60.0
+    mod_taylor_p21_high: float = 1.0
 
     @staticmethod
     def full(**overrides) -> "TrainConfig":
