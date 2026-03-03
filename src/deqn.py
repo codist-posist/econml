@@ -288,31 +288,52 @@ class Trainer:
         if self.rbar_by_regime is not None:
             self.rbar_by_regime = self.rbar_by_regime.to(device=self.params.device, dtype=self.params.dtype)
 
-        if self.policy == "mod_taylor" and self.rbar_by_regime is not None:
-            if self.rbar_by_regime.numel() != 2:
-                raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
-
         # Author commitment code can include c_old in the state.
         # Keep backward compatibility: detect whether the current network expects it.
         self._commitment_has_c_prev = False
         self._modt_has_extended_state = False
+        self._mod_taylor_variant = str(getattr(self.cfg, "mod_taylor_variant", "author_repo_param_i")).strip().lower()
+        if self._mod_taylor_variant == "legacy_rule_rbar":
+            self._mod_taylor_variant = "rule_rbar"
         if self.policy == "commitment":
             try:
                 self._commitment_has_c_prev = int(self.net.net[0].in_features) >= 8
             except Exception:
                 self._commitment_has_c_prev = False
         if self.policy == "mod_taylor":
+            # If variant was not explicitly set, infer from network output size.
+            if self._mod_taylor_variant in ("", "auto"):
+                try:
+                    d_out = int(self.net.net[-1].out_features)
+                    self._mod_taylor_variant = "author_repo_param_i" if d_out in (5, 6, 9) else "rule_rbar"
+                except Exception:
+                    self._mod_taylor_variant = "author_repo_param_i"
             try:
                 self._modt_has_extended_state = int(self.net.net[0].in_features) >= 7
             except Exception:
                 self._modt_has_extended_state = False
+            if self._mod_taylor_variant in ("rule_rbar", "rule_rbar_zlb"):
+                if self.rbar_by_regime is None:
+                    raise ValueError(
+                        f"mod_taylor_variant={self._mod_taylor_variant} requires rbar_by_regime from flex-price SSS"
+                    )
+                if self.rbar_by_regime.numel() != 2:
+                    raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
 
         if self.policy == "taylor":
             # Author equations set (A.1): eq_1, eq_2, eq_3, eq_7.
             self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
         elif self.policy == "mod_taylor":
-            # Author dsge_taylor_para-style set: eq_1, eq_2, eq_3, eq_5, eq_7, eq_8.
-            self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_Delta", "res_pstar_def", "res_i_rule"]
+            if self._mod_taylor_variant == "author_repo_param_i":
+                # Author dsge_taylor_para-style set: eq_1, eq_2, eq_3, eq_5, eq_7, eq_8.
+                self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_Delta", "res_pstar_def", "res_i_rule"]
+            elif self._mod_taylor_variant in ("rule_rbar", "rule_rbar_zlb"):
+                # Paper modified-Taylor rule as identity:
+                # i_t = rbar_s + psi*(pi_t-pi_bar) [optionally with ZLB].
+                # This does not add extra equilibrium residual equations.
+                self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
+            else:
+                raise ValueError(f"Unknown mod_taylor_variant={self._mod_taylor_variant!r}")
         elif self.policy == "discretion":
             # Author equations set (A.2): eq_1, eq_2, eq_3, eq_4, eq_7.
             self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
@@ -409,7 +430,15 @@ class Trainer:
             "pstar_low": float(getattr(self.cfg, "pstar_low", 0.9)),
             "pstar_high": float(getattr(self.cfg, "pstar_high", 1.1)),
         }
-        return decode_outputs(self.policy, raw, floors=floors, params=self.params, st=st)
+        return decode_outputs(
+            self.policy,
+            raw,
+            floors=floors,
+            params=self.params,
+            st=st,
+            mod_taylor_variant=self._mod_taylor_variant if self.policy == "mod_taylor" else None,
+            rbar_by_regime=self.rbar_by_regime if self.policy == "mod_taylor" else None,
+        )
 
     def _bounds_penalty(self, out: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Author-like soft penalties for bound violations (Huber)."""
@@ -514,7 +543,7 @@ class Trainer:
                 i_rule_target = None
             else:
                 i_t = out["i_nom"]
-                i_rule_target = out["i_rule_target"]
+                i_rule_target = out.get("i_rule_target", None)
 
             i_tg = i_t.view(-1, 1, 1)
 
@@ -543,7 +572,7 @@ class Trainer:
             Et_XiD = Et_all[..., 1]
             Et_eul = Et_all[..., 2]
 
-            if self.policy == "mod_taylor":
+            if self.policy == "mod_taylor" and self._mod_taylor_variant == "author_repo_param_i":
                 res = residuals_a1(
                     self.params,
                     st,
@@ -999,6 +1028,7 @@ def simulate_paths(
     x0: torch.Tensor,
     rbar_by_regime: torch.Tensor | None = None,
     *,
+    mod_taylor_variant: str | None = None,
     compute_implied_i: bool = False,
     gh_n: int = 3,
     thin: int = 1,
@@ -1041,6 +1071,16 @@ def simulate_paths(
         cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
     else:
         cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
+    if policy == "mod_taylor":
+        var = (mod_taylor_variant or "").strip().lower()
+        if not var:
+            d_out = None
+            try:
+                d_out = int(net.net[-1].out_features)
+            except Exception:
+                pass
+            var = "author_repo_param_i" if d_out in (5, 6, 9) else "rule_rbar"
+        cfg_sim = TrainConfig.author_like(policy="mod_taylor", seed=0, mod_taylor_variant=var)
 
     trainer = Trainer(params=params_sim, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
 
@@ -1085,7 +1125,7 @@ def simulate_paths(
             else:
                 if "i_nom" not in out:
                     raise RuntimeError(
-                        "mod_taylor expects direct nominal-rate output 'i_nom' (author_repo_param_i variant)."
+                        "mod_taylor could not produce nominal rate 'i_nom' (check mod_taylor_variant and rbar_by_regime)."
                     )
                 i_t = out["i_nom"]
         else:

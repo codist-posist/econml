@@ -82,6 +82,7 @@ def simulate_deterministic_path(
     x0: torch.Tensor,
     spec: DeterministicPathSpec,
     rbar_by_regime: Optional[torch.Tensor] = None,
+    mod_taylor_variant: Optional[str] = None,
     compute_implied_i: bool = True,
     gh_n: int = 3,
 ) -> Dict[str, np.ndarray]:
@@ -95,6 +96,16 @@ def simulate_deterministic_path(
         cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
     else:
         cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
+    if policy == "mod_taylor":
+        var = (mod_taylor_variant or "").strip().lower()
+        if not var:
+            d_out = None
+            try:
+                d_out = int(net.net[-1].out_features)
+            except Exception:
+                pass
+            var = "author_repo_param_i" if d_out in (5, 6, 9) else "rule_rbar"
+        cfg_sim = TrainConfig.author_like(policy="mod_taylor", seed=0, mod_taylor_variant=var)
     tr = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
 
     T = int(spec.T)

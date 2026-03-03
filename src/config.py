@@ -8,6 +8,7 @@ RunMode = Literal["full", "mid", "dev", "author"]
 TrainingMode = Literal["strict_author"]
 ExogenousInitMode = Literal["author_hooks"]
 CommitmentInitMode = Literal["author_hooks"]
+ModTaylorVariant = Literal["author_repo_param_i", "rule_rbar", "rule_rbar_zlb", "legacy_rule_rbar"]
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,12 @@ class TrainConfig:
     # Author taylor-para Hook: p21 drawn uniformly in [p21_l, p21_u].
     mod_taylor_p21_low: float = 1.0 / 60.0
     mod_taylor_p21_high: float = 1.0
+    # Explicitly separate modified-Taylor variants:
+    # - author_repo_param_i: i_t is direct policy output (author repo taylor_para style)
+    # - rule_rbar:          i_t = rbar_s + psi*(pi_t - pi_bar)
+    # - rule_rbar_zlb:      i_t = max(0, rbar_s + psi*(pi_t - pi_bar))
+    # - legacy_rule_rbar:   backward-compatible alias of rule_rbar
+    mod_taylor_variant: ModTaylorVariant = "author_repo_param_i"
 
     @staticmethod
     def full(**overrides) -> "TrainConfig":

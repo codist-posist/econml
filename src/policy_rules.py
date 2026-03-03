@@ -13,6 +13,36 @@ def i_modified_taylor(params: ModelParams, pi: torch.Tensor, rbar_by_regime: tor
     return rbar + params.psi * (pi - params.pi_bar)
 
 
+def i_modified_taylor_zlb(
+    params: ModelParams,
+    pi: torch.Tensor,
+    rbar_by_regime: torch.Tensor,
+    s: torch.Tensor,
+    *,
+    zlb_floor: float = 0.0,
+) -> torch.Tensor:
+    i_rule = i_modified_taylor(params, pi, rbar_by_regime, s)
+    return torch.clamp(i_rule, min=float(zlb_floor))
+
+
+def i_taylor_plus_zlb(
+    params: ModelParams,
+    pi: torch.Tensor,
+    rbar_by_regime: torch.Tensor,
+    s: torch.Tensor,
+    *,
+    zlb_floor: float = 0.0,
+) -> torch.Tensor:
+    # Same economic object as "modified Taylor + ZLB" in the paper-style taxonomy.
+    return i_modified_taylor_zlb(
+        params,
+        pi,
+        rbar_by_regime,
+        s,
+        zlb_floor=zlb_floor,
+    )
+
+
 def fisher_euler_term(
     params: ModelParams,
     i_t: torch.Tensor,

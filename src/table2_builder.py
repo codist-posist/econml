@@ -16,7 +16,7 @@ from .deqn import PolicyNetwork, implied_nominal_rate_from_euler
 from .deqn import Trainer
 from .config import TrainConfig
 from .metrics import output_gap_from_consumption
-from .policy_rules import i_taylor
+from .policy_rules import i_taylor, i_modified_taylor, i_modified_taylor_zlb
 
 
 
@@ -626,16 +626,17 @@ def build_table2(
             )
         elif policy_key == "mod_taylor":
             # Author dsge_taylor_para uses i_nom as a direct policy output.
-            # If unavailable in old artifacts, fallback to the eq_8 target.
+            # For rule-based modified Taylor runs, reconstruct i_ss from rbar_by_regime.
             if "i_nom" in sss:
                 i_ss = float(sss["i_nom"])
             else:
-                i_ss = float(
-                    i_taylor(
-                        params,
-                        torch.tensor(pi_ss, device=params.device, dtype=params.dtype),
-                    ).detach().cpu()
-                )
+                pi_t = torch.tensor(pi_ss, device=params.device, dtype=params.dtype)
+                s_t = torch.tensor([int(regime)], device=params.device, dtype=torch.long)
+                variant = str(mod_taylor_variant or "rule_rbar").strip().lower()
+                if variant == "rule_rbar_zlb":
+                    i_ss = float(i_modified_taylor_zlb(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
+                else:
+                    i_ss = float(i_modified_taylor(params, pi_t.view(1), rbar_by_regime, s_t).view(()).detach().cpu())
         else:
             net = nets[policy_key]
             i_ss = _implied_i_at_sss(

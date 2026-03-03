@@ -87,6 +87,8 @@ def switching_policy_sss_by_regime_from_policy(
     net: torch.nn.Module,
     *,
     policy: PolicyName,
+    mod_taylor_variant: Optional[str] = None,
+    rbar_by_regime: Optional[torch.Tensor] = None,
     P_override: Optional[torch.Tensor] = None,
     max_iter: int = 50_000,
     tol: float = 1e-12,
@@ -113,6 +115,8 @@ def switching_policy_sss_by_regime_from_policy(
 
     dev, dt = params.device, net_dt
     P = (P_override.to(device=dev, dtype=dt) if P_override is not None else params.P.to(device=dev, dtype=dt))
+    if (policy == "mod_taylor") and (rbar_by_regime is not None):
+        rbar_by_regime = rbar_by_regime.to(device=dev, dtype=dt)
     pi_stat = _stationary_dist_2state(P)
 
     # Exogenous states fixed at unconditional means (drift-corrected AR(1))
@@ -149,8 +153,24 @@ def switching_policy_sss_by_regime_from_policy(
     for _ in range(int(max_iter)):
         st0 = unpack_state(x0, policy)
         st1 = unpack_state(x1, policy)
-        out0 = decode_outputs(policy, net(x0), floors=floors, params=params, st=st0)
-        out1 = decode_outputs(policy, net(x1), floors=floors, params=params, st=st1)
+        out0 = decode_outputs(
+            policy,
+            net(x0),
+            floors=floors,
+            params=params,
+            st=st0,
+            mod_taylor_variant=mod_taylor_variant if policy == "mod_taylor" else None,
+            rbar_by_regime=rbar_by_regime if policy == "mod_taylor" else None,
+        )
+        out1 = decode_outputs(
+            policy,
+            net(x1),
+            floors=floors,
+            params=params,
+            st=st1,
+            mod_taylor_variant=mod_taylor_variant if policy == "mod_taylor" else None,
+            rbar_by_regime=rbar_by_regime if policy == "mod_taylor" else None,
+        )
 
         Delta0 = out0["Delta"].view(())
         Delta1 = out1["Delta"].view(())
@@ -205,8 +225,24 @@ def switching_policy_sss_by_regime_from_policy(
             break
 
     # report
-    out0 = decode_outputs(policy, net(x0), floors=floors, params=params, st=unpack_state(x0, policy))
-    out1 = decode_outputs(policy, net(x1), floors=floors, params=params, st=unpack_state(x1, policy))
+    out0 = decode_outputs(
+        policy,
+        net(x0),
+        floors=floors,
+        params=params,
+        st=unpack_state(x0, policy),
+        mod_taylor_variant=mod_taylor_variant if policy == "mod_taylor" else None,
+        rbar_by_regime=rbar_by_regime if policy == "mod_taylor" else None,
+    )
+    out1 = decode_outputs(
+        policy,
+        net(x1),
+        floors=floors,
+        params=params,
+        st=unpack_state(x1, policy),
+        mod_taylor_variant=mod_taylor_variant if policy == "mod_taylor" else None,
+        rbar_by_regime=rbar_by_regime if policy == "mod_taylor" else None,
+    )
 
     def _pack_out(x: torch.Tensor, out: Dict[str, torch.Tensor]) -> Dict[str, float]:
         if policy == "mod_taylor" and int(x.shape[-1]) >= 7:

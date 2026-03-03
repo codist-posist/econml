@@ -134,9 +134,15 @@ def infer_mod_taylor_variant(run_dir: str) -> str | None:
     v = extra.get("mod_taylor_variant")
     if v:
         return str(v)
+    train_cfg = cfg.get("train_cfg", {}) if isinstance(cfg, dict) else {}
+    v2 = train_cfg.get("mod_taylor_variant") if isinstance(train_cfg, dict) else None
+    if v2:
+        return str(v2)
     d_out = _infer_net_output_dim_from_weights(run_dir)
     if d_out in (6, 9):
         return "author_repo_param_i"
+    if d_out in (4,):
+        return "rule_rbar"
     if d_out in (5, 8):
         # Legacy local variant kept for backward compatibility with old artifacts.
         return "legacy_rule_rbar"

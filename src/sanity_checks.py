@@ -73,6 +73,7 @@ def trajectory_residuals_check(
     policy: PolicyName,
     sim_paths: Dict[str, "np.ndarray"],
     rbar_by_regime: Optional[torch.Tensor] = None,
+    mod_taylor_variant: Optional[str] = None,
     gh_n: int = 3,
     tol: float = 1e-3,
     max_states: int = 50_000,
@@ -197,6 +198,16 @@ def trajectory_residuals_check(
         cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
     else:
         cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
+    if policy == "mod_taylor":
+        var = (mod_taylor_variant or "").strip().lower()
+        if not var:
+            d_out = None
+            try:
+                d_out = int(net.net[-1].out_features)
+            except Exception:
+                pass
+            var = "author_repo_param_i" if d_out in (5, 6, 9) else "rule_rbar"
+        cfg_sim = TrainConfig.author_like(policy=policy, seed=0, mod_taylor_variant=var)
     trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, gh_n=int(gh_n), rbar_by_regime=rbar_by_regime)
 
     resids = []
@@ -319,6 +330,8 @@ def fixed_point_check(
     *,
     policy: PolicyName,
     sss_by_regime: Dict[int, Dict[str, float]],
+    mod_taylor_variant: Optional[str] = None,
+    rbar_by_regime: Optional[torch.Tensor] = None,
     floors: Optional[Dict[str, float]] = None,
 ) -> Dict[int, FixedPointCheckResult]:
     """
@@ -336,7 +349,15 @@ def fixed_point_check(
     for r, sss in sss_by_regime.items():
         x = _state_from_policy_sss(params, policy, sss, r, commitment_state_dim=commit_dim)
         st = unpack_state(x, policy)
-        out = decode_outputs(policy, net(x), floors=floors, params=params, st=st)
+        out = decode_outputs(
+            policy,
+            net(x),
+            floors=floors,
+            params=params,
+            st=st,
+            mod_taylor_variant=mod_taylor_variant if policy == "mod_taylor" else None,
+            rbar_by_regime=rbar_by_regime if policy == "mod_taylor" else None,
+        )
         x_next = _deterministic_next_state(params, policy, st, out, regime=r)
         out_by_regime[int(r)] = FixedPointCheckResult(regime=int(r), max_abs_state_diff=float((x_next - x).abs().max().item()))
     return out_by_regime
@@ -429,6 +450,8 @@ def residuals_check(
     *,
     policy: PolicyName,
     sss_by_regime: Dict[int, Dict[str, float]],
+    mod_taylor_variant: Optional[str] = None,
+    rbar_by_regime: Optional[torch.Tensor] = None,
     floors: Optional[Dict[str, float]] = None,
 ) -> Dict[int, ResidualCheckResult]:
     """Compatibility wrapper: use switching-consistent residual checks."""
@@ -437,6 +460,8 @@ def residuals_check(
         net,
         policy=policy,
         sss_by_regime=sss_by_regime,
+        mod_taylor_variant=mod_taylor_variant,
+        rbar_by_regime=rbar_by_regime,
         floors=floors,
     )
 
@@ -447,6 +472,8 @@ def residuals_check_switching_consistent(
     *,
     policy: PolicyName,
     sss_by_regime: Dict[int, Dict[str, float]],
+    mod_taylor_variant: Optional[str] = None,
+    rbar_by_regime: Optional[torch.Tensor] = None,
     floors: Optional[Dict[str, float]] = None,
     implied_deriv_max_fp_iter: int = 200,
     implied_deriv_tol: float = 1e-10,
@@ -465,7 +492,18 @@ def residuals_check_switching_consistent(
     commit_dim = _infer_policy_input_dim(net) if policy == "commitment" else None
 
     cfg_sim = TrainConfig.author_like(policy=policy, seed=0)
-    trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net)
+    if policy == "mod_taylor":
+        var = (mod_taylor_variant or "").strip().lower()
+        if not var:
+            # shape-based inference when variant was not explicitly supplied
+            d_out = None
+            try:
+                d_out = int(net.net[-1].out_features)
+            except Exception:
+                pass
+            var = "author_repo_param_i" if d_out in (5, 6, 9) else "rule_rbar"
+        cfg_sim = TrainConfig.author_like(policy=policy, seed=0, mod_taylor_variant=var)
+    trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, rbar_by_regime=rbar_by_regime)
 
     results: Dict[int, ResidualCheckResult] = {}
     for r, sss in sss_by_regime.items():
