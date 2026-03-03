@@ -27,7 +27,7 @@ WeightLoadMode = Literal["auto", "canonical", "best", "last"]
 # Network dimensions used across notebooks/training
 DIMS: Dict[str, Tuple[int, int]] = {
     "taylor": (5, 4),
-    "taylor_para": (7, 5),
+    "taylor_para": (7, 6),
     "mod_taylor": (5, 4),
     "discretion": (5, 5),
     "commitment": (8, 5),

@@ -361,7 +361,8 @@ class Trainer:
         if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
         elif self.policy == "taylor_para":
-            self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def", "res_i_rule"]
+            # Author dsge_taylor_para includes eq_5 (dispersion law) and eq_8 (rule residual).
+            self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_Delta", "res_pstar_def", "res_i_rule"]
         elif self.policy == "discretion":
             self.res_keys = ["res_c_foc", "res_Delta_foc", "res_XiN_rec", "res_XiD_rec", "res_pstar_def"]
         elif self.policy == "discretion_zlb":
@@ -647,13 +648,19 @@ class Trainer:
                 terms.append(huber_elementwise(above, delta).sum())
 
         # Taylor-family policy vectors in current code:
-        # [num, den, p_star_aux_shift, cons_shift] (+ i_nom_shift for taylor_para)
+        # - taylor/mod_taylor/*zlb: [num, den, p_star_aux_shift, cons_shift]
+        # - taylor_para: [num, den, disp, p_star_aux_shift, cons_shift, i_nom_shift]
         if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             c_ss = float((1.0 / self.params.M) ** (1.0 / (self.params.omega + self.params.gamma)))
             _add(0, 1.0, 8.0)  # XiN
             _add(1, 1.0, 8.0)  # XiD
-            _add(2, float(max(1e-12, 0.9 ** (-self.params.eps)) - 1.0), float(1.1 ** (-self.params.eps) - 1.0))
-            _add(3, 0.6 - c_ss, 1.4 - c_ss)  # c = c_ss + cons_shift
+            if self.policy == "taylor_para":
+                _add(2, 0.9, 1.1)  # Delta / disp_y
+                _add(3, float(max(1e-12, 0.9 ** (-self.params.eps)) - 1.0), float(1.1 ** (-self.params.eps) - 1.0))
+                _add(4, 0.6 - c_ss, 1.4 - c_ss)  # c = c_ss + cons_shift
+            else:
+                _add(2, float(max(1e-12, 0.9 ** (-self.params.eps)) - 1.0), float(1.1 ** (-self.params.eps) - 1.0))
+                _add(3, 0.6 - c_ss, 1.4 - c_ss)  # c = c_ss + cons_shift
 
         if not terms:
             return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
@@ -686,7 +693,7 @@ class Trainer:
         epsA = torch.randn(B, device=dev, dtype=dt)
         epsg = torch.randn(B, device=dev, dtype=dt)
         epst = torch.randn(B, device=dev, dtype=dt)
-        if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+        if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             nss = int(getattr(self.cfg, "author_n_steady_state_batches", 0) or 0)
             min_b = int(getattr(self.cfg, "author_n_steady_state_min_batch", 500) or 500)
             if nss > 0 and B > min_b:
@@ -1370,6 +1377,9 @@ class Trainer:
                             reached_step_cap = True
                             break
                         Xi = X[j : j + mb]
+                        # Author Main.py batches use drop_remainder=True.
+                        if train_mode == "author" and int(Xi.shape[0]) < int(mb):
+                            continue
                         need_log = (global_step % log_every) == 0
                         lv, resid_for_log, X_for_log = _opt_step(Xi, need_log)
                         stop_now = _after_step(lv, need_log, resid_for_log, X_for_log)
@@ -1523,6 +1533,12 @@ class Trainer:
                     os.path.join(run_dir, "train_metrics.csv"),
                     pd.DataFrame(metrics_rows or []),
                 )
+            except Exception:
+                pass
+            # Author post_process starts from Parameters.starting_state[0].
+            # Persist the final author-loop starting state for reproducible post-processing.
+            try:
+                save_torch(os.path.join(run_dir, "starting_state.pt"), x.detach().cpu())
             except Exception:
                 pass
             print(f"[{self.policy}] training artifacts in: {run_dir}")

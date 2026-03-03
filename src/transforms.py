@@ -177,15 +177,26 @@ def decode_outputs(
     if policy == "taylor_para":
         # Author dsge_taylor_para: policy has explicit i_nom output and
         # an equation tying it to the Taylor rule target.
-        if raw.shape[-1] != 5:
-            raise ValueError(f"policy={policy} expects d_out=5, got {raw.shape[-1]}")
-        num_raw, den_raw, pstar_aux_raw, cons_raw, i_nom_raw = [raw[..., i] for i in range(5)]
+        if raw.shape[-1] not in (5, 6):
+            raise ValueError(f"policy={policy} expects d_out=6 (author) or legacy d_out=5, got {raw.shape[-1]}")
+        if raw.shape[-1] == 6:
+            num_raw, den_raw, disp_raw, pstar_aux_raw, cons_raw, i_nom_raw = [raw[..., i] for i in range(6)]
+        else:
+            # Legacy compatibility for older checkpoints.
+            num_raw, den_raw, pstar_aux_raw, cons_raw, i_nom_raw = [raw[..., i] for i in range(5)]
+            disp_raw = None
         XiN = num_raw
         XiD = den_raw
         c_ss = (1.0 / params.M) ** (1.0 / (params.omega + params.gamma))
         c = c_ss + cons_raw
         p_star_aux = 1.0 + pstar_aux_raw
         out = _common_derived(params, st, c=c, XiN=XiN, XiD=XiD, p_star_aux=p_star_aux)
+
+        # Author taylor_para keeps dispersion as a policy output (eq_5 enforces the law).
+        if disp_raw is not None:
+            out["Delta"] = disp_raw
+            out["h"] = out["y"] * torch.clamp(out["Delta"], min=1e-12) / torch.clamp(out["A"], min=1e-12)
+            out["w"] = out["h"].pow(params.omega) / torch.clamp(out["lam"], min=1e-12)
 
         # Definitions.i_nom_y in author taylor_para:
         # i_t = (1+pi_bar)/beta - 1 + PolicyState.i_nom_y.

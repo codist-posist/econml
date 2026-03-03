@@ -8,6 +8,7 @@ from typing import Dict
 
 import numpy as np
 import torch
+from numpy.polynomial.hermite import hermgauss
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
@@ -18,12 +19,46 @@ from src.table2_builder import _load_net_from_run, _load_run_dir
 from src.deqn import Trainer, implied_nominal_rate_from_euler
 from src.config import TrainConfig
 from src.model_common import unpack_state, identities
+from src.io_utils import load_torch
 
 
 def _cons_flex_from_A(params: ModelParams, A: np.ndarray) -> np.ndarray:
     # Author Definitions.cons_flex_y uses A only in this setup.
     expo = (1.0 + float(params.omega)) / (float(params.omega) + float(params.gamma))
     return np.asarray(A, dtype=np.float64) ** expo
+
+
+def _i_flex_author_like(params: ModelParams, A: np.ndarray, *, n_quad_pts: int = 3) -> np.ndarray:
+    """
+    Author Definitions.i_flex_y:
+      i_flex_t = lambda_flex_t / (beta * E_t[lambda_flex_{t+1}]) - 1
+    with expectation over next-period shocks.
+    """
+    A = np.asarray(A, dtype=np.float64).reshape(-1)
+    A_clip = np.clip(A, 1e-12, None)
+    logA = np.log(A_clip)
+    beta = float(params.beta)
+    rho_A = float(params.rho_A)
+    sigma_A = float(params.sigma_A)
+    expo = (1.0 + float(params.omega)) / (float(params.omega) + float(params.gamma))
+    gamma = float(params.gamma)
+    driftA = (1.0 - rho_A) * (-(sigma_A**2) / 2.0)
+
+    # N(0,1) GH nodes/weights
+    x, w = hermgauss(int(n_quad_pts))
+    nodes = np.sqrt(2.0) * np.asarray(x, dtype=np.float64)
+    weights = np.asarray(w, dtype=np.float64) / np.sqrt(np.pi)
+
+    # lambda_flex_t = cons_flex_t^(-gamma), cons_flex_t = A_t^expo
+    lam_t = np.clip(A_clip**expo, 1e-12, None) ** (-gamma)
+
+    # E_t[lambda_flex_{t+1}] via GH expectation.
+    logA_next = driftA + rho_A * logA[:, None] + sigma_A * nodes[None, :]
+    A_next = np.exp(logA_next)
+    lam_next = np.clip(A_next**expo, 1e-12, None) ** (-gamma)
+    E_lam_next = np.sum(lam_next * weights[None, :], axis=1)
+
+    return lam_t / np.clip(beta * E_lam_next, 1e-12, None) - 1.0
 
 
 def _to_author_defs(sim: Dict[str, np.ndarray], params: ModelParams) -> Dict[str, np.ndarray]:
@@ -49,15 +84,7 @@ def _to_author_defs(sim: Dict[str, np.ndarray], params: ModelParams) -> Dict[str
     cons_flex = _cons_flex_from_A(params, A)
     out_gap = np.log(np.clip(c, 1e-12, None) / np.clip(cons_flex, 1e-12, None))
 
-    # Author Definitions.i_flex_y uses conditional expectation. We use a
-    # trajectory-consistent approximation from adjacent simulated points.
-    lam_flex = np.clip(cons_flex, 1e-12, None) ** (-float(params.gamma))
-    i_flex = np.empty_like(c)
-    if lam_flex.size > 1:
-        i_flex[:-1] = lam_flex[:-1] / (float(params.beta) * np.clip(lam_flex[1:], 1e-12, None)) - 1.0
-        i_flex[-1] = i_flex[-2]
-    else:
-        i_flex[:] = (1.0 / float(params.beta)) - 1.0
+    i_flex = _i_flex_author_like(params, A, n_quad_pts=3)
 
     return {
         "cons_y": c,
@@ -97,8 +124,18 @@ def _export_for_policy(
     cfg_sim = TrainConfig.author_like(policy=policy)  # type: ignore[arg-type]
     trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net)
 
-    # Author post_process semantics: one vectorized simulation with 5 branches.
-    x0 = trainer.simulate_initial_state(1, commitment_sss=None)
+    # Author post_process starts from Parameters.starting_state[0:1].
+    x0 = None
+    start_state_path = os.path.join(run_dir, "starting_state.pt")
+    if os.path.exists(start_state_path):
+        try:
+            x_saved = load_torch(start_state_path)
+            if isinstance(x_saved, torch.Tensor) and x_saved.ndim == 2 and int(x_saved.shape[1]) >= 1:
+                x0 = x_saved[:1].to(device=params.device, dtype=params.dtype)
+        except Exception:
+            x0 = None
+    if x0 is None:
+        x0 = trainer.simulate_initial_state(1, commitment_sss=None)
     try:
         _ = trainer._policy_outputs(x0)
     except Exception as e:

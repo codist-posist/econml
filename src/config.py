@@ -330,15 +330,12 @@ class TrainConfig:
         - GH=3, Adam lr=1e-5, minibatch size=128, episode length=10
         - no hard eps-stop (monitor loss / checkpoints)
         """
-        # New paper (SSRN 5005047) states a unified architecture:
-        # two hidden layers with 512 neurons each (SELU).
+        # Strict author-code architecture parity: all active model modules use 128x128.
         _ = policy
+        hidden = (128, 128)
         if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "taylor_para"):
-            # Author dsge_taylor uses a smaller 128x128 network.
-            hidden = (128, 128)
             sim_batch = 512
         else:
-            hidden = (512, 512)
             sim_batch = 1024
 
         base = TrainConfig(
