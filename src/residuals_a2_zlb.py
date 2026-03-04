@@ -25,6 +25,7 @@ def residuals_a2_zlb(
     Et_XiN_next: torch.Tensor,
     Et_XiD_next: torch.Tensor,
     Et_H_next: torch.Tensor,
+    Et_dH_dDelta_next: torch.Tensor,
     *,
     eps_cc: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
@@ -112,6 +113,7 @@ def residuals_a2_zlb(
                 + c.pow(gamma) * Et_dG_dDelta_next
             )
         )
+        + varphi * beta * (1.0 + i_nom) * Et_dH_dDelta_next
     ) / denom_D
 
     # eq_3, eq_4

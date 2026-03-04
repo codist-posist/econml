@@ -647,7 +647,7 @@ class Trainer:
 
         return out
 
-    def _policy_outputs(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def _policy_outputs(self, x: torch.Tensor, *, apply_hard_bounds: bool = True) -> Dict[str, torch.Tensor]:
         # If x was created under torch.inference_mode(), it is an 'inference tensor' and
         # cannot be used in autograd-tracked computations. Clone it when grad is enabled.
         if torch.is_grad_enabled() and getattr(x, 'is_inference', False):
@@ -671,7 +671,9 @@ class Trainer:
             st=st,
             rbar_by_regime=self.rbar_by_regime if self.policy in ("mod_taylor", "mod_taylor_zlb") else None,
         )
-        return self._apply_author_hard_bounds(st, out)
+        if apply_hard_bounds:
+            return self._apply_author_hard_bounds(st, out)
+        return out
 
     def _bounds_penalty(self, out: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Author-like soft penalties for bound violations (Huber)."""
@@ -799,7 +801,9 @@ class Trainer:
             huber_delta=float(getattr(self.cfg, "huber_delta", 1.0)),
         )
         if bool(getattr(self.cfg, "use_penalty_bounds", True)):
-            out = self._policy_outputs(x)
+            # Penalties must be evaluated on pre-clip decoded objects; otherwise
+            # hard bounds hide violations and the penalty collapses to zero.
+            out = self._policy_outputs(x, apply_hard_bounds=False)
             w = float(getattr(self.cfg, "bounds_penalty_weight", 1.0))
             base = base + w * self._bounds_penalty(out)
             use_raw_penalty = bool(getattr(self.cfg, "use_author_raw_penalty", True))
@@ -1013,9 +1017,11 @@ class Trainer:
             Et_H = Et_all[..., 5]
 
             dEtF_dx = torch.autograd.grad(Et_F.sum(), x, create_graph=True, retain_graph=True)[0]
-            dEtG_dx = torch.autograd.grad(Et_G.sum(), x, create_graph=True)[0]
+            dEtG_dx = torch.autograd.grad(Et_G.sum(), x, create_graph=True, retain_graph=True)[0]
+            dEtH_dx = torch.autograd.grad(Et_H.sum(), x, create_graph=True)[0]
             Et_dF = dEtF_dx[..., 0]
             Et_dG = dEtG_dx[..., 0]
+            Et_dH = dEtH_dx[..., 0]
 
             res = residuals_a2_zlb(
                 self.params,
@@ -1029,6 +1035,7 @@ class Trainer:
                 Et_XiN,
                 Et_XiD,
                 Et_H,
+                Et_dH,
                 eps_cc=0.0,
             )
             return stack_residuals(res, self.res_keys)
