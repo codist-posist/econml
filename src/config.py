@@ -398,12 +398,21 @@ class TrainConfig:
         else:
             sim_batch = 1024
 
+        # Quality-oriented defaults for long author runs:
+        # - rule families are more prone to early plateau/branching, so monitor longer
+        # - all policies use a larger fixed validation set for stabler stop decisions
+        is_rule_family = policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb")
+        auto_warmup = 10_000 if is_rule_family else 6_000
+        auto_patience = 40_000 if is_rule_family else 25_000
+        auto_min_rel_delta = 5e-5 if is_rule_family else 1e-4
+
         base = TrainConfig(
             mode="author",
             training_mode="author",
             exogenous_init_mode="author_hooks",
             commitment_init_mode="author_hooks",
-            weights_selection="last",
+            # Prefer the best checkpoint in long runs; `last` can be selected via override.
+            weights_selection="best",
             n_episodes=10_000_000,
             hidden_layers=hidden,
             activation="selu",
@@ -432,12 +441,12 @@ class TrainConfig:
             # stop if fixed validation residual RMS plateaus for a long window.
             auto_stop_enabled=True,
             auto_stop_metric="rms_resid_val",
-            auto_stop_warmup_steps=2_000,
-            auto_stop_patience_steps=10_000,
+            auto_stop_warmup_steps=auto_warmup,
+            auto_stop_patience_steps=auto_patience,
             auto_stop_min_delta=0.0,
-            auto_stop_min_rel_delta=1e-3,
+            auto_stop_min_rel_delta=auto_min_rel_delta,
             log_every=100,
-            val_size=1024,
+            val_size=2048,
             val_every=2000,
             phase1=PhaseConfig(steps=200_000, lr=1e-5, batch_size=128, gh_n_train=3, use_float64=False, eps_stop=None),
             # Kept for compatibility (not used when use_two_phase=False).
