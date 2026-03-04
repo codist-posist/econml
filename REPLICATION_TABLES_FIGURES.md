@@ -32,4 +32,8 @@ This repository keeps legacy notebooks and adds a paper-aligned layer.
   - cost-push IRFs use an initial `xi` jump and zero later innovations (AR(1) propagation),
   - Figure 9 uses `eta_bar=0` and fixed normal regime,
   - Figure 12 uses up to 10,000 simulated quarters.
+- `116_paper_figures_author_strict_colab.ipynb` is author-code mode:
+  - exports author-style `author_postprocess/simulated_definitions*.npz`,
+  - exports author-style `IRS/IR_definitions.npz` and `IRS/IR_states.npz`,
+  - uses `cons_mode=author` by default.
 - If ZLB runs are not available yet, Table 4 and Figures 10/11/14 cannot be fully populated.

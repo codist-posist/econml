@@ -184,9 +184,12 @@ def _author_ir_shock_vectors(params: ModelParams, *, n_batches: int = 26) -> Tup
     if int(n_batches) != 26:
         raise ValueError(f"Author IR setup requires n_batches=26, got {n_batches}.")
     z = float(_AUTHOR_IRS_SIGMA)
-    sA = float(params.sigma_A) * z
-    sT = float(params.sigma_tau) * z
-    sG = float(params.sigma_g) * z
+    # Keep eps in standard-normal units. sigma scaling is applied once in
+    # shock_laws_of_motion(...): log_next = ... + sigma * eps.
+    # This matches author Dynamics.ir_shock semantics (3*sigma*IRS_shock, ...).
+    sA = z
+    sT = z
+    sG = z
     epsA = np.array(
         [
             3.0 * sA,
