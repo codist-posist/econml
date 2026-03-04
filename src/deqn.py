@@ -893,6 +893,150 @@ class Trainer:
             return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
         return torch.stack(terms).sum()
 
+    def _author_definition_raw_bounds_penalty(self, x: torch.Tensor, raw: torch.Tensor) -> torch.Tensor:
+        """
+        Unified author-like bounds penalty on RAW definition space across all policies.
+        """
+        if raw.ndim != 2:
+            return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+        if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+            return self._taylor_family_raw_bounds_penalty(x, raw)
+
+        st = unpack_state(x, self.policy)
+        delta = float(getattr(self.cfg, "huber_delta", 1.0))
+        terms: List[torch.Tensor] = []
+
+        def _add(z: torch.Tensor | None, lo: float | None, hi: float | None) -> None:
+            if z is None:
+                return
+            if lo is not None:
+                below = torch.clamp(float(lo) - z, min=0.0)
+                terms.append(huber_elementwise(below, delta).sum())
+            if hi is not None:
+                above = torch.clamp(z - float(hi), min=0.0)
+                terms.append(huber_elementwise(above, delta).sum())
+
+        def _safe_denom(z: torch.Tensor) -> torch.Tensor:
+            return torch.where(
+                z >= 0.0,
+                torch.clamp(z, min=1e-12),
+                torch.clamp(z, max=-1e-12),
+            )
+
+        eps = float(self.params.eps)
+        theta = float(self.params.theta)
+        pstar_low = float(getattr(self.cfg, "pstar_low", 0.9))
+        pstar_high = float(getattr(self.cfg, "pstar_high", 1.1))
+        pi_low = float(getattr(self.cfg, "pi_low", -0.1))
+        pi_high = float(getattr(self.cfg, "pi_high", 0.1))
+        one_plus_pi_low = max(1e-8, 1.0 + pi_low)
+        one_plus_pi_high = max(one_plus_pi_low + 1e-8, 1.0 + pi_high)
+        pi_aux_lo = one_plus_pi_low ** eps
+        pi_aux_hi = one_plus_pi_high ** eps
+
+        # pull a few complex derived objects from decode (without hard bounds),
+        # but overwrite core bounded definitions by RAW formulas below.
+        out_dec = self._policy_outputs(x, apply_hard_bounds=False)
+        vartheta_raw = out_dec.get("vartheta")
+        varrho_raw = out_dec.get("varrho")
+
+        XiN_raw: torch.Tensor | None = None
+        XiD_raw: torch.Tensor | None = None
+        c_raw: torch.Tensor | None = None
+        p_star_aux_raw: torch.Tensor | None = None
+        i_nom_raw_def: torch.Tensor | None = None
+        varphi_raw_def: torch.Tensor | None = None
+
+        if self.policy == "discretion":
+            if raw.shape[-1] != 5:
+                return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+            num_raw, den_raw, pstar_aux_shift, cons_shift, _eta = [raw[:, i] for i in range(5)]
+            XiN_raw = F.softplus(num_raw)
+            XiD_raw = F.softplus(den_raw)
+            p_star_aux_raw = 1.0 + pstar_aux_shift
+            c_raw = 1.0 + cons_shift
+        elif self.policy == "discretion_zlb":
+            if raw.shape[-1] != 6:
+                return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+            num_raw, den_raw, pstar_aux_shift, cons_shift, _eta, varphi_raw = [raw[:, i] for i in range(6)]
+            XiN_raw = F.softplus(num_raw)
+            XiD_raw = F.softplus(den_raw)
+            p_star_aux_raw = 1.0 + pstar_aux_shift
+            c_raw = 1.0 + cons_shift
+            varphi_raw_def = -F.softplus(varphi_raw)
+        elif self.policy == "commitment":
+            if raw.shape[-1] != 5:
+                return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+            cons_shift, num_raw, den_raw, pstar_aux_shift, _eta = [raw[:, i] for i in range(5)]
+            XiN_raw = F.softplus(num_raw)
+            XiD_raw = F.softplus(den_raw)
+            p_star_aux_raw = 1.0 + pstar_aux_shift
+            c_raw = 1.0 + cons_shift
+        elif self.policy == "commitment_zlb":
+            if raw.shape[-1] != 7:
+                return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+            cons_shift, num_raw, den_raw, i_nom_raw, pstar_aux_shift, _eta, varphi_raw = [raw[:, i] for i in range(7)]
+            XiN_raw = F.softplus(num_raw)
+            XiD_raw = F.softplus(den_raw)
+            p_star_aux_raw = 1.0 + pstar_aux_shift
+            c_raw = 1.0 + cons_shift
+            i_nom_raw_def = F.softplus(i_nom_raw)
+            varphi_raw_def = -F.softplus(varphi_raw)
+        else:
+            return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+
+        pstar_raw = self.params.M * XiN_raw / _safe_denom(XiD_raw)
+        p_star_aux_safe = torch.clamp(p_star_aux_raw, min=1e-12)
+        a = p_star_aux_safe.pow((eps - 1.0) / eps)
+        inside = torch.clamp((-1.0 + a - a * theta) / theta, min=1e-12)
+        pi_aux_raw = inside.pow(eps / (eps - 1.0))
+        one_plus_pi_raw = torch.clamp(pi_aux_raw, min=1e-12).pow(1.0 / eps)
+        pi_raw = one_plus_pi_raw - 1.0
+        Delta_raw = self.params.theta * pi_aux_raw * st.Delta_prev + (1.0 - self.params.theta) * p_star_aux_raw
+
+        _add(pi_raw, pi_low, pi_high)
+        _add(pstar_raw, pstar_low, pstar_high)
+        _add(pi_aux_raw, pi_aux_lo, pi_aux_hi)
+        _add(c_raw, 0.6, 1.4)
+
+        if self.policy == "commitment_zlb":
+            _add(Delta_raw, 0.6, 1.4)
+            _add(XiN_raw, 0.0, 7.0)
+            _add(XiD_raw, 0.0, 7.0)
+            _add(
+                p_star_aux_raw,
+                max(1e-12, pstar_high ** (-float(self.params.eps))),
+                max(1e-12, pstar_low ** (-float(self.params.eps))),
+            )
+            _add(vartheta_raw, -1.0, 1.0)
+            _add(varrho_raw, -1.0, 1.0)
+            _add(i_nom_raw_def, None, 0.1)
+            _add(varphi_raw_def, -2.0, None)
+        elif self.policy == "commitment":
+            _add(Delta_raw, 0.6, 1.4)
+            _add(XiN_raw, 0.0, 12.0)
+            _add(XiD_raw, 0.0, 12.0)
+            _add(
+                p_star_aux_raw,
+                max(1e-12, pstar_high ** (-float(self.params.eps))),
+                max(1e-12, pstar_low ** (-float(self.params.eps))),
+            )
+            _add(vartheta_raw, -2.0, 1.0)
+            _add(varrho_raw, -1.0, 1.0)
+        elif self.policy == "discretion_zlb":
+            _add(Delta_raw, 0.6, 1.4)
+            _add(XiN_raw, 0.0, 12.0)
+            _add(XiD_raw, 0.0, 12.0)
+            _add(varphi_raw_def, -1.0, None)
+        else:  # discretion
+            _add(Delta_raw, 0.6, 1.4)
+            _add(XiN_raw, 0.0, 12.0)
+            _add(XiD_raw, 0.0, 12.0)
+
+        if not terms:
+            return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+        return torch.stack(terms).sum()
+
     def _training_loss_components_from_states(
         self, x: torch.Tensor, resid: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -905,11 +1049,21 @@ class Trainer:
         bounds_loss = torch.zeros((), device=self.params.device, dtype=self.params.dtype)
         if bool(getattr(self.cfg, "use_penalty_bounds", True)):
             w = float(getattr(self.cfg, "bounds_penalty_weight", 1.0))
-            taylor_family = ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb")
+            definition_raw_penalty_all = (
+                "taylor",
+                "taylor_para",
+                "mod_taylor",
+                "taylor_zlb",
+                "mod_taylor_zlb",
+                "discretion",
+                "discretion_zlb",
+                "commitment",
+                "commitment_zlb",
+            )
             use_raw_penalty = bool(getattr(self.cfg, "use_author_raw_penalty", True))
-            if self.policy in taylor_family:
+            if self.policy in definition_raw_penalty_all:
                 raw = self.net(x)
-                bounds_loss = bounds_loss + w * self._taylor_family_raw_bounds_penalty(x, raw)
+                bounds_loss = bounds_loss + w * self._author_definition_raw_bounds_penalty(x, raw)
                 use_raw_penalty = False
             else:
                 # Penalties must be evaluated on pre-clip decoded objects; otherwise
@@ -918,7 +1072,7 @@ class Trainer:
                 bounds_loss = bounds_loss + w * self._bounds_penalty(out)
             # Avoid double-penalizing Taylor-family bounds:
             # bounds already apply in decoded/definition space (author-style focus).
-            if self.policy in taylor_family:
+            if self.policy in definition_raw_penalty_all:
                 use_raw_penalty = False
             if use_raw_penalty:
                 raw = self.net(x)
