@@ -811,6 +811,88 @@ class Trainer:
             return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
         return torch.stack(terms).sum()
 
+    def _taylor_family_raw_bounds_penalty(self, x: torch.Tensor, raw: torch.Tensor) -> torch.Tensor:
+        """
+        Author-like bounds penalty for Taylor-family policies on RAW definitions
+        (before hard clipping), mirroring Definitions.*_RAW usage in author Equilibrium.py.
+        """
+        if raw.ndim != 2:
+            return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+        st = unpack_state(x, self.policy)
+        delta = float(getattr(self.cfg, "huber_delta", 1.0))
+        terms: List[torch.Tensor] = []
+
+        def _add(z: torch.Tensor, lo: float | None, hi: float | None) -> None:
+            if lo is not None:
+                below = torch.clamp(float(lo) - z, min=0.0)
+                terms.append(huber_elementwise(below, delta).sum())
+            if hi is not None:
+                above = torch.clamp(z - float(hi), min=0.0)
+                terms.append(huber_elementwise(above, delta).sum())
+
+        def _safe_signed_denom(z: torch.Tensor) -> torch.Tensor:
+            return torch.where(
+                z >= 0.0,
+                torch.clamp(z, min=1e-12),
+                torch.clamp(z, max=-1e-12),
+            )
+
+        eps = float(self.params.eps)
+        theta = float(self.params.theta)
+        pstar_low = float(getattr(self.cfg, "pstar_low", 0.9))
+        pstar_high = float(getattr(self.cfg, "pstar_high", 1.1))
+        pi_low = float(getattr(self.cfg, "pi_low", -0.1))
+        pi_high = float(getattr(self.cfg, "pi_high", 0.1))
+        one_plus_pi_low = max(1e-8, 1.0 + pi_low)
+        one_plus_pi_high = max(one_plus_pi_low + 1e-8, 1.0 + pi_high)
+        pi_aux_lo = one_plus_pi_low ** eps
+        pi_aux_hi = one_plus_pi_high ** eps
+        c_ss = float((1.0 / self.params.M) ** (1.0 / (self.params.omega + self.params.gamma)))
+
+        if self.policy == "taylor_para":
+            if raw.shape[-1] == 6:
+                num_raw = raw[:, 0]
+                den_raw = raw[:, 1]
+                p_star_aux = 1.0 + raw[:, 3]
+                c_raw = c_ss + raw[:, 4]
+            elif raw.shape[-1] == 5:
+                num_raw = raw[:, 0]
+                den_raw = raw[:, 1]
+                p_star_aux = 1.0 + raw[:, 2]
+                c_raw = c_ss + raw[:, 3]
+            else:
+                return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+            pstar_raw = self.params.M * num_raw / _safe_signed_denom(den_raw)
+            pstar_safe = torch.clamp(pstar_raw, min=1e-12)
+            a = pstar_safe.pow(-(eps - 1.0))
+            inside = torch.clamp((-1.0 + a - a * theta) / theta, min=1e-12)
+            pi_aux_raw = inside.pow(eps / (eps - 1.0))
+        else:
+            if raw.shape[-1] != 4:
+                return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+            num_raw = raw[:, 0]
+            den_raw = raw[:, 1]
+            p_star_aux = 1.0 + raw[:, 2]
+            c_raw = c_ss + raw[:, 3]
+            pstar_raw = self.params.M * num_raw / _safe_signed_denom(den_raw)
+            p_star_aux_safe = torch.clamp(p_star_aux, min=1e-12)
+            a = p_star_aux_safe.pow((eps - 1.0) / eps)
+            inside = torch.clamp((-1.0 + a - a * theta) / theta, min=1e-12)
+            pi_aux_raw = inside.pow(eps / (eps - 1.0))
+
+        Delta_raw = self.params.theta * pi_aux_raw * st.Delta_prev + (1.0 - self.params.theta) * p_star_aux
+
+        _add(c_raw, 0.6, 1.4)
+        _add(num_raw, 1.0, 8.0)
+        _add(den_raw, 1.0, 8.0)
+        _add(pi_aux_raw, pi_aux_lo, pi_aux_hi)
+        _add(Delta_raw, 0.9, 1.1)
+        _add(pstar_raw, pstar_low, pstar_high)
+
+        if not terms:
+            return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
+        return torch.stack(terms).sum()
+
     def _training_loss_components_from_states(
         self, x: torch.Tensor, resid: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -822,15 +904,21 @@ class Trainer:
         )
         bounds_loss = torch.zeros((), device=self.params.device, dtype=self.params.dtype)
         if bool(getattr(self.cfg, "use_penalty_bounds", True)):
-            # Penalties must be evaluated on pre-clip decoded objects; otherwise
-            # hard bounds hide violations and the penalty collapses to zero.
-            out = self._policy_outputs(x, apply_hard_bounds=False)
             w = float(getattr(self.cfg, "bounds_penalty_weight", 1.0))
-            bounds_loss = bounds_loss + w * self._bounds_penalty(out)
+            taylor_family = ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb")
             use_raw_penalty = bool(getattr(self.cfg, "use_author_raw_penalty", True))
+            if self.policy in taylor_family:
+                raw = self.net(x)
+                bounds_loss = bounds_loss + w * self._taylor_family_raw_bounds_penalty(x, raw)
+                use_raw_penalty = False
+            else:
+                # Penalties must be evaluated on pre-clip decoded objects; otherwise
+                # hard bounds hide violations and the penalty collapses to zero.
+                out = self._policy_outputs(x, apply_hard_bounds=False)
+                bounds_loss = bounds_loss + w * self._bounds_penalty(out)
             # Avoid double-penalizing Taylor-family bounds:
             # bounds already apply in decoded/definition space (author-style focus).
-            if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+            if self.policy in taylor_family:
                 use_raw_penalty = False
             if use_raw_penalty:
                 raw = self.net(x)
@@ -1256,6 +1344,9 @@ class Trainer:
         global_best_loss = float("inf")
         global_best_step = -1
         global_best_state: Dict[str, torch.Tensor] | None = None
+        global_best_rms_resid_val = float("inf")
+        global_best_rms_resid_val_step = -1
+        global_best_rms_resid_val_state: Dict[str, torch.Tensor] | None = None
         weights_selection = str(getattr(self.cfg, "weights_selection", "best")).strip().lower()
         if weights_selection not in ("best", "last"):
             weights_selection = "best"
@@ -1492,6 +1583,7 @@ class Trainer:
             ) -> bool:
                 nonlocal global_step, best_loss, best_step, best_state, hit_safety_cap, stop_reason
                 nonlocal global_best_loss, global_best_step, global_best_state
+                nonlocal global_best_rms_resid_val, global_best_rms_resid_val_step, global_best_rms_resid_val_state
                 nonlocal auto_best_metric, auto_best_step, last_logged_metrics, last_val_metrics
                 losses.append(lv)
                 global_step += 1
@@ -1560,6 +1652,12 @@ class Trainer:
                             "max_resid_val": float(max_v),
                             "share_all_lt_tol_val": float(share_v),
                         }
+                        if np.isfinite(rms_v) and (rms_v < float(global_best_rms_resid_val)):
+                            global_best_rms_resid_val = float(rms_v)
+                            global_best_rms_resid_val_step = int(global_step)
+                            global_best_rms_resid_val_state = {
+                                k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()
+                            }
                         print(
                             f"[{self.policy} | {tag}] val step={global_step:>6d} "
                             f"loss_val={loss_v:.3e}  loss_resid_val={loss_resid_v:.3e}  "
@@ -1746,7 +1844,11 @@ class Trainer:
                 pbar.close()
 
             # Optional phase-wise best restore (kept for "best" checkpoint mode).
-            if weights_selection == "best" and best_state is not None:
+            if (
+                weights_selection == "best"
+                and best_state is not None
+                and global_best_rms_resid_val_state is None
+            ):
                 try:
                     self.net.load_state_dict(best_state, strict=True)
                 except Exception:
@@ -1880,9 +1982,12 @@ class Trainer:
         selected_state = state_last
         selected_label = "last"
         if weights_selection == "best":
-            if global_best_state is not None:
+            if global_best_rms_resid_val_state is not None:
+                selected_state = global_best_rms_resid_val_state
+                selected_label = "best_val_rms_resid"
+            elif global_best_state is not None:
                 selected_state = global_best_state
-                selected_label = "best"
+                selected_label = "best_train_loss"
             else:
                 print(f"[{self.policy}] WARNING: weights_selection='best' but best snapshot is unavailable; using last.")
         try:
@@ -1900,6 +2005,11 @@ class Trainer:
                     save_torch(os.path.join(run_dir, "weights_best.pt"), global_best_state)
                 except Exception:
                     pass
+            if global_best_rms_resid_val_state is not None:
+                try:
+                    save_torch(os.path.join(run_dir, "weights_best_val.pt"), global_best_rms_resid_val_state)
+                except Exception:
+                    pass
             canonical_name = str(getattr(self.cfg, "best_weights_name", "weights.pt") or "weights.pt")
             try:
                 save_torch(os.path.join(run_dir, canonical_name), selected_state)
@@ -1909,7 +2019,9 @@ class Trainer:
                 pass
         print(
             f"[{self.policy}] checkpoint selection: {selected_label} "
-            f"(global_best={global_best_loss:.3e} at step={global_best_step})"
+            f"(global_best_train={global_best_loss:.3e} at step={global_best_step}, "
+            f"global_best_rms_val={(global_best_rms_resid_val if global_best_rms_resid_val_step >= 0 else float('nan')):.3e} "
+            f"at step={global_best_rms_resid_val_step})"
         )
 
         # Save training diagnostics (quality monitoring)
@@ -1957,6 +2069,8 @@ class Trainer:
                         "policy": self.policy,
                         "global_best_loss": float(global_best_loss),
                         "global_best_step": int(global_best_step),
+                        "global_best_rms_resid_val": float(global_best_rms_resid_val) if global_best_rms_resid_val_step >= 0 else float("nan"),
+                        "global_best_rms_resid_val_step": int(global_best_rms_resid_val_step),
                         "weights_selection": str(weights_selection),
                         "stages": stage_stop_rows,
                     },
