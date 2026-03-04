@@ -10,7 +10,7 @@ Replication policy and change-control rules are fixed in
 %cd /content/econml
 ```
 
-## 2) Install and verify dependencies
+## 2) Install dependencies
 
 ```bash
 !pip -q install numpy pandas matplotlib tqdm nbformat nbclient jupyter
@@ -26,30 +26,61 @@ if torch.cuda.is_available():
     print("gpu:", torch.cuda.get_device_name(0))
 ```
 
-## 3) Run training notebooks one by one
+## 3) Train models
+
+Core models (paper baseline workflows):
 
 ```bash
-!jupyter nbconvert --to notebook --execute --inplace notebooks/00_main_pipeline.ipynb
 !jupyter nbconvert --to notebook --execute --inplace notebooks/10_train_taylor.ipynb
 !jupyter nbconvert --to notebook --execute --inplace notebooks/11_train_mod_taylor.ipynb
 !jupyter nbconvert --to notebook --execute --inplace notebooks/12_train_discretion.ipynb
 !jupyter nbconvert --to notebook --execute --inplace notebooks/13_train_commitment.ipynb
 ```
 
+Optional models (ZLB + parameterized Taylor):
+
+```bash
+!jupyter nbconvert --to notebook --execute --inplace notebooks/14_train_taylor_zlb.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/15_train_mod_taylor_zlb.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/16_train_discretion_zlb.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/17_train_commitment_zlb.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/18_train_taylor_para.ipynb
+```
+
 Training notebooks auto-select device:
 `DEVICE = "cuda" if torch.cuda.is_available() else "cpu"`.
 
-## 4) Run analysis and figure notebooks
+## 4) Build tables and figures
+
+Paper tables (Table 1-4):
 
 ```bash
-!jupyter nbconvert --to notebook --execute --inplace notebooks/90_results_analysis.ipynb
-!jupyter nbconvert --to notebook --execute --inplace notebooks/91_fig1_ergodic_distributions.ipynb
-!jupyter nbconvert --to notebook --execute --inplace notebooks/92_fig2_transition_commitment_vs_discretion.ipynb
-!jupyter nbconvert --to notebook --execute --inplace notebooks/93_fig3_persistent_vs_temporary.ipynb
-!jupyter nbconvert --to notebook --execute --inplace notebooks/94_fig4_persistence_sensitivity.ipynb
-!jupyter nbconvert --to notebook --execute --inplace notebooks/96_fig6_asymmetry.ipynb
-!jupyter nbconvert --to notebook --execute --inplace notebooks/99_fig9_taylor_vs_modtaylor.ipynb
-!jupyter nbconvert --to notebook --execute --inplace notebooks/100_fig10_sensitivity_p21.ipynb
+!jupyter nbconvert --to notebook --execute --inplace notebooks/101_paper_tables_1_4.ipynb
 ```
+
+Article-mode figures (paper methodology, SSS starts where required):
+
+```bash
+!jupyter nbconvert --to notebook --execute --inplace notebooks/115_paper_figures_2_14.ipynb
+```
+
+Note: full Figure 2-14 coverage needs the optional ZLB trainings (`14..17`).
+
+Author-code artifacts (author-style postprocess + IR files):
+
+```bash
+!jupyter nbconvert --to notebook --execute --inplace notebooks/116_paper_figures_author_strict_colab.ipynb
+```
+
+## 5) Where outputs are saved
+
+- Training runs: `artifacts/runs/<policy>/<run_id>/`
+- Selected run pointers: `artifacts/selected_runs.json`
+- Paper tables CSV: `artifacts/table1_calibration.csv`, `artifacts/table2_*.csv`, `artifacts/table3_*.csv`, `artifacts/table4_*.csv`
+- Article-mode figures (notebook 115): `artifacts/paper_figures_nb115_article_sss/`
+- Author-code exports (notebook 116, per run):
+  - `author_postprocess/simulated_definitions*.npz`
+  - `IRS/IR_definitions.npz`
+  - `IRS/IR_states.npz`
 
 All notebooks include a `PROJECT_ROOT` bootstrap and work both locally and in Colab (`/content/econml`).
