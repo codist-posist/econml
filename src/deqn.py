@@ -865,7 +865,7 @@ class Trainer:
             pstar_raw = self.params.M * num_raw / _safe_signed_denom(den_raw)
             pstar_safe = torch.clamp(pstar_raw, min=1e-12)
             a = pstar_safe.pow(-(eps - 1.0))
-            inside = torch.clamp((-1.0 + a - a * theta) / theta, min=1e-12)
+            inside = torch.clamp((1.0 - (1.0 - theta) * a) / theta, min=1e-12)
             pi_aux_raw = inside.pow(eps / (eps - 1.0))
         else:
             if raw.shape[-1] != 4:
@@ -877,7 +877,7 @@ class Trainer:
             pstar_raw = self.params.M * num_raw / _safe_signed_denom(den_raw)
             p_star_aux_safe = torch.clamp(p_star_aux, min=1e-12)
             a = p_star_aux_safe.pow((eps - 1.0) / eps)
-            inside = torch.clamp((-1.0 + a - a * theta) / theta, min=1e-12)
+            inside = torch.clamp((1.0 - (1.0 - theta) * a) / theta, min=1e-12)
             pi_aux_raw = inside.pow(eps / (eps - 1.0))
 
         Delta_raw = self.params.theta * pi_aux_raw * st.Delta_prev + (1.0 - self.params.theta) * p_star_aux
@@ -988,7 +988,7 @@ class Trainer:
         pstar_raw = self.params.M * XiN_raw / _safe_denom(XiD_raw)
         p_star_aux_safe = torch.clamp(p_star_aux_raw, min=1e-12)
         a = p_star_aux_safe.pow((eps - 1.0) / eps)
-        inside = torch.clamp((-1.0 + a - a * theta) / theta, min=1e-12)
+        inside = torch.clamp((1.0 - (1.0 - theta) * a) / theta, min=1e-12)
         pi_aux_raw = inside.pow(eps / (eps - 1.0))
         one_plus_pi_raw = torch.clamp(pi_aux_raw, min=1e-12).pow(1.0 / eps)
         pi_raw = one_plus_pi_raw - 1.0
