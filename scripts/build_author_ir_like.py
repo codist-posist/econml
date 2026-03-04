@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -21,7 +22,7 @@ from src.metrics import flex_c_series_from_A_g_tau
 from src.model_common import identities, shock_laws_of_motion, unpack_state
 from src.steady_states import export_rbar_tensor, solve_flexprice_sss
 from src.table2_builder import _load_net_from_run, _load_run_dir
-from scripts.build_author_postprocess_like import _i_flex_author_like
+from scripts.build_author_postprocess_like import _i_flex_author_like, _i_flex_paper_like
 
 
 # Author impulse_response.py uses quantile=0.84134 and norm.ppf(quantile).
@@ -67,6 +68,22 @@ def _parse_dtype(s: str) -> torch.dtype:
     if ss in ("float32", "torch.float32"):
         return torch.float32
     raise ValueError(f"Unsupported dtype: {s!r}")
+
+
+def _cons_flex_author(params: ModelParams, A: np.ndarray) -> np.ndarray:
+    expo = (1.0 + float(params.omega)) / (float(params.omega) + float(params.gamma))
+    return np.clip(np.asarray(A, dtype=np.float64), 1e-12, None) ** expo
+
+
+def _cons_flex_paper(params: ModelParams, A: np.ndarray, g: np.ndarray, tau: np.ndarray) -> np.ndarray:
+    return flex_c_series_from_A_g_tau(params, A=A, g=g, tau=tau)
+
+
+def _resolve_cons_mode(mode: str) -> str:
+    m = str(mode).strip().lower()
+    if m not in {"author", "paper"}:
+        raise ValueError(f"Unsupported cons_mode={mode!r}; expected 'author' or 'paper'")
+    return m
 
 
 def _flatten_shock_labels() -> list[str]:
@@ -448,7 +465,9 @@ def _to_author_defs_shaped(
     params: ModelParams,
     *,
     compute_i_flex: bool,
+    cons_mode: str = "author",
 ) -> Dict[str, np.ndarray]:
+    mode = _resolve_cons_mode(cons_mode)
     c = np.asarray(sim["c"], dtype=np.float64)
     shp = c.shape
     flat = {k: np.asarray(v, dtype=np.float64).reshape(-1) for k, v in sim.items() if k != "s"}
@@ -460,20 +479,31 @@ def _to_author_defs_shaped(
     p_star_aux = np.clip(flat["pstar"], 1e-12, None) ** (-eps)
     r_real = flat["i"] - flat["pi"]
 
-    cons_flex = flex_c_series_from_A_g_tau(params, A=flat["A"], g=flat["g"], tau=flat["tau"])
+    if mode == "author":
+        cons_flex = _cons_flex_author(params, flat["A"])
+    else:
+        cons_flex = _cons_flex_paper(params, flat["A"], flat["g"], flat["tau"])
     out_gap = np.log(np.clip(flat["c"], 1e-12, None) / np.clip(cons_flex, 1e-12, None))
 
     if compute_i_flex:
-        i_flex = _i_flex_author_like(
-            params,
-            cons_flex=cons_flex,
-            A=flat["A"],
-            g=flat["g"],
-            s=s,
-            xi=flat["xi"],
-            p21_state=flat.get("p21", None),
-            n_quad_pts=3,
-        )
+        if mode == "author":
+            i_flex = _i_flex_author_like(
+                params,
+                cons_flex=cons_flex,
+                A=flat["A"],
+                n_quad_pts=3,
+            )
+        else:
+            i_flex = _i_flex_paper_like(
+                params,
+                cons_flex=cons_flex,
+                A=flat["A"],
+                g=flat["g"],
+                s=s,
+                xi=flat["xi"],
+                p21_state=flat.get("p21", None),
+                n_quad_pts=3,
+            )
     else:
         i_flex = np.full_like(cons_flex, np.nan, dtype=np.float64)
 
@@ -564,6 +594,7 @@ def _export_ir_npz(
     use_para_grid: bool,
     n_grid: int,
     compute_i_flex: bool,
+    cons_mode: str,
     save_states: bool,
 ) -> None:
     labels = _flatten_shock_labels()
@@ -577,7 +608,7 @@ def _export_ir_npz(
             raise RuntimeError(f"Expected {len(labels)} IR scenarios, got B={B}.")
         for b, label in enumerate(labels):
             sim_b = {k: v[:, b : b + 1] for k, v in sim.items()}
-            defs = _to_author_defs_shaped(sim_b, params, compute_i_flex=compute_i_flex)
+            defs = _to_author_defs_shaped(sim_b, params, compute_i_flex=compute_i_flex, cons_mode=cons_mode)
             defs_npz[label] = {k: np.asarray(v).reshape(-1) for k, v in defs.items()}
             if save_states:
                 names = _author_state_names_for_policy(str(policy), int(D))
@@ -588,7 +619,7 @@ def _export_ir_npz(
         for i, label in enumerate(labels):
             sl = slice(i * int(n_grid), (i + 1) * int(n_grid))
             sim_blk = {k: v[:, sl] for k, v in sim.items()}
-            defs_npz[label] = _to_author_defs_shaped(sim_blk, params, compute_i_flex=compute_i_flex)
+            defs_npz[label] = _to_author_defs_shaped(sim_blk, params, compute_i_flex=compute_i_flex, cons_mode=cons_mode)
             if save_states:
                 names = _author_state_names_for_policy(str(policy), int(D))
                 states_npz[label] = {nm: states_np[:, sl, idx] for nm, idx in names}
@@ -621,11 +652,27 @@ def run_export(
     use_para_grid: bool,
     save_states: bool,
     clean_out_dir: bool,
+    params_override: Dict[str, float] | None = None,
+    cons_mode: str = "author",
 ) -> str:
+    mode = _resolve_cons_mode(cons_mode)
     rd = run_dir
     if rd is None:
-        rd = _load_run_dir(artifacts_root, policy, use_selected=use_selected)
+        rd = _load_run_dir(artifacts_root, policy, use_selected=use_selected, required_files=())
     params = _load_params_from_run(rd, device=device, dtype=dtype)
+    if params_override:
+        allowed = set(ModelParams.__dataclass_fields__.keys()) - {"device", "dtype"}
+        p_new = {k: getattr(params, k) for k in ModelParams.__dataclass_fields__.keys()}
+        for k, v in params_override.items():
+            if k not in allowed:
+                raise ValueError(
+                    f"Unsupported override key={k!r}. "
+                    f"Allowed keys: {sorted(list(allowed))}"
+                )
+            p_new[k] = float(v)
+        p_new["device"] = params.device
+        p_new["dtype"] = params.dtype
+        params = ModelParams(**p_new).to_torch()
     net = _load_net_from_run(rd, params, policy)
 
     rbar_by_regime = None
@@ -674,8 +721,11 @@ def run_export(
         use_para_grid=para_mode,
         n_grid=1 if para_grid is None else int(para_grid.shape[0]),
         compute_i_flex=compute_i_flex,
+        cons_mode=mode,
         save_states=bool(save_states),
     )
+    with open(os.path.join(out_dir, "author_ir_meta.json"), "w", encoding="utf-8") as f:
+        json.dump({"cons_mode": mode}, f, ensure_ascii=True, indent=2, sort_keys=True)
     return out_dir
 
 
@@ -737,9 +787,28 @@ def main(argv: Iterable[str] | None = None) -> int:
         default="true",
         help="Delete output folder before writing files (true/false).",
     )
+    ap.add_argument(
+        "--cons-mode",
+        default="author",
+        choices=["author", "paper"],
+        help="Flex-consumption/output-gap mode for saved definitions.",
+    )
+    ap.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help="Parameter override in form key=value (repeatable). Example: --override rho_tau=0.99",
+    )
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     dtype = _parse_dtype(args.dtype)
+    overrides: Dict[str, float] = {}
+    for item in args.override:
+        s = str(item).strip()
+        if "=" not in s:
+            raise ValueError(f"Invalid --override value {item!r}; expected key=value.")
+        k, v = s.split("=", 1)
+        overrides[k.strip()] = float(v)
     out_dir = run_export(
         artifacts_root=args.artifacts_root,
         policy=args.policy,  # type: ignore[arg-type]
@@ -756,8 +825,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         use_para_grid=_parse_bool(args.use_para_grid),
         save_states=_parse_bool(args.save_states),
         clean_out_dir=_parse_bool(args.clean_out_dir),
+        params_override=overrides if overrides else None,
+        cons_mode=str(args.cons_mode),
     )
-    print(f"[build_author_ir_like] policy={args.policy} written to: {out_dir}")
+    print(f"[build_author_ir_like] policy={args.policy} ({args.cons_mode}) written to: {out_dir}")
     return 0
 
 

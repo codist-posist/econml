@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from typing import Dict
@@ -21,9 +22,27 @@ from src.config import TrainConfig
 from src.model_common import unpack_state, identities
 from src.metrics import flex_c_series_from_A_g_tau
 from src.io_utils import load_torch
+from src.steady_states import solve_flexprice_sss, export_rbar_tensor
 
 
-def _cons_flex_from_A_g_tau(
+def _resolve_cons_mode(mode: str) -> str:
+    m = str(mode).strip().lower()
+    if m not in {"author", "paper"}:
+        raise ValueError(f"Unsupported cons_mode={mode!r}; expected 'author' or 'paper'")
+    return m
+
+
+def _cons_flex_author(
+    params: ModelParams,
+    A: np.ndarray,
+) -> np.ndarray:
+    # Author Definitions.cons_flex_y:
+    # cons_flex = (A^(1+omega))^(1/(omega+gamma))
+    expo = (1.0 + float(params.omega)) / (float(params.omega) + float(params.gamma))
+    return np.clip(np.asarray(A, dtype=np.float64), 1e-12, None) ** expo
+
+
+def _cons_flex_paper(
     params: ModelParams,
     A: np.ndarray,
     g: np.ndarray,
@@ -53,6 +72,59 @@ def _i_flex_author_like(
     *,
     cons_flex: np.ndarray,
     A: np.ndarray,
+    g: np.ndarray | None = None,
+    s: np.ndarray | None = None,
+    xi: np.ndarray | None = None,
+    p21_state: np.ndarray | None = None,
+    n_quad_pts: int = 3,
+) -> np.ndarray:
+    """
+    Author Definitions.i_flex_y with author cons_flex definition:
+      cons_flex_t = f(A_t)
+      i_flex_t = lambda_t / (beta * E_t[lambda_{t+1}]) - 1
+    Since lambda_flex only depends on A, Markov probabilities and non-A shocks drop out.
+    """
+    A = np.asarray(A, dtype=np.float64).reshape(-1)
+    cons_flex = np.asarray(cons_flex, dtype=np.float64).reshape(-1)
+    if A.size != cons_flex.size:
+        raise ValueError("A and cons_flex must have the same length.")
+
+    A_clip = np.clip(A, 1e-12, None)
+    logA = np.log(A_clip)
+    beta = float(params.beta)
+    rho_A = float(params.rho_A)
+    sigma_A = float(params.sigma_A)
+    gamma = float(params.gamma)
+
+    driftA = (1.0 - rho_A) * (-(sigma_A**2) / 2.0)
+
+    x, w = hermgauss(int(n_quad_pts))
+    nodes = np.sqrt(2.0) * np.asarray(x, dtype=np.float64)
+    weights = np.asarray(w, dtype=np.float64) / np.sqrt(np.pi)
+
+    lam_t = np.clip(cons_flex, 1e-12, None) ** (-gamma)
+    logA_next = driftA + rho_A * logA[:, None] + sigma_A * nodes[None, :]
+
+    E_lam_next = np.zeros_like(lam_t)
+    for ia in range(int(n_quad_pts)):
+        A_n = np.exp(logA_next[:, ia])
+        wA = weights[ia]
+        for ig in range(int(n_quad_pts)):
+            wAG = wA * weights[ig]
+            for it in range(int(n_quad_pts)):
+                w_all = wAG * weights[it]
+                c_next = _cons_flex_author(params, A_n)
+                lam_next = np.clip(c_next, 1e-12, None) ** (-gamma)
+                E_lam_next += w_all * lam_next
+
+    return lam_t / np.clip(beta * E_lam_next, 1e-12, None) - 1.0
+
+
+def _i_flex_paper_like(
+    params: ModelParams,
+    *,
+    cons_flex: np.ndarray,
+    A: np.ndarray,
     g: np.ndarray,
     s: np.ndarray,
     xi: np.ndarray,
@@ -60,9 +132,10 @@ def _i_flex_author_like(
     n_quad_pts: int = 3,
 ) -> np.ndarray:
     """
-    Author Definitions.i_flex_y:
+    Paper-style i_flex:
       i_flex_t = lambda_flex_t / (beta * E_t[lambda_flex_{t+1}]) - 1
-    with expectation over next-period shocks and Markov regime transitions.
+    with lambda_flex from paper-style flex consumption c_flex(A,g,tau),
+    expectation over shocks and Markov regime transitions.
     """
     A = np.asarray(A, dtype=np.float64).reshape(-1)
     g = np.asarray(g, dtype=np.float64).reshape(-1)
@@ -117,8 +190,8 @@ def _i_flex_author_like(
             g_n = g_bar * np.exp(logg_next[:, ig])
             wAG = wA * weights[ig]
             for it in range(int(n_quad_pts)):
-                xi_n = xi_next[:, it]
                 w_all = wAG * weights[it]
+                xi_n = xi_next[:, it]
 
                 one_plus_tau_0 = (1.0 - tau_bar) + xi_n + eta0
                 one_plus_tau_1 = (1.0 - tau_bar) + xi_n + eta1
@@ -145,7 +218,13 @@ def _i_flex_author_like(
     return lam_t / np.clip(beta * E_lam_next, 1e-12, None) - 1.0
 
 
-def _to_author_defs(sim: Dict[str, np.ndarray], params: ModelParams) -> Dict[str, np.ndarray]:
+def _to_author_defs(
+    sim: Dict[str, np.ndarray],
+    params: ModelParams,
+    *,
+    cons_mode: str = "author",
+) -> Dict[str, np.ndarray]:
+    mode = _resolve_cons_mode(cons_mode)
     c = np.asarray(sim["c"], dtype=np.float64).reshape(-1)
     Delta = np.asarray(sim["Delta"], dtype=np.float64).reshape(-1)
     i_nom = np.asarray(sim["i"], dtype=np.float64).reshape(-1)
@@ -166,19 +245,30 @@ def _to_author_defs(sim: Dict[str, np.ndarray], params: ModelParams) -> Dict[str
     p_star_aux = np.clip(pstar, 1e-12, None) ** (-eps)
     r_real = i_nom - pi
 
-    cons_flex = _cons_flex_from_A_g_tau(params, A, g, tau)
+    if mode == "author":
+        cons_flex = _cons_flex_author(params, A)
+    else:
+        cons_flex = _cons_flex_paper(params, A, g, tau)
     out_gap = np.log(np.clip(c, 1e-12, None) / np.clip(cons_flex, 1e-12, None))
 
-    i_flex = _i_flex_author_like(
-        params,
-        cons_flex=cons_flex,
-        A=A,
-        g=g,
-        s=s,
-        xi=xi,
-        p21_state=p21_state,
-        n_quad_pts=3,
-    )
+    if mode == "author":
+        i_flex = _i_flex_author_like(
+            params,
+            cons_flex=cons_flex,
+            A=A,
+            n_quad_pts=3,
+        )
+    else:
+        i_flex = _i_flex_paper_like(
+            params,
+            cons_flex=cons_flex,
+            A=A,
+            g=g,
+            s=s,
+            xi=xi,
+            p21_state=p21_state,
+            n_quad_pts=3,
+        )
 
     return {
         "cons_y": c,
@@ -206,17 +296,25 @@ def _export_for_policy(
     artifacts_root: str,
     policy: str,
     *,
+    run_dir: str | None = None,
     device: str,
     dtype: torch.dtype,
     use_selected: bool,
     T: int,
+    cons_mode: str = "author",
 ) -> str:
-    run_dir = _load_run_dir(artifacts_root, policy, use_selected=use_selected)
+    mode = _resolve_cons_mode(cons_mode)
+    if run_dir is None:
+        run_dir = _load_run_dir(artifacts_root, policy, use_selected=use_selected, required_files=())
     params = ModelParams(device=device, dtype=dtype).to_torch()
     net = _load_net_from_run(run_dir, params, policy)  # type: ignore[arg-type]
 
     cfg_sim = TrainConfig.author_like(policy=policy)  # type: ignore[arg-type]
-    trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net)
+    rbar_by_regime = None
+    if policy in ("mod_taylor", "mod_taylor_zlb"):
+        flex = solve_flexprice_sss(params)
+        rbar_by_regime = export_rbar_tensor(params, flex)
+    trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, rbar_by_regime=rbar_by_regime)
 
     # Author post_process starts from Parameters.starting_state[0:1].
     x0 = None
@@ -293,11 +391,28 @@ def _export_for_policy(
 
     out_dir = os.path.join(run_dir, "author_postprocess")
     os.makedirs(out_dir, exist_ok=True)
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions.npz"), **_to_author_defs(sims["full"], params))
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_NT.npz"), **_to_author_defs(sims["NT"], params))
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_SS.npz"), **_to_author_defs(sims["SS"], params))
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_ss_only.npz"), **_to_author_defs(sims["ss_only"], params))
-    np.savez_compressed(os.path.join(out_dir, "simulated_definitions_xi_only.npz"), **_to_author_defs(sims["xi_only"], params))
+    np.savez_compressed(
+        os.path.join(out_dir, "simulated_definitions.npz"),
+        **_to_author_defs(sims["full"], params, cons_mode=mode),
+    )
+    np.savez_compressed(
+        os.path.join(out_dir, "simulated_definitions_NT.npz"),
+        **_to_author_defs(sims["NT"], params, cons_mode=mode),
+    )
+    np.savez_compressed(
+        os.path.join(out_dir, "simulated_definitions_SS.npz"),
+        **_to_author_defs(sims["SS"], params, cons_mode=mode),
+    )
+    np.savez_compressed(
+        os.path.join(out_dir, "simulated_definitions_ss_only.npz"),
+        **_to_author_defs(sims["ss_only"], params, cons_mode=mode),
+    )
+    np.savez_compressed(
+        os.path.join(out_dir, "simulated_definitions_xi_only.npz"),
+        **_to_author_defs(sims["xi_only"], params, cons_mode=mode),
+    )
+    with open(os.path.join(out_dir, "author_postprocess_meta.json"), "w", encoding="utf-8") as f:
+        json.dump({"cons_mode": mode}, f, ensure_ascii=True, indent=2, sort_keys=True)
     return out_dir
 
 
@@ -323,6 +438,12 @@ def main() -> int:
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dtype", default="float64", choices=["float32", "float64"])
     ap.add_argument("--T", type=int, default=10000, help="Simulation length (author post_process uses 10000).")
+    ap.add_argument(
+        "--cons-mode",
+        default="author",
+        choices=["author", "paper"],
+        help="Flex-consumption/output-gap mode for saved definitions.",
+    )
     ap.add_argument("--use_selected", action=argparse.BooleanOptionalAction, default=True)
     args = ap.parse_args()
 
@@ -335,8 +456,9 @@ def main() -> int:
             dtype=dtype,
             use_selected=bool(args.use_selected),
             T=int(args.T),
+            cons_mode=str(args.cons_mode),
         )
-        print(f"[ok] {pol}: {out_dir}")
+        print(f"[ok] {pol} ({args.cons_mode}): {out_dir}")
     return 0
 
 
