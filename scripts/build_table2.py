@@ -44,11 +44,11 @@ def main():
     )
     ap.add_argument(
         "--sss_source",
-        default="sim_conditional",
-        choices=["fixed_point", "sim_conditional"],
+        default="deterministic_no_innovation",
+        choices=["fixed_point", "sim_conditional", "deterministic_no_innovation"],
         help=(
-            "Table source mode: sim_conditional (paper-author conditional moments), "
-            "or fixed_point (diagnostic)."
+            "Table source mode: deterministic_no_innovation (table0 default), "
+            "sim_conditional (paper-author conditional moments), or fixed_point (diagnostic)."
         ),
     )
     ap.add_argument(
