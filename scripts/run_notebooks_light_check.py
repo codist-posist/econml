@@ -28,12 +28,6 @@ ORDER = [
     "17_train_commitment_zlb.ipynb",
     "18_train_taylor_para.ipynb",
     "90_results_analysis.ipynb",
-    "91_fig1_ergodic_distributions.ipynb",
-    "92_fig2_transition_commitment_vs_discretion.ipynb",
-    "93_fig3_persistent_vs_temporary.ipynb",
-    "94_fig4_persistence_sensitivity.ipynb",
-    "96_fig6_asymmetry.ipynb",
-    "99_fig9_taylor_vs_modtaylor.ipynb",
     "100_fig10_sensitivity_p21.ipynb",
     "smoke_test_minimal.ipynb",
 ]
@@ -61,44 +55,6 @@ NB_LITERAL_SUBS: dict[str, list[tuple[str, str]]] = {
         (
             "mt_sss_pol = mod_taylor_sss_by_regime_from_policy(params, trainer.net)",
             "mt_sss_pol = switching_policy_sss_by_regime_from_policy(params, trainer.net, policy='mod_taylor')",
-        ),
-    ],
-    "94_fig4_persistence_sensitivity.ipynb": [
-        (
-            "def list_runs(root):\n"
-            "    if not os.path.isdir(root): return []\n"
-            "    runs = [os.path.join(root,d) for d in os.listdir(root) if os.path.isdir(os.path.join(root,d))]\n"
-            "    runs.sort(key=lambda p: os.path.getmtime(p), reverse=True)\n"
-            "    return runs",
-            "def list_runs(root):\n"
-            "    if not os.path.isdir(root): return []\n"
-            "    runs = []\n"
-            "    for d in os.listdir(root):\n"
-            "        rd = os.path.join(root, d)\n"
-            "        if not os.path.isdir(rd):\n"
-            "            continue\n"
-            "        if not (os.path.exists(os.path.join(rd, 'weights.pt')) or os.path.exists(os.path.join(rd, 'weights_best.pt')) or os.path.exists(os.path.join(rd, 'weights_last.pt'))):\n"
-            "            continue\n"
-            "        runs.append(rd)\n"
-            "    runs.sort(key=lambda p: os.path.getmtime(p), reverse=True)\n"
-            "    return runs",
-        ),
-        (
-            "_require_no_regimes(paramsA, 'Run A')\n_require_no_regimes(paramsB, 'Run B')",
-            "try:\n"
-            "    _require_no_regimes(paramsA, 'Run A')\n"
-            "    _require_no_regimes(paramsB, 'Run B')\n"
-            "except RuntimeError as _e:\n"
-            "    print('Light-run warning:', _e)",
-        ),
-        (
-            "if abs(float(paramsA.rho_tau) - float(paramsB.rho_tau)) < 1e-12:\n"
-            "    raise RuntimeError(\n"
-            "        \"Figure 4 requires two different temporary-shock persistence values (rho_tau). \"\n"
-            "        f\"Both runs have rho_tau={paramsA.rho_tau}.\"\n"
-            "    )",
-            "if abs(float(paramsA.rho_tau) - float(paramsB.rho_tau)) < 1e-12:\n"
-            "    print('Light-run warning: Figure 4 expected two different rho_tau values; continuing with available runs.')",
         ),
     ],
 }
