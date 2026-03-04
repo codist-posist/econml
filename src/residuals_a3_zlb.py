@@ -49,7 +49,7 @@ def residuals_a3_zlb(
     vartheta = out["vartheta"]
     varrho = out["varrho"]
     varphi = out["varphi"]
-    i_nom = out["i_nom"]
+    i_nom = torch.clamp(out["i_nom"], max=0.1)
     lam = out["lam"]
 
     vartheta_old = st.vartheta_prev
@@ -67,6 +67,7 @@ def residuals_a3_zlb(
 
     # Definitions.chi_y for zlb commitment
     chi = -beta * varphi * Et_H_next
+    chi = torch.clamp(chi, min=0.0, max=1.0)
 
     res: Dict[str, torch.Tensor] = {}
 
@@ -127,4 +128,3 @@ def residuals_a3_zlb(
     # eq_9
     res["res_pstar_def"] = (p_star_aux - pstar.pow(-eps)) / (p_star_aux.abs() + eps_denom)
     return res
-

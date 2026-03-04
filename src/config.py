@@ -330,9 +330,14 @@ class TrainConfig:
         - GH=3, Adam lr=1e-5, minibatch size=128, episode length=10
         - no hard eps-stop (monitor loss / checkpoints)
         """
-        # Strict author-code architecture parity: all active model modules use 128x128.
-        _ = policy
-        hidden = (128, 128)
+        # Strict author-code architecture parity:
+        # - dsge_taylor uses 128x128
+        # - dsge_discretion / dsge_commitment / dsge_taylor_para /
+        #   dsge_zlb_discretion / dsge_zlb_commitment use 512x512
+        if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+            hidden = (128, 128)
+        else:
+            hidden = (512, 512)
         if policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "taylor_para"):
             sim_batch = 512
         else:
@@ -357,6 +362,7 @@ class TrainConfig:
             n_path=10,
             n_paths_per_step=1,
             grad_clip_mode="value",
+            use_author_raw_penalty=False,
             use_author_lr_scheduler=True,
             author_lr_decay=1.0,
             author_lr_min=1e-7,

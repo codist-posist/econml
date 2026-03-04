@@ -67,8 +67,10 @@ def residuals_a2_zlb(
 
     # Definitions.i_nom_y for zlb_discretion
     i_nom = lam / torch.clamp(beta * Et_H_next, min=eps_denom) - 1.0
+    i_nom = torch.clamp(i_nom, min=0.0, max=0.1)
     # Definitions.chi_y
     chi = -beta * varphi * Et_H_next
+    chi = torch.clamp(chi, min=0.0, max=1.0)
 
     res: Dict[str, torch.Tensor] = {}
 
@@ -121,4 +123,3 @@ def residuals_a2_zlb(
     # eq_8
     res["res_pstar_def"] = (p_star_aux - pstar.pow(-eps)) / (p_star_aux.abs() + eps_denom)
     return res
-

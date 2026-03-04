@@ -180,11 +180,10 @@ def decode_outputs(
         if raw.shape[-1] not in (5, 6):
             raise ValueError(f"policy={policy} expects d_out=6 (author) or legacy d_out=5, got {raw.shape[-1]}")
         if raw.shape[-1] == 6:
-            num_raw, den_raw, disp_raw, pstar_aux_raw, cons_raw, i_nom_raw = [raw[..., i] for i in range(6)]
+            num_raw, den_raw, _disp_raw, pstar_aux_raw, cons_raw, i_nom_raw = [raw[..., i] for i in range(6)]
         else:
             # Legacy compatibility for older checkpoints.
             num_raw, den_raw, pstar_aux_raw, cons_raw, i_nom_raw = [raw[..., i] for i in range(5)]
-            disp_raw = None
         XiN = num_raw
         XiD = den_raw
         c_ss = (1.0 / params.M) ** (1.0 / (params.omega + params.gamma))
@@ -192,11 +191,19 @@ def decode_outputs(
         p_star_aux = 1.0 + pstar_aux_raw
         out = _common_derived(params, st, c=c, XiN=XiN, XiD=XiD, p_star_aux=p_star_aux)
 
-        # Author taylor_para keeps dispersion as a policy output (eq_5 enforces the law).
-        if disp_raw is not None:
-            out["Delta"] = disp_raw
-            out["h"] = out["y"] * torch.clamp(out["Delta"], min=1e-12) / torch.clamp(out["A"], min=1e-12)
-            out["w"] = out["h"].pow(params.omega) / torch.clamp(out["lam"], min=1e-12)
+        # Author dsge_taylor_para Definitions.pi_aux_y uses p_star (not p_star_aux),
+        # and Definitions.disp_y is always computed from the law of motion.
+        pi_aux = _pi_aux_from_pstar(params, out["pstar"])
+        one_plus_pi = torch.clamp(pi_aux, min=1e-12).pow(1.0 / float(params.eps))
+        Delta = float(params.theta) * pi_aux * st.Delta_prev + (1.0 - float(params.theta)) * out["p_star_aux"]
+        Delta = torch.clamp(Delta, min=1e-12)
+        h = out["y"] * Delta / torch.clamp(out["A"], min=1e-12)
+        out["pi_aux"] = pi_aux
+        out["one_plus_pi"] = one_plus_pi
+        out["pi"] = one_plus_pi - 1.0
+        out["Delta"] = Delta
+        out["h"] = h
+        out["w"] = h.pow(params.omega) / torch.clamp(out["lam"], min=1e-12)
 
         # Definitions.i_nom_y in author taylor_para:
         # i_t = (1+pi_bar)/beta - 1 + PolicyState.i_nom_y.

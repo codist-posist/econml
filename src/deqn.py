@@ -18,6 +18,7 @@ from .config import ModelParams, TrainConfig, set_seeds, PolicyName
 from .quadrature import gauss_hermite
 from .model_common import unpack_state, shock_laws_of_motion, identities
 from .transforms import decode_outputs
+from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
 from .residuals_a1 import residuals_a1
 from .residuals_a2 import residuals_a2
 from .residuals_a3 import residuals_a3
@@ -543,6 +544,109 @@ class Trainer:
 
         return x_new
 
+    def _apply_author_hard_bounds(self, st, out: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Mirror author-side hard clipping (State/PolicyState/Definitions wrappers)
+        on decoded economic objects.
+        """
+        if not bool(getattr(self.cfg, "use_author_bounds", True)):
+            return out
+
+        out = dict(out)
+
+        def _clip(name: str, lo: float | None = None, hi: float | None = None) -> None:
+            if name not in out:
+                return
+            z = out[name]
+            if lo is not None:
+                z = torch.clamp(z, min=float(lo))
+            if hi is not None:
+                z = torch.clamp(z, max=float(hi))
+            out[name] = z
+
+        eps = float(self.params.eps)
+        gamma = float(self.params.gamma)
+        omega = float(self.params.omega)
+        pstar_low = float(getattr(self.cfg, "pstar_low", 0.9))
+        pstar_high = float(getattr(self.cfg, "pstar_high", 1.1))
+        pi_low = float(getattr(self.cfg, "pi_low", -0.1))
+        pi_high = float(getattr(self.cfg, "pi_high", 0.1))
+
+        # Common core bounds from author Variables.py definitions.
+        _clip("c", 0.6, 1.4)
+        one_plus_pi_low = max(1e-8, 1.0 + pi_low)
+        one_plus_pi_high = max(one_plus_pi_low + 1e-8, 1.0 + pi_high)
+        _clip("pi_aux", one_plus_pi_low ** eps, one_plus_pi_high ** eps)
+
+        taylor_family = ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb")
+        if self.policy in taylor_family:
+            _clip("XiN", 1.0, 8.0)
+            _clip("XiD", 1.0, 8.0)
+            delta_lo, delta_hi = 0.9, 1.1
+        elif self.policy == "commitment_zlb":
+            _clip("XiN", 0.0, 7.0)
+            _clip("XiD", 0.0, 7.0)
+            _clip("p_star_aux", max(1e-12, pstar_high ** (-eps)), max(1e-12, pstar_low ** (-eps)))
+            _clip("vartheta", -1.0, 1.0)
+            _clip("varrho", -1.0, 1.0)
+            _clip("i_nom", None, 0.1)
+            _clip("varphi", -2.0, None)
+            delta_lo, delta_hi = 0.6, 1.4
+        elif self.policy == "commitment":
+            _clip("XiN", 0.0, 12.0)
+            _clip("XiD", 0.0, 12.0)
+            _clip("p_star_aux", max(1e-12, pstar_high ** (-eps)), max(1e-12, pstar_low ** (-eps)))
+            _clip("vartheta", -2.0, 1.0)
+            _clip("varrho", -1.0, 1.0)
+            delta_lo, delta_hi = 0.6, 1.4
+        elif self.policy == "discretion_zlb":
+            _clip("XiN", 0.0, 12.0)
+            _clip("XiD", 0.0, 12.0)
+            _clip("varphi", -1.0, None)
+            delta_lo, delta_hi = 0.6, 1.4
+        else:
+            _clip("XiN", 0.0, 12.0)
+            _clip("XiD", 0.0, 12.0)
+            delta_lo, delta_hi = 0.6, 1.4
+
+        # Rebuild derived objects from clipped primitives.
+        out["one_plus_pi"] = torch.clamp(out["pi_aux"], min=1e-12).pow(1.0 / eps)
+        out["pi"] = out["one_plus_pi"] - 1.0
+        out["pstar"] = self.params.M * out["XiN"] / torch.clamp(out["XiD"], min=1e-12)
+        _clip("pstar", pstar_low, pstar_high)
+        out["Delta"] = self.params.theta * out["pi_aux"] * st.Delta_prev + (1.0 - self.params.theta) * out["p_star_aux"]
+        _clip("Delta", delta_lo, delta_hi)
+
+        out["A"] = torch.exp(st.logA)
+        out["g"] = self.params.g_bar * torch.exp(st.loggtilde)
+        out["y"] = out["c"] + out["g"]
+        out["lam"] = torch.clamp(out["c"], min=1e-12).pow(-gamma)
+        out["h"] = out["y"] * out["Delta"] / torch.clamp(out["A"], min=1e-12)
+        out["w"] = out["h"].pow(omega) / torch.clamp(out["lam"], min=1e-12)
+
+        # Keep policy-rule objects consistent with clipped inflation.
+        if self.policy == "taylor":
+            out["i_nom"] = i_taylor(self.params, out["pi"])
+            out["i_rule_target"] = out["i_nom"]
+        elif self.policy == "taylor_zlb":
+            out["i_nom"] = i_taylor_zlb(self.params, out["pi"], zlb_floor=0.0)
+            out["i_rule_target"] = out["i_nom"]
+        elif self.policy == "mod_taylor":
+            if self.rbar_by_regime is None:
+                raise ValueError("policy=mod_taylor requires rbar_by_regime from flex-price SSS")
+            out["i_nom"] = i_modified_taylor(self.params, out["pi"], self.rbar_by_regime, st.s)
+            out["i_rule_target"] = out["i_nom"]
+        elif self.policy == "mod_taylor_zlb":
+            if self.rbar_by_regime is None:
+                raise ValueError("policy=mod_taylor_zlb requires rbar_by_regime from flex-price SSS")
+            out["i_nom"] = i_modified_taylor_zlb(self.params, out["pi"], self.rbar_by_regime, st.s, zlb_floor=0.0)
+            out["i_rule_target"] = out["i_nom"]
+        elif self.policy == "taylor_para":
+            i_old = st.i_old if st.i_old is not None else torch.zeros_like(out["pi"])
+            out["i_rule_target"] = self.params.rho_i * i_old + (1.0 - self.params.rho_i) * i_taylor(self.params, out["pi"])
+
+        return out
+
     def _policy_outputs(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         # If x was created under torch.inference_mode(), it is an 'inference tensor' and
         # cannot be used in autograd-tracked computations. Clone it when grad is enabled.
@@ -559,7 +663,7 @@ class Trainer:
             "pstar_low": float(getattr(self.cfg, "pstar_low", 0.9)),
             "pstar_high": float(getattr(self.cfg, "pstar_high", 1.1)),
         }
-        return decode_outputs(
+        out = decode_outputs(
             self.policy,
             raw,
             floors=floors,
@@ -567,6 +671,7 @@ class Trainer:
             st=st,
             rbar_by_regime=self.rbar_by_regime if self.policy in ("mod_taylor", "mod_taylor_zlb") else None,
         )
+        return self._apply_author_hard_bounds(st, out)
 
     def _bounds_penalty(self, out: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Author-like soft penalties for bound violations (Huber)."""
@@ -607,19 +712,39 @@ class Trainer:
             _add_bound("Delta", 0.9, 1.1)
             _add_bound("XiN", 1.0, 8.0)
             _add_bound("XiD", 1.0, 8.0)
-        else:
+        elif self.policy == "commitment_zlb":
             _add_bound("Delta", 0.6, 1.4)
-            _add_bound("XiN", 0.0, 12.0)
-            _add_bound("XiD", 0.0, 12.0)
-            # Author discretion/commitment code places bounds on p_star_aux as well.
+            _add_bound("XiN", 0.0, 7.0)
+            _add_bound("XiD", 0.0, 7.0)
             _add_bound(
                 "p_star_aux",
                 max(1e-12, pstar_high ** (-float(self.params.eps))),
                 max(1e-12, pstar_low ** (-float(self.params.eps))),
             )
-        if self.policy in ("commitment", "commitment_zlb"):
+            _add_bound("vartheta", -1.0, 1.0)
+            _add_bound("varrho", -1.0, 1.0)
+            _add_bound("i_nom", None, 0.1)
+            _add_bound("varphi", -2.0, None)
+        elif self.policy == "commitment":
+            _add_bound("Delta", 0.6, 1.4)
+            _add_bound("XiN", 0.0, 12.0)
+            _add_bound("XiD", 0.0, 12.0)
+            _add_bound(
+                "p_star_aux",
+                max(1e-12, pstar_high ** (-float(self.params.eps))),
+                max(1e-12, pstar_low ** (-float(self.params.eps))),
+            )
             _add_bound("vartheta", -2.0, 1.0)
             _add_bound("varrho", -1.0, 1.0)
+        elif self.policy == "discretion_zlb":
+            _add_bound("Delta", 0.6, 1.4)
+            _add_bound("XiN", 0.0, 12.0)
+            _add_bound("XiD", 0.0, 12.0)
+            _add_bound("varphi", -1.0, None)
+        else:
+            _add_bound("Delta", 0.6, 1.4)
+            _add_bound("XiN", 0.0, 12.0)
+            _add_bound("XiD", 0.0, 12.0)
 
         if not terms:
             # keep graph/device consistent
@@ -650,12 +775,12 @@ class Trainer:
         # Taylor-family policy vectors in current code:
         # - taylor/mod_taylor/*zlb: [num, den, p_star_aux_shift, cons_shift]
         # - taylor_para: [num, den, disp, p_star_aux_shift, cons_shift, i_nom_shift]
+        #   (disp output is not used in author dsge_taylor_para Definitions/Dynamics)
         if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             c_ss = float((1.0 / self.params.M) ** (1.0 / (self.params.omega + self.params.gamma)))
             _add(0, 1.0, 8.0)  # XiN
             _add(1, 1.0, 8.0)  # XiD
             if self.policy == "taylor_para":
-                _add(2, 0.9, 1.1)  # Delta / disp_y
                 _add(3, float(max(1e-12, 0.9 ** (-self.params.eps)) - 1.0), float(1.1 ** (-self.params.eps) - 1.0))
                 _add(4, 0.6 - c_ss, 1.4 - c_ss)  # c = c_ss + cons_shift
             else:
@@ -677,7 +802,12 @@ class Trainer:
             out = self._policy_outputs(x)
             w = float(getattr(self.cfg, "bounds_penalty_weight", 1.0))
             base = base + w * self._bounds_penalty(out)
-            if bool(getattr(self.cfg, "use_author_raw_penalty", True)):
+            use_raw_penalty = bool(getattr(self.cfg, "use_author_raw_penalty", True))
+            # Avoid double-penalizing Taylor-family bounds:
+            # bounds already apply in decoded/definition space (author-style focus).
+            if self.policy in ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
+                use_raw_penalty = False
+            if use_raw_penalty:
                 raw = self.net(x)
                 base = base + w * self._raw_policy_penalty(raw)
         return base
@@ -1598,8 +1728,16 @@ def simulate_paths(
     B = x0.shape[0]
     x = x0.to(device=dev, dtype=dt)
 
-    # Build a minimal cfg for simulation (no training). Must be compatible with new TrainConfig.
-    if params_sim.device == "cpu":
+    # Build a minimal cfg for simulation (no training). For commitment_zlb we need
+    # author-style p12 override parity (1/28) used in the public code.
+    if policy == "commitment_zlb":
+        cfg_sim = TrainConfig.author_like(
+            policy=policy,
+            seed=0,
+            cpu_num_threads=None,
+            cpu_num_interop_threads=None,
+        )
+    elif params_sim.device == "cpu":
         cfg_sim = TrainConfig.dev(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
     else:
         cfg_sim = TrainConfig.full(seed=0, cpu_num_threads=None, cpu_num_interop_threads=None)
