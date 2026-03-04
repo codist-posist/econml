@@ -11,7 +11,7 @@ import torch
 from .config import ModelParams, PolicyName
 from .io_utils import load_selected_run, find_latest_run_dir, load_torch, load_json, resolve_analysis_run_dir
 from .steady_states import solve_flexprice_sss, solve_efficient_sss, solve_commitment_sss_from_policy, solve_discretion_sss_from_policy
-from .sss_from_policy import switching_policy_sss_by_regime_from_policy, frozen_policy_sss_by_regime_from_policy
+from .sss_from_policy import switching_policy_sss_by_regime_from_policy
 from .deqn import PolicyNetwork, implied_nominal_rate_from_euler
 from .deqn import Trainer
 from .config import TrainConfig
@@ -388,6 +388,17 @@ def _deterministic_no_innovation_policy_moments(
 
 def _normalize_sss_source(sss_source: str) -> str:
     key = str(sss_source).strip().lower()
+    disabled = {
+        "deterministic_no_innovation",
+        "deterministic",
+        "no_innovation",
+        "no-innovation",
+    }
+    if key in disabled:
+        raise ValueError(
+            "sss_source='deterministic_no_innovation' is disabled in this project setup "
+            "(diagnostic mode intentionally turned off). Use 'sim_conditional' or 'fixed_point'."
+        )
     aliases = {
         "fixedpoint": "fixed_point",
         "fixed_point": "fixed_point",
@@ -395,14 +406,10 @@ def _normalize_sss_source(sss_source: str) -> str:
         "sim_conditional": "sim_conditional",
         "simulation_conditional": "sim_conditional",
         "conditional": "sim_conditional",
-        "deterministic_no_innovation": "deterministic_no_innovation",
-        "deterministic": "deterministic_no_innovation",
-        "no_innovation": "deterministic_no_innovation",
-        "no-innovation": "deterministic_no_innovation",
     }
     if key not in aliases:
         raise ValueError(
-            "sss_source must be one of {'fixed_point','sim_conditional','deterministic_no_innovation'} "
+            "sss_source must be one of {'fixed_point','sim_conditional'} "
             f"(got {sss_source!r})"
         )
     return aliases[key]
@@ -828,7 +835,7 @@ def build_table0(
     include_rules: bool = True,
     include_para: bool = False,
     include_zlb: bool = False,
-    sss_source: str = "deterministic_no_innovation",
+    sss_source: str = "sim_conditional",
     strict_author_table2: bool = True,
 ) -> pd.DataFrame:
     """
@@ -847,8 +854,6 @@ def build_table0(
             long-simulation moments (prefer author `simulated_definitions_NT/SS.npz`,
             fallback to conditional moments from `sim_paths.npz`).
           * "fixed_point": regime-conditional policy fixed points (diagnostic mode).
-          * "deterministic_no_innovation": deterministic/no-innovation
-            regime-conditional path moments (diagnostic no-shock object).
       - If `strict_author_table2=True` and `sss_source='sim_conditional'`,
         require author NT/SS files for trained policies (no silent fallback).
       - Weights source controlled by `weights_source`:
@@ -900,7 +905,6 @@ def build_table0(
             ]
 
     rows: List[Dict[str, Any]] = []
-    deterministic_moments: Dict[Tuple[str, int], Dict[str, Dict[str, float]]] = {}
     policy_sss: Dict[Tuple[str, int], Dict[str, float]] = {}
 
     def add_block(
@@ -966,20 +970,9 @@ def build_table0(
                     if "r" in am:
                         r_m = am["r"]
 
-        if sss_source_norm == "deterministic_no_innovation":
-            dm = deterministic_moments.get((policy_key, int(regime)))
-            if dm is None:
-                raise RuntimeError(
-                    f"deterministic_no_innovation moments missing for policy='{policy_key}', regime={int(regime)}."
-                )
-            pi_m = dm["pi"]
-            i_m = dm["i"]
-            x_m = dm["x"]
-            r_m = dm["r"]
-
-        if sss_source_norm in ("sim_conditional", "deterministic_no_innovation"):
+        if sss_source_norm == "sim_conditional":
             # Paper/author object: stochastic steady state by regime as conditional means
-            # from long simulated paths (or deterministic no-innovation path means).
+            # from long simulated paths.
             pi_ss = float(pi_m["mean"])
             x_ss = float(x_m["mean"])
             i_ss = float(i_m["mean"])
@@ -1094,7 +1087,7 @@ def build_table0(
             except Exception:
                 pass
 
-    # Pre-compute regime-conditional policy SSS objects once (used by fixed_point and deterministic modes).
+    # Pre-compute regime-conditional policy SSS objects once (used by fixed_point mode).
     for label, pkey in policies:
         if pkey is None:
             continue
@@ -1141,26 +1134,6 @@ def build_table0(
             "for at least one trained policy run."
         )
 
-    if sss_source_norm == "deterministic_no_innovation":
-        for s in (0, 1):
-            deterministic_moments[("flex", s)] = _deterministic_no_innovation_flex_moments(
-                flex_sss=flex.by_regime[s],
-                c_hat=c_hat,
-            )
-        for label, pkey in policies:
-            if pkey is None:
-                continue
-            for s in (0, 1):
-                deterministic_moments[(pkey, s)] = _deterministic_no_innovation_policy_moments(
-                    params=params,
-                    policy=pkey,
-                    net=nets[pkey],
-                    sss=policy_sss[(pkey, s)],
-                    regime=s,
-                    c_hat=c_hat,
-                    rbar_by_regime=rbar_by_regime,
-                )
-
     # flex block (paper reports ergodic moments for flex prices as well)
     flex_sim: Optional[Dict[str, np.ndarray]] = None
     if require_sim_paths:
@@ -1175,23 +1148,6 @@ def build_table0(
             flex_sim = _simulate_flex_prices_for_table2(params)
     for s in [0, 1]:
         add_block("flex", "flex", s, flex.by_regime[s], flex_sim, run_dir=flex_author_run_dir)
-
-    # ---- Diagnostic: frozen-regime SSS (P = I), printed only ----
-    # This is NOT used in Table 2 calculations; it is a comparison object.
-    for label, pkey in policies:
-        if pkey is None or pkey == "flex":
-            continue
-        try:
-            frz = frozen_policy_sss_by_regime_from_policy(params, nets[pkey], policy=pkey)
-            for reg in (0, 1):
-                sss_r = frz.by_regime[reg]
-                print(
-                    f"[frozen regime SSS] policy={pkey} regime={reg} "
-                    f"pi={sss_r['pi']:.6g} c={sss_r['c']:.6g} "
-                    f"Delta_prev={sss_r.get('Delta_prev', float('nan')):.6g}"
-                )
-        except Exception as e:
-            print(f"[frozen regime SSS] policy={pkey} failed: {e}")
 
     # others
     for label, pkey in policies:
