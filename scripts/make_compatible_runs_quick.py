@@ -116,6 +116,7 @@ def _train_one(
         activation=cfg.activation,
         init_mode=getattr(cfg, "init_mode", "default"),
         init_scale=float(getattr(cfg, "init_scale", 0.01)),
+        seed=int(cfg.seed),
     )
 
     rbar_by_regime = None

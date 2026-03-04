@@ -413,7 +413,8 @@ class TrainConfig:
             strict_eps_stop=False,
             strict_eps_max_steps=None,
             author_step_cap=None,
-            author_commitment_zlb_p12=(1.0 / 28.0) if policy == "commitment_zlb" else None,
+            # Keep baseline calibration unless user explicitly overrides via kwargs.
+            author_commitment_zlb_p12=None,
             n_path=10,
             n_paths_per_step=1,
             grad_clip_mode="value",

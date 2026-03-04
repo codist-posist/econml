@@ -41,8 +41,14 @@ class PolicyNetwork(nn.Module):
         *,
         init_mode: str = "default",
         init_scale: float = 0.01,
+        seed: int | None = None,
     ):
         super().__init__()
+        self.init_seed = None if seed is None else int(seed)
+        # If a seed is provided, set RNGs before creating Linear layers so
+        # PyTorch default initializers are also reproducible.
+        if self.init_seed is not None:
+            set_seeds(self.init_seed)
         act = nn.SELU if activation.lower() == "selu" else nn.ReLU
         h1, h2 = hidden
         self.net = nn.Sequential(
@@ -50,13 +56,19 @@ class PolicyNetwork(nn.Module):
             nn.Linear(h1, h2), act(),
             nn.Linear(h2, d_out)
         )
-        self._apply_init(init_mode=init_mode, init_scale=float(init_scale))
+        self._apply_init(init_mode=init_mode, init_scale=float(init_scale), seed=self.init_seed)
 
-    def _apply_init(self, *, init_mode: str, init_scale: float) -> None:
+    def _apply_init(self, *, init_mode: str, init_scale: float, seed: int | None = None) -> None:
         mode = str(init_mode).strip().lower()
         if mode != "author_variance_scaling":
             return
-        for m in self.modules():
+        linear_layers = [m for m in self.modules() if isinstance(m, nn.Linear)]
+        # Author Keras model uses fixed per-layer seeds 1/2/5.
+        # To keep cfg_seed effective while preserving this layer-wise pattern,
+        # we offset these seeds by cfg seed when provided.
+        base = 0 if seed is None else int(seed)
+        layer_seeds = [base + 1, base + 2, base + 5]
+        for idx, m in enumerate(linear_layers):
             if not isinstance(m, nn.Linear):
                 continue
             fan_in = float(m.weight.shape[1])
@@ -65,7 +77,10 @@ class PolicyNetwork(nn.Module):
             # TensorFlow VarianceScaling(scale=s, mode='fan_avg', distribution='uniform'):
             # var = s / fan_avg, bound = sqrt(3*var)
             bound = float(np.sqrt(3.0 * float(init_scale) / fan_avg))
-            nn.init.uniform_(m.weight, -bound, bound)
+            seed_i = layer_seeds[idx] if idx < len(layer_seeds) else (layer_seeds[-1] + idx - len(layer_seeds) + 1)
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(int(seed_i))
+                nn.init.uniform_(m.weight, -bound, bound)
             nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -274,7 +289,11 @@ def implied_nominal_rate_from_euler(
     eps_grid = getattr(trainer, "_eps_grid", None)
     w_grid = getattr(trainer, "_w_grid", None)
     Et = expectation_operator_appendixB(params, st, gh_n, f_term, eps_grid=eps_grid, w_grid=w_grid)
-    return (1.0 / Et) - 1.0
+    i_nom = (1.0 / Et) - 1.0
+    # Author zlb_discretion Definitions.i_nom_y is bounded to [0, 0.1].
+    if policy == "discretion_zlb":
+        i_nom = torch.clamp(i_nom, min=0.0, max=0.1)
+    return i_nom
 
 
 
@@ -1963,8 +1982,9 @@ def simulate_paths(
     B = x0.shape[0]
     x = x0.to(device=dev, dtype=dt)
 
-    # Build a minimal cfg for simulation (no training). For commitment_zlb we need
-    # author-style p12 override parity (1/28) used in the public code.
+    # Build a minimal cfg for simulation (no training). For commitment_zlb we keep
+    # author-like compute defaults; calibration overrides can still be passed explicitly
+    # through cfg if needed.
     if policy == "commitment_zlb":
         cfg_sim = TrainConfig.author_like(
             policy=policy,

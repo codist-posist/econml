@@ -88,7 +88,7 @@ def switching_policy_sss_by_regime_from_policy(
     *,
     policy: PolicyName,
     rbar_by_regime: Optional[torch.Tensor] = None,
-    author_commitment_zlb_p12: Optional[float] = 1.0 / 28.0,
+    author_commitment_zlb_p12: Optional[float] = None,
     P_override: Optional[torch.Tensor] = None,
     max_iter: int = 50_000,
     tol: float = 1e-12,
@@ -106,8 +106,7 @@ def switching_policy_sss_by_regime_from_policy(
     if floors is None:
         floors = {"c": 1e-8, "Delta": 1e-10, "pstar": 1e-10}
 
-    # Author public dsge_zlb_commitment uses p12=1/28.
-    # Keep this policy-specific override in SSS/fixed-point analysis unless explicitly disabled.
+    # Optional policy-specific override for commitment_zlb SSS analysis.
     if policy == "commitment_zlb" and author_commitment_zlb_p12 is not None:
         p12_target = float(author_commitment_zlb_p12)
         if abs(float(params.p12) - p12_target) > 1e-12:
