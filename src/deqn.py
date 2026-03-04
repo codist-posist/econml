@@ -811,19 +811,22 @@ class Trainer:
             return torch.zeros((), device=self.params.device, dtype=self.params.dtype)
         return torch.stack(terms).sum()
 
-    def _training_loss_from_states(self, x: torch.Tensor, resid: torch.Tensor) -> torch.Tensor:
-        """Combined training objective under selected training_mode."""
-        base = loss_from_residuals(
+    def _training_loss_components_from_states(
+        self, x: torch.Tensor, resid: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return (total_loss, residual_loss, bounds_loss)."""
+        resid_loss = loss_from_residuals(
             resid,
             loss_type=getattr(self.cfg, "loss_type", "huber"),
             huber_delta=float(getattr(self.cfg, "huber_delta", 1.0)),
         )
+        bounds_loss = torch.zeros((), device=self.params.device, dtype=self.params.dtype)
         if bool(getattr(self.cfg, "use_penalty_bounds", True)):
             # Penalties must be evaluated on pre-clip decoded objects; otherwise
             # hard bounds hide violations and the penalty collapses to zero.
             out = self._policy_outputs(x, apply_hard_bounds=False)
             w = float(getattr(self.cfg, "bounds_penalty_weight", 1.0))
-            base = base + w * self._bounds_penalty(out)
+            bounds_loss = bounds_loss + w * self._bounds_penalty(out)
             use_raw_penalty = bool(getattr(self.cfg, "use_author_raw_penalty", True))
             # Avoid double-penalizing Taylor-family bounds:
             # bounds already apply in decoded/definition space (author-style focus).
@@ -831,8 +834,14 @@ class Trainer:
                 use_raw_penalty = False
             if use_raw_penalty:
                 raw = self.net(x)
-                base = base + w * self._raw_policy_penalty(raw)
-        return base
+                bounds_loss = bounds_loss + w * self._raw_policy_penalty(raw)
+        total = resid_loss + bounds_loss
+        return total, resid_loss, bounds_loss
+
+    def _training_loss_from_states(self, x: torch.Tensor, resid: torch.Tensor) -> torch.Tensor:
+        """Combined training objective under selected training_mode."""
+        total, _, _ = self._training_loss_components_from_states(x, resid)
+        return total
 
     @torch.no_grad()
     def _step_state(self, x: torch.Tensor) -> torch.Tensor:
@@ -1344,6 +1353,8 @@ class Trainer:
             last_val_metrics: Dict[str, float] = {
                 "step": float("nan"),
                 "loss_val": float("nan"),
+                "loss_resid_val": float("nan"),
+                "loss_bounds_val": float("nan"),
                 "rms_resid_val": float("nan"),
                 "max_resid_val": float("nan"),
                 "share_all_lt_tol_val": float("nan"),
@@ -1389,15 +1400,17 @@ class Trainer:
                     with torch.enable_grad():
                         xv_g = xv.clone().detach().requires_grad_(True)
                         resid_v = self._residuals(xv_g)
-                        loss_v = self._training_loss_from_states(xv_g, resid_v)
+                        loss_v, loss_resid_v, loss_bounds_v = self._training_loss_components_from_states(xv_g, resid_v)
                 else:
                     with torch.no_grad():
                         resid_v = self._residuals(xv)
-                        loss_v = self._training_loss_from_states(xv, resid_v)
+                        loss_v, loss_resid_v, loss_bounds_v = self._training_loss_components_from_states(xv, resid_v)
                 with torch.no_grad():
                     metr_v = residual_metrics(resid_v.detach(), keys, tol=1e-4)
                     metr_v.update(residual_metrics_by_regime(xv, resid_v.detach(), keys, tol=1e-4, policy=self.policy))
                     metr_v["loss_val"] = float(loss_v.detach().cpu())
+                    metr_v["loss_resid_val"] = float(loss_resid_v.detach().cpu())
+                    metr_v["loss_bounds_val"] = float(loss_bounds_v.detach().cpu())
                     metr_v["rms_resid_val"] = float(metr_v.get("rms", float("nan")))
                     metr_v["max_resid_val"] = float(metr_v.get("max", float("nan")))
                     metr_v["share_all_lt_tol_val"] = float(metr_v.get("share_all_lt_tol", float("nan")))
@@ -1406,7 +1419,9 @@ class Trainer:
                     metr_v["lr"] = float(current_lr)
                 return metr_v
 
-            def _opt_step(X_step: torch.Tensor, need_log: bool) -> Tuple[float, torch.Tensor | None, torch.Tensor | None]:
+            def _opt_step(
+                X_step: torch.Tensor, need_log: bool
+            ) -> Tuple[float, float, float, torch.Tensor | None, torch.Tensor | None]:
                 opt.zero_grad(set_to_none=True)
 
                 # CUDA memory guard: evaluate residual loss in micro-batches.
@@ -1422,8 +1437,10 @@ class Trainer:
                 X_for_log: torch.Tensor | None = None
                 if not use_chunks:
                     resid = self._residuals(X_step)
-                    loss = self._training_loss_from_states(X_step, resid)
+                    loss, loss_resid, loss_bounds = self._training_loss_components_from_states(X_step, resid)
                     lv = float(loss.detach().cpu())
+                    lv_resid = float(loss_resid.detach().cpu())
+                    lv_bounds = float(loss_bounds.detach().cpu())
                     loss.backward()
                     if need_log:
                         resid_for_log = resid.detach()
@@ -1431,21 +1448,25 @@ class Trainer:
                 else:
                     n_total = int(X_step.shape[0])
                     lv = 0.0
+                    lv_resid = 0.0
+                    lv_bounds = 0.0
                     resid_chunks = [] if need_log else None
                     x_chunks = [] if need_log else None
                     for j in range(0, n_total, int(chunk_size)):
                         Xi = X_step[j : j + int(chunk_size)]
                         resid_i = self._residuals(Xi)
-                        loss_i = self._training_loss_from_states(Xi, resid_i)
+                        loss_i, loss_resid_i, loss_bounds_i = self._training_loss_components_from_states(Xi, resid_i)
                         w = float(Xi.shape[0]) / float(n_total)
                         (loss_i * w).backward()
                         lv += float(loss_i.detach().cpu()) * w
+                        lv_resid += float(loss_resid_i.detach().cpu()) * w
+                        lv_bounds += float(loss_bounds_i.detach().cpu()) * w
                         if need_log:
                             with torch.no_grad():
                                 assert resid_chunks is not None and x_chunks is not None
                                 resid_chunks.append(resid_i.detach().cpu())
                                 x_chunks.append(Xi.detach().cpu())
-                        del Xi, resid_i, loss_i
+                        del Xi, resid_i, loss_i, loss_resid_i, loss_bounds_i
                     if need_log:
                         assert resid_chunks is not None and x_chunks is not None
                         resid_for_log = torch.cat(resid_chunks, dim=0)
@@ -1459,9 +1480,16 @@ class Trainer:
                     else:
                         torch.nn.utils.clip_grad_norm_(self.net.parameters(), clip_v)
                 opt.step()
-                return lv, resid_for_log, X_for_log
+                return lv, lv_resid, lv_bounds, resid_for_log, X_for_log
 
-            def _after_step(lv: float, need_log: bool, resid_for_log: torch.Tensor | None, X_for_log: torch.Tensor | None) -> bool:
+            def _after_step(
+                lv: float,
+                lv_resid: float,
+                lv_bounds: float,
+                need_log: bool,
+                resid_for_log: torch.Tensor | None,
+                X_for_log: torch.Tensor | None,
+            ) -> bool:
                 nonlocal global_step, best_loss, best_step, best_state, hit_safety_cap, stop_reason
                 nonlocal global_best_loss, global_best_step, global_best_state
                 nonlocal auto_best_metric, auto_best_step, last_logged_metrics, last_val_metrics
@@ -1502,9 +1530,13 @@ class Trainer:
                         }
                         print(
                             f"[{self.policy} | {tag}] step={global_step:>6d} "
-                            f"loss={lv:.3e}  rms={rms:.3e}  max={mx:.3e}  share(|res|<1e-4)={share:.3f}"
+                            f"loss={lv:.3e}  loss_resid={lv_resid:.3e}  loss_bounds={lv_bounds:.3e}  "
+                            f"rms={rms:.3e}  max={mx:.3e}  share(|res|<1e-4)={share:.3f}"
                         )
                         if metrics_rows is not None:
+                            metr["loss_total"] = float(lv)
+                            metr["loss_resid"] = float(lv_resid)
+                            metr["loss_bounds"] = float(lv_bounds)
                             metrics_rows.append(metr)
                             if (len(metrics_rows) % 20) == 0:
                                 save_csv(os.path.join(run_dir, "train_metrics.csv"), pd.DataFrame(metrics_rows))
@@ -1514,19 +1546,24 @@ class Trainer:
                     val_metr = _eval_fixed_val_metrics()
                     if val_metr is not None:
                         loss_v = float(val_metr.get("loss_val", float("nan")))
+                        loss_resid_v = float(val_metr.get("loss_resid_val", float("nan")))
+                        loss_bounds_v = float(val_metr.get("loss_bounds_val", float("nan")))
                         rms_v = float(val_metr.get("rms_resid_val", float("nan")))
                         max_v = float(val_metr.get("max_resid_val", float("nan")))
                         share_v = float(val_metr.get("share_all_lt_tol_val", float("nan")))
                         last_val_metrics = {
                             "step": float(global_step),
                             "loss_val": float(loss_v),
+                            "loss_resid_val": float(loss_resid_v),
+                            "loss_bounds_val": float(loss_bounds_v),
                             "rms_resid_val": float(rms_v),
                             "max_resid_val": float(max_v),
                             "share_all_lt_tol_val": float(share_v),
                         }
                         print(
                             f"[{self.policy} | {tag}] val step={global_step:>6d} "
-                            f"loss_val={loss_v:.3e}  rms_val={rms_v:.3e}  max_val={max_v:.3e}  "
+                            f"loss_val={loss_v:.3e}  loss_resid_val={loss_resid_v:.3e}  "
+                            f"loss_bounds_val={loss_bounds_v:.3e}  rms_val={rms_v:.3e}  max_val={max_v:.3e}  "
                             f"share_val(|res|<1e-4)={share_v:.3f}"
                         )
                         if val_metrics_rows is not None:
@@ -1567,6 +1604,8 @@ class Trainer:
                                     f"current_{auto_stop_metric}={metric_value:.3e}; "
                                     f"last_val_step={last_val_metrics['step']:.0f}, "
                                     f"last_loss_val={last_val_metrics['loss_val']:.3e}, "
+                                    f"last_loss_resid_val={last_val_metrics['loss_resid_val']:.3e}, "
+                                    f"last_loss_bounds_val={last_val_metrics['loss_bounds_val']:.3e}, "
                                     f"last_rms_val={last_val_metrics['rms_resid_val']:.3e}, "
                                     f"last_max_val={last_val_metrics['max_resid_val']:.3e}, "
                                     f"last_share_val={last_val_metrics['share_all_lt_tol_val']:.3f}"
@@ -1694,8 +1733,8 @@ class Trainer:
                         if train_mode == "author" and int(Xi.shape[0]) < int(mb):
                             continue
                         need_log = (global_step % log_every) == 0
-                        lv, resid_for_log, X_for_log = _opt_step(Xi, need_log)
-                        stop_now = _after_step(lv, need_log, resid_for_log, X_for_log)
+                        lv, lv_resid, lv_bounds, resid_for_log, X_for_log = _opt_step(Xi, need_log)
+                        stop_now = _after_step(lv, lv_resid, lv_bounds, need_log, resid_for_log, X_for_log)
                         pbar.update(1)
                         if stop_now:
                             break
@@ -1774,6 +1813,8 @@ class Trainer:
                 "auto_stop_best_step": int(auto_best_step),
                 "auto_stop_last_val_step": float(last_val_metrics["step"]),
                 "auto_stop_last_loss_val": float(last_val_metrics["loss_val"]),
+                "auto_stop_last_loss_resid_val": float(last_val_metrics["loss_resid_val"]),
+                "auto_stop_last_loss_bounds_val": float(last_val_metrics["loss_bounds_val"]),
                 "auto_stop_last_rms_resid_val": float(last_val_metrics["rms_resid_val"]),
             }
 
