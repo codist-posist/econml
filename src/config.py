@@ -21,6 +21,7 @@ CommitmentInitMode = Literal["author_hooks"]
 WeightSelectionMode = Literal["best", "last"]
 GradClipMode = Literal["norm", "value"]
 InitMode = Literal["default", "author_variance_scaling"]
+AutoStopMetric = Literal["loss", "loss_val", "rms_resid_val"]
 
 
 @dataclass(frozen=True)
@@ -207,6 +208,18 @@ class TrainConfig:
     patience: int = 5000
     min_delta: float = 1e-5
 
+    # ---- Automatic training stop (useful for long author-mode runs) ----
+    # Metrics:
+    # - "loss": current optimization batch loss
+    # - "loss_val": fixed validation states objective
+    # - "rms_resid_val": fixed validation states residual RMS
+    auto_stop_enabled: bool = False
+    auto_stop_metric: AutoStopMetric = "loss"
+    auto_stop_warmup_steps: int = 0
+    auto_stop_patience_steps: int = 0
+    auto_stop_min_delta: float = 0.0
+    auto_stop_min_rel_delta: float = 0.0
+
     # ---- Paper-style stopping rule (Appendix B): stop on epsilon ----
     # If enabled and a phase has eps_stop set, training runs until loss < eps_stop,
     # with strict_eps_max_steps acting only as a safety cap.
@@ -372,6 +385,14 @@ class TrainConfig:
             author_initialize_each_episode=True,
             author_n_steady_state_batches=50,
             author_n_steady_state_min_batch=500,
+            # Practical default for very large episode budgets:
+            # stop if fixed validation residual RMS plateaus for a long window.
+            auto_stop_enabled=True,
+            auto_stop_metric="rms_resid_val",
+            auto_stop_warmup_steps=2_000,
+            auto_stop_patience_steps=10_000,
+            auto_stop_min_delta=0.0,
+            auto_stop_min_rel_delta=1e-3,
             log_every=100,
             val_size=1024,
             val_every=2000,

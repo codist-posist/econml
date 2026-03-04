@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 import time
 import os
 import random
@@ -24,7 +24,7 @@ from .residuals_a2 import residuals_a2
 from .residuals_a3 import residuals_a3
 from .residuals_a2_zlb import residuals_a2_zlb
 from .residuals_a3_zlb import residuals_a3_zlb
-from .io_utils import save_csv, ensure_dir, make_run_dir, save_run_metadata, _normalize_artifacts_root, pack_config, save_torch
+from .io_utils import save_csv, ensure_dir, make_run_dir, save_run_metadata, _normalize_artifacts_root, pack_config, save_torch, save_json
 
 
 # Torch thread pools can only be safely configured once per process.
@@ -1217,6 +1217,7 @@ class Trainer:
             except Exception:
                 pass
         metrics_rows: List[Dict[str, float]] | None = [] if run_dir is not None else None
+        val_metrics_rows: List[Dict[str, float]] | None = [] if run_dir is not None else None
         global_step = 0
         global_best_loss = float("inf")
         global_best_step = -1
@@ -1235,7 +1236,7 @@ class Trainer:
             x_init: torch.Tensor,
             tag: str,
             eps_stop: float | None,
-        ) -> Tuple[List[float], torch.Tensor]:
+        ) -> Tuple[List[float], torch.Tensor, Dict[str, Any]]:
             """Train for one phase using the DEQN algorithm as described in Appendix B.
 
             At each optimizer step:
@@ -1294,6 +1295,41 @@ class Trainer:
             keys = self.res_keys
             current_lr = float(lr)
             current_episode_idx = 0
+            stop_reason: str | None = None
+            # Optional automatic stop with step-based patience.
+            auto_stop_enabled = bool(getattr(self.cfg, "auto_stop_enabled", False))
+            auto_stop_metric = str(getattr(self.cfg, "auto_stop_metric", "loss")).strip().lower()
+            if auto_stop_metric not in ("loss", "loss_val", "rms_resid_val"):
+                auto_stop_metric = "loss"
+            auto_stop_warmup_steps = max(0, int(getattr(self.cfg, "auto_stop_warmup_steps", 0)))
+            auto_stop_patience_steps = max(0, int(getattr(self.cfg, "auto_stop_patience_steps", 0)))
+            auto_stop_min_delta = max(0.0, float(getattr(self.cfg, "auto_stop_min_delta", 0.0)))
+            auto_stop_min_rel_delta = max(0.0, float(getattr(self.cfg, "auto_stop_min_rel_delta", 0.0)))
+            auto_best_metric = float("inf")
+            auto_best_step = -1
+            val_every = max(1, int(getattr(self.cfg, "val_every", 2000) or 2000))
+            val_size = max(1, int(getattr(self.cfg, "val_size", 1024) or 1024))
+            use_val_metric = auto_stop_metric in ("loss_val", "rms_resid_val")
+            last_logged_metrics: Dict[str, float] = {
+                "step": float("nan"),
+                "rms": float("nan"),
+                "max": float("nan"),
+                "share": float("nan"),
+            }
+            last_val_metrics: Dict[str, float] = {
+                "step": float("nan"),
+                "loss_val": float("nan"),
+                "rms_resid_val": float("nan"),
+                "max_resid_val": float("nan"),
+                "share_all_lt_tol_val": float("nan"),
+            }
+
+            x_val_fixed: torch.Tensor | None = None
+            if auto_stop_enabled and use_val_metric:
+                x_val_fixed = self.simulate_initial_state(
+                    int(val_size),
+                    commitment_sss=commitment_sss if self.policy in ("commitment", "commitment_zlb") else None,
+                ).to(device=dev, dtype=self.params.dtype)
 
             def _set_opt_lr(v: float) -> None:
                 vv = float(v)
@@ -1306,6 +1342,44 @@ class Trainer:
                     return max(author_lr_min, float(lr) * frac)
                 k = max(0, ep_idx_zero_based - author_lr_warmup_episodes)
                 return max(author_lr_min, float(lr) * (author_lr_decay ** k))
+
+            def _is_metric_improved(cur: float, best: float) -> bool:
+                if not np.isfinite(float(cur)):
+                    return False
+                if not np.isfinite(float(best)):
+                    return True
+                abs_impr = float(best) - float(cur)
+                if abs_impr <= float(auto_stop_min_delta):
+                    return False
+                if float(auto_stop_min_rel_delta) > 0.0:
+                    rel_impr = abs_impr / max(1e-12, abs(float(best)))
+                    return rel_impr > float(auto_stop_min_rel_delta)
+                return True
+
+            def _eval_fixed_val_metrics() -> Dict[str, float] | None:
+                if x_val_fixed is None:
+                    return None
+                xv = x_val_fixed
+                if self.policy in ("discretion", "discretion_zlb"):
+                    with torch.enable_grad():
+                        xv_g = xv.clone().detach().requires_grad_(True)
+                        resid_v = self._residuals(xv_g)
+                        loss_v = self._training_loss_from_states(xv_g, resid_v)
+                else:
+                    with torch.no_grad():
+                        resid_v = self._residuals(xv)
+                        loss_v = self._training_loss_from_states(xv, resid_v)
+                with torch.no_grad():
+                    metr_v = residual_metrics(resid_v.detach(), keys, tol=1e-4)
+                    metr_v.update(residual_metrics_by_regime(xv, resid_v.detach(), keys, tol=1e-4, policy=self.policy))
+                    metr_v["loss_val"] = float(loss_v.detach().cpu())
+                    metr_v["rms_resid_val"] = float(metr_v.get("rms", float("nan")))
+                    metr_v["max_resid_val"] = float(metr_v.get("max", float("nan")))
+                    metr_v["share_all_lt_tol_val"] = float(metr_v.get("share_all_lt_tol", float("nan")))
+                    metr_v["global_step"] = float(global_step)
+                    metr_v["episode"] = float(current_episode_idx)
+                    metr_v["lr"] = float(current_lr)
+                return metr_v
 
             def _opt_step(X_step: torch.Tensor, need_log: bool) -> Tuple[float, torch.Tensor | None, torch.Tensor | None]:
                 opt.zero_grad(set_to_none=True)
@@ -1363,8 +1437,9 @@ class Trainer:
                 return lv, resid_for_log, X_for_log
 
             def _after_step(lv: float, need_log: bool, resid_for_log: torch.Tensor | None, X_for_log: torch.Tensor | None) -> bool:
-                nonlocal global_step, best_loss, best_step, best_state, hit_safety_cap
+                nonlocal global_step, best_loss, best_step, best_state, hit_safety_cap, stop_reason
                 nonlocal global_best_loss, global_best_step, global_best_state
+                nonlocal auto_best_metric, auto_best_step, last_logged_metrics, last_val_metrics
                 losses.append(lv)
                 global_step += 1
 
@@ -1394,6 +1469,12 @@ class Trainer:
                             share = float(metr.get("share_all_lt_tol", float("nan")))
                         except Exception:
                             rms, mx, share = float("nan"), float("nan"), float("nan")
+                        last_logged_metrics = {
+                            "step": float(global_step),
+                            "rms": float(rms),
+                            "max": float(mx),
+                            "share": float(share),
+                        }
                         print(
                             f"[{self.policy} | {tag}] step={global_step:>6d} "
                             f"loss={lv:.3e}  rms={rms:.3e}  max={mx:.3e}  share(|res|<1e-4)={share:.3f}"
@@ -1403,11 +1484,88 @@ class Trainer:
                             if (len(metrics_rows) % 20) == 0:
                                 save_csv(os.path.join(run_dir, "train_metrics.csv"), pd.DataFrame(metrics_rows))
 
+                val_metr: Dict[str, float] | None = None
+                if auto_stop_enabled and use_val_metric and (global_step % int(val_every) == 0):
+                    val_metr = _eval_fixed_val_metrics()
+                    if val_metr is not None:
+                        loss_v = float(val_metr.get("loss_val", float("nan")))
+                        rms_v = float(val_metr.get("rms_resid_val", float("nan")))
+                        max_v = float(val_metr.get("max_resid_val", float("nan")))
+                        share_v = float(val_metr.get("share_all_lt_tol_val", float("nan")))
+                        last_val_metrics = {
+                            "step": float(global_step),
+                            "loss_val": float(loss_v),
+                            "rms_resid_val": float(rms_v),
+                            "max_resid_val": float(max_v),
+                            "share_all_lt_tol_val": float(share_v),
+                        }
+                        print(
+                            f"[{self.policy} | {tag}] val step={global_step:>6d} "
+                            f"loss_val={loss_v:.3e}  rms_val={rms_v:.3e}  max_val={max_v:.3e}  "
+                            f"share_val(|res|<1e-4)={share_v:.3f}"
+                        )
+                        if val_metrics_rows is not None:
+                            val_metrics_rows.append(dict(val_metr))
+                            if (len(val_metrics_rows) % 10) == 0:
+                                save_csv(os.path.join(run_dir, "train_val_metrics.csv"), pd.DataFrame(val_metrics_rows))
+
                 if eps_stop is not None and lv < float(eps_stop):
                     hit_safety_cap = False
+                    stop_reason = f"eps_stop(loss<{float(eps_stop):.3e}) at step={global_step}"
                     return True
                 if eps_stop is None:
                     hit_safety_cap = False
+
+                metric_value = float("nan")
+                metric_updated = False
+                if auto_stop_metric == "loss":
+                    metric_value = float(lv)
+                    metric_updated = True
+                elif val_metr is not None:
+                    metric_value = float(val_metr.get(auto_stop_metric, float("nan")))
+                    metric_updated = True
+
+                if auto_stop_enabled and auto_stop_patience_steps > 0 and metric_updated:
+                    if global_step >= auto_stop_warmup_steps and np.isfinite(metric_value):
+                        if _is_metric_improved(metric_value, auto_best_metric):
+                            auto_best_metric = float(metric_value)
+                            auto_best_step = int(global_step)
+                        elif auto_best_step >= 0 and (global_step - auto_best_step) >= auto_stop_patience_steps:
+                            rel_clause = ""
+                            if auto_stop_min_rel_delta > 0.0:
+                                rel_clause = f", min_rel_delta={auto_stop_min_rel_delta:.2e}"
+                            if use_val_metric:
+                                stop_reason = (
+                                    f"auto_stop({auto_stop_metric} plateau): "
+                                    f"no improvement > {auto_stop_min_delta:.2e}{rel_clause} for {int(auto_stop_patience_steps)} steps; "
+                                    f"best_{auto_stop_metric}={auto_best_metric:.3e} at step={int(auto_best_step)}, "
+                                    f"current_{auto_stop_metric}={metric_value:.3e}; "
+                                    f"last_val_step={last_val_metrics['step']:.0f}, "
+                                    f"last_loss_val={last_val_metrics['loss_val']:.3e}, "
+                                    f"last_rms_val={last_val_metrics['rms_resid_val']:.3e}, "
+                                    f"last_max_val={last_val_metrics['max_resid_val']:.3e}, "
+                                    f"last_share_val={last_val_metrics['share_all_lt_tol_val']:.3f}"
+                                )
+                            else:
+                                stop_reason = (
+                                    f"auto_stop({auto_stop_metric} plateau): "
+                                    f"no improvement > {auto_stop_min_delta:.2e}{rel_clause} for {int(auto_stop_patience_steps)} steps; "
+                                    f"best_{auto_stop_metric}={auto_best_metric:.3e} at step={int(auto_best_step)}, "
+                                    f"current_{auto_stop_metric}={metric_value:.3e}; "
+                                    f"last_log_step={last_logged_metrics['step']:.0f}, "
+                                    f"last_rms={last_logged_metrics['rms']:.3e}, "
+                                    f"last_max={last_logged_metrics['max']:.3e}, "
+                                    f"last_share={last_logged_metrics['share']:.3f}"
+                                )
+                            return True
+                    if need_log or (use_val_metric and val_metr is not None):
+                        wait_steps = int(global_step - auto_best_step) if auto_best_step >= 0 else 0
+                        best_for_print = auto_best_metric if auto_best_step >= 0 else float("nan")
+                        print(
+                            f"[{self.policy} | {tag}] auto_monitor metric={auto_stop_metric} "
+                            f"cur={metric_value:.3e} best={best_for_print:.3e}@{int(auto_best_step)} "
+                            f"wait={wait_steps}/{int(auto_stop_patience_steps)}"
+                        )
                 return False
 
             # Author-like training loop: simulate one episode, shuffle states, optimize in minibatches.
@@ -1535,6 +1693,19 @@ class Trainer:
                     f"[{self.policy} | {tag}] reached safety cap (max_steps={max_steps}) "
                     f"before hitting eps_stop={float(eps_stop):.3e}."
                 )
+            if stop_reason is None:
+                if reached_step_cap:
+                    stop_reason = f"step_cap(max_steps={int(max_steps)})"
+                elif train_mode == "author":
+                    if max_episodes is not None and episode_count >= int(max_episodes):
+                        stop_reason = f"episode_budget(episodes={int(episode_count)}/{int(max_episodes)})"
+                    else:
+                        stop_reason = "author_loop_end"
+                else:
+                    if int(max_steps) > 0 and global_step >= int(max_steps):
+                        stop_reason = f"step_budget(max_steps={int(max_steps)})"
+                    else:
+                        stop_reason = "step_loop_end"
             if train_mode == "author":
                 if explicit_author_episodes is not None:
                     print(
@@ -1551,8 +1722,35 @@ class Trainer:
                         f"[{self.policy} | {tag}] WARNING: hit step safety cap "
                         f"(max_steps={int(max_steps)}) before finishing episodes={int(max_episodes)}."
                     )
+            print(f"[{self.policy} | {tag}] stop_reason: {stop_reason}")
             print(f"[{self.policy} | {tag}] best_loss={best_loss:.3e} at step={best_step}")
-            return losses, x_pop
+            if auto_stop_enabled:
+                print(
+                    f"[{self.policy} | {tag}] auto_best_{auto_stop_metric}="
+                    f"{(auto_best_metric if auto_best_step >= 0 else float('nan')):.3e} "
+                    f"at step={auto_best_step}"
+                )
+            return losses, x_pop, {
+                "tag": str(tag),
+                "train_mode": str(train_mode),
+                "stop_reason": str(stop_reason),
+                "steps_in_stage": int(len(losses)),
+                "episodes_in_stage": int(episode_count),
+                "best_loss": float(best_loss),
+                "best_step": int(best_step),
+                "last_loss": float(losses[-1]) if losses else float("nan"),
+                "auto_stop_enabled": bool(auto_stop_enabled),
+                "auto_stop_metric": str(auto_stop_metric),
+                "auto_stop_warmup_steps": int(auto_stop_warmup_steps),
+                "auto_stop_patience_steps": int(auto_stop_patience_steps),
+                "auto_stop_min_delta": float(auto_stop_min_delta),
+                "auto_stop_min_rel_delta": float(auto_stop_min_rel_delta),
+                "auto_stop_best_metric": float(auto_best_metric) if auto_best_step >= 0 else float("nan"),
+                "auto_stop_best_step": int(auto_best_step),
+                "auto_stop_last_val_step": float(last_val_metrics["step"]),
+                "auto_stop_last_loss_val": float(last_val_metrics["loss_val"]),
+                "auto_stop_last_rms_resid_val": float(last_val_metrics["rms_resid_val"]),
+            }
 
 
         # init population
@@ -1563,6 +1761,7 @@ class Trainer:
         ).to(device=dev, dtype=self.params.dtype)
 
         losses_all: List[float] = []
+        stage_stop_rows: List[Dict[str, Any]] = []
 
         for pidx, phase in enumerate(self.cfg.phases(), start=1):
             # Switch GH for this phase
@@ -1595,7 +1794,7 @@ class Trainer:
             else:
                 b_tag = int(phase.batch_size) * npps_phase
             tag = f"phase{pidx}(gh={int(phase.gh_n_train)},B={b_tag})"
-            lp, x = run_stage(
+            lp, x, stage_meta = run_stage(
                 steps=int(phase.steps),
                 lr=float(phase.lr),
                 batch_size=int(phase.batch_size) * npps_phase,
@@ -1605,6 +1804,7 @@ class Trainer:
                 eps_stop=getattr(phase, "eps_stop", None),
             )
             losses_all.extend(lp)
+            stage_stop_rows.append(stage_meta)
 
         # Final checkpoint selection and persistence:
         # - weights_last.pt: final iterate
@@ -1655,6 +1855,11 @@ class Trainer:
             except Exception:
                 # Logging must never crash training
                 pass
+        if val_metrics_rows is not None and run_dir is not None:
+            try:
+                save_csv(os.path.join(run_dir, "train_val_metrics.csv"), pd.DataFrame(val_metrics_rows))
+            except Exception:
+                pass
 
         # Final flush + pointers
         if run_dir is not None:
@@ -1665,14 +1870,37 @@ class Trainer:
                 )
             except Exception:
                 pass
+            try:
+                save_csv(
+                    os.path.join(run_dir, "train_val_metrics.csv"),
+                    pd.DataFrame(val_metrics_rows or []),
+                )
+            except Exception:
+                pass
             # Author post_process starts from Parameters.starting_state[0].
             # Persist the final author-loop starting state for reproducible post-processing.
             try:
                 save_torch(os.path.join(run_dir, "starting_state.pt"), x.detach().cpu())
             except Exception:
                 pass
+            # Persist explicit stage-wise stop reasons/criteria for reproducibility.
+            try:
+                save_json(
+                    os.path.join(run_dir, "train_stop.json"),
+                    {
+                        "policy": self.policy,
+                        "global_best_loss": float(global_best_loss),
+                        "global_best_step": int(global_best_step),
+                        "weights_selection": str(weights_selection),
+                        "stages": stage_stop_rows,
+                    },
+                )
+            except Exception:
+                pass
             print(f"[{self.policy}] training artifacts in: {run_dir}")
             print(f"[{self.policy}] metrics: {os.path.join(run_dir, 'train_metrics.csv')}")
+            print(f"[{self.policy}] val metrics: {os.path.join(run_dir, 'train_val_metrics.csv')}")
+            print(f"[{self.policy}] stop summary: {os.path.join(run_dir, 'train_stop.json')}")
             print(f"[{self.policy}] next: run post-training residual check via scripts/trajectory_quality_report.py (uses existing sanity_checks).")
         return losses_all
 
