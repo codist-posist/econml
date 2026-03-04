@@ -146,7 +146,7 @@ def _ensure_author_postprocess(
         os.path.join(out_dir, "simulated_definitions_xi_only.npz"),
     ]
     existing_mode = _read_mode_from_meta(meta_path)
-    mode_ok = (existing_mode == mode) or (existing_mode is None and mode == "author")
+    mode_ok = existing_mode == mode
     if (not force_rebuild) and all(os.path.exists(p) for p in required) and mode_ok:
         return out_dir
     if not enabled:
@@ -200,7 +200,7 @@ def _ensure_author_ir(
     target = os.path.join(out_dir, "IR_definitions.npz")
     meta_path = os.path.join(out_dir, "author_ir_meta.json")
     existing_mode = _read_mode_from_meta(meta_path)
-    mode_ok = (existing_mode == mode) or (existing_mode is None and mode == "author")
+    mode_ok = existing_mode == mode
     local_force_rebuild = bool(force_rebuild or (params_override is not None))
     if (not local_force_rebuild) and os.path.exists(target) and mode_ok:
         return out_dir
@@ -778,26 +778,28 @@ def build_figures(
     plt.close(fig)
 
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:blue", label="Discretion ZLB normal")
-    ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:orange", label="Discretion ZLB bad")
-    ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:green", label="Commitment ZLB normal")
-    ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:red", label="Commitment ZLB bad")
+    # Paper note for Fig. 14 color mapping:
+    # commitment -> blue/orange, discretion -> green/red.
+    ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue", label="Commitment ZLB normal")
+    ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange", label="Commitment ZLB bad")
+    ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green", label="Discretion ZLB normal")
+    ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red", label="Discretion ZLB bad")
     ax[0, 0].set_title("(a) Inflation")
     ax[0, 0].legend(fontsize=8)
-    ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
+    ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
+    ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
+    ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
+    ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
+    ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
+    ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
+    ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
+    ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[1, 0].set_title("(c) Nominal interest rate")
-    ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 1], bins=60, alpha=0.45, color="tab:red")
+    ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 0], bins=60, alpha=0.45, color="tab:blue")
+    ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 1], bins=60, alpha=0.45, color="tab:orange")
+    ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 0], bins=60, alpha=0.45, color="tab:green")
+    ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[1, 1].set_title("(d) Real interest rate")
     for a in ax.ravel():
         a.set_xlabel("model units")

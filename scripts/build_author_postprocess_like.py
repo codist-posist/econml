@@ -21,7 +21,7 @@ from src.deqn import Trainer, implied_nominal_rate_from_euler
 from src.config import TrainConfig
 from src.model_common import unpack_state, identities
 from src.metrics import flex_c_series_from_A_g_tau
-from src.io_utils import load_torch
+from src.io_utils import load_json, load_torch
 from src.steady_states import solve_flexprice_sss, export_rbar_tensor
 
 
@@ -30,6 +30,28 @@ def _resolve_cons_mode(mode: str) -> str:
     if m not in {"author", "paper"}:
         raise ValueError(f"Unsupported cons_mode={mode!r}; expected 'author' or 'paper'")
     return m
+
+
+def _load_params_from_run(
+    run_dir: str,
+    *,
+    device: str,
+    dtype: torch.dtype,
+) -> ModelParams:
+    p = ModelParams(device=device, dtype=dtype)
+    cfg_path = os.path.join(run_dir, "config.json")
+    if not os.path.exists(cfg_path):
+        return p.to_torch()
+    try:
+        blob = load_json(cfg_path)
+        p_blob = blob.get("params", {})
+        fields = set(ModelParams.__dataclass_fields__.keys())
+        kwargs = {k: v for k, v in p_blob.items() if k in fields}
+        kwargs["device"] = device
+        kwargs["dtype"] = dtype
+        return ModelParams(**kwargs).to_torch()
+    except Exception:
+        return p.to_torch()
 
 
 def _cons_flex_author(
@@ -306,7 +328,7 @@ def _export_for_policy(
     mode = _resolve_cons_mode(cons_mode)
     if run_dir is None:
         run_dir = _load_run_dir(artifacts_root, policy, use_selected=use_selected, required_files=())
-    params = ModelParams(device=device, dtype=dtype).to_torch()
+    params = _load_params_from_run(run_dir, device=device, dtype=dtype)
     net = _load_net_from_run(run_dir, params, policy)  # type: ignore[arg-type]
 
     cfg_sim = TrainConfig.author_like(policy=policy)  # type: ignore[arg-type]
