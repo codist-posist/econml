@@ -109,7 +109,7 @@ def simulate_deterministic_path(
     B = x0.shape[0]
     x = x0.to(device=params.device, dtype=params.dtype)
 
-    out_store = {k: np.zeros((T+1, B)) for k in ["c","pi","Delta","pstar","y","h","g","tau","i"]}
+    out_store = {k: np.zeros((T+1, B)) for k in ["c","pi","Delta","pstar","y","h","g","A","tau","i","logA","loggtilde","xi"]}
     out_store["s"] = np.zeros((T+1, B), dtype=np.int64)
 
     for t in range(T+1):
@@ -135,7 +135,11 @@ def simulate_deterministic_path(
         out_store["y"][t] = ids["y"].cpu().numpy()
         out_store["h"][t] = ids["h"].cpu().numpy()
         out_store["g"][t] = ids["g"].cpu().numpy()
+        out_store["A"][t] = ids["A"].cpu().numpy()
         out_store["tau"][t] = (ids["one_plus_tau"] - 1.0).cpu().numpy()
+        out_store["logA"][t] = st.logA.cpu().numpy()
+        out_store["loggtilde"][t] = st.loggtilde.cpu().numpy()
+        out_store["xi"][t] = st.xi.cpu().numpy()
         out_store["s"][t] = st.s.cpu().numpy()
         out_store["i"][t] = i_t.cpu().numpy()
 
