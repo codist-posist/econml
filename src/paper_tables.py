@@ -78,7 +78,7 @@ def _paper_moments_wide_table(
 def build_paper_tables_2_4(
     artifacts_root: str,
     *,
-    device: str = "cpu",
+    device: str = "auto",
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
     strict_selected: bool = False,
@@ -178,7 +178,7 @@ def build_paper_tables_2_4(
 def build_taylor_para_robustness_table(
     artifacts_root: str,
     *,
-    device: str = "cpu",
+    device: str = "auto",
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
     strict_selected: bool = False,

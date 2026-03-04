@@ -64,9 +64,16 @@ def main() -> None:
     ap.add_argument("--tol", type=float, default=1e-3)
     ap.add_argument("--max_states", type=int, default=50_000)
     ap.add_argument("--batch_size", type=int, default=4096)
+    ap.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Compute device: auto -> CUDA if available, else CPU.",
+    )
     args = ap.parse_args()
 
-    params = ModelParams(device="cpu")
+    params = ModelParams(device=args.device).to_torch()
     run_dir = _load_run_dir(args.artifacts_root, args.policy, use_selected=bool(args.use_selected))
     net = _load_net_from_run(run_dir, params, args.policy)  # type: ignore[arg-type]
     sim = _load_sim_paths(run_dir)

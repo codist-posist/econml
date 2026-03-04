@@ -22,7 +22,7 @@ from src.config import ModelParams
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build paper-style Table 1/2/3/4 from current artifacts.")
     ap.add_argument("--artifacts_root", default=os.path.join(ROOT, "artifacts"))
-    ap.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
+    ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     ap.add_argument(
         "--sss_source",
         default="sim_conditional",

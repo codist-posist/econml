@@ -809,7 +809,7 @@ def _implied_i_at_sss(
 def build_table0(
     artifacts_root: str,
     *,
-    device: str = "cpu",
+    device: str = "auto",
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
     strict_selected: bool = False,
@@ -846,7 +846,7 @@ def build_table0(
           * "best": prefer weights_best.pt,
           * "last": prefer weights_last.pt.
     """
-    params = ModelParams(device=device, dtype=dtype)
+    params = ModelParams(device=device, dtype=dtype).to_torch()
     sss_source_norm = _normalize_sss_source(sss_source)
     # flex SSS
     flex = solve_flexprice_sss(params)
@@ -1218,7 +1218,7 @@ def save_table0_csv(df: pd.DataFrame, artifacts_root: str, *, filename: str = "t
 def build_table2(
     artifacts_root: str,
     *,
-    device: str = "cpu",
+    device: str = "auto",
     dtype: torch.dtype = torch.float64,
     use_selected: bool = True,
     strict_selected: bool = False,

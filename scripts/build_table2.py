@@ -18,7 +18,12 @@ from src.table2_builder import build_table0, save_table0_csv
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--artifacts_root", default=os.path.join(_ROOT, "artifacts"))
-    ap.add_argument("--device", default="cpu")
+    ap.add_argument(
+        "--device",
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Compute device: auto -> CUDA if available, else CPU.",
+    )
     ap.add_argument(
         "--include_rules",
         action=argparse.BooleanOptionalAction,

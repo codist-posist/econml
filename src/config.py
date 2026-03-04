@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal, Tuple
+import os
 import torch
 
 PolicyName = Literal[
@@ -62,12 +63,53 @@ class ModelParams:
     psi: float = 2.0
     rho_i: float = 0.0
 
-    device: str = "cpu"
+    # Device selection:
+    # - "auto": use CUDA when available, else CPU
+    # - "cuda" / "cuda:N": force specific CUDA device
+    # - "cpu": force CPU
+    # Environment override: ECONML_DEVICE (same accepted values).
+    device: str = "auto"
     dtype: torch.dtype = torch.float32
 
     def to_torch(self) -> "ModelParams":
-        # Smoke check that device/dtype are valid (does not change params)
-        torch.zeros(1, device=self.device, dtype=self.dtype)
+        requested = os.environ.get("ECONML_DEVICE", self.device)
+        dev_raw = str(requested).strip().lower()
+        if dev_raw in ("", "auto"):
+            dev = "cuda" if torch.cuda.is_available() else "cpu"
+        elif dev_raw in ("gpu", "cuda"):
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    "CUDA device requested, but torch.cuda.is_available() is False. "
+                    "Install CUDA-enabled PyTorch or set device='cpu'."
+                )
+            dev = "cuda"
+        elif dev_raw.startswith("cuda:"):
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    f"CUDA device '{requested}' requested, but torch.cuda.is_available() is False. "
+                    "Install CUDA-enabled PyTorch or set device='cpu'."
+                )
+            dev = dev_raw
+        elif dev_raw == "cpu":
+            dev = "cpu"
+        else:
+            raise ValueError(
+                f"Unsupported device={requested!r}. Use 'auto', 'cpu', 'cuda', or 'cuda:N'."
+            )
+
+        # Optional hard requirement toggle for launch scripts/CI.
+        require_cuda = str(os.environ.get("ECONML_REQUIRE_CUDA", "0")).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if require_cuda and not dev.startswith("cuda"):
+            raise RuntimeError(
+                "ECONML_REQUIRE_CUDA=1, but CUDA is not available in this environment."
+            )
+
+        # Smoke check that device/dtype are valid.
+        torch.zeros(1, device=dev, dtype=self.dtype)
+        if dev != self.device:
+            return replace(self, device=dev)
         return self
 
     @property
