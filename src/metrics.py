@@ -83,6 +83,73 @@ def moment_stability(
     return {"blocks": float(n_blocks), "block_mean": mu, "max_dev": dev}
 
 
+def flex_c_series_from_A_g_tau(
+    params: Any,
+    *,
+    A: np.ndarray,
+    g: np.ndarray,
+    tau: np.ndarray | None = None,
+    one_plus_tau: np.ndarray | None = None,
+    max_iter: int = 120,
+    tol: float = 1e-12,
+) -> np.ndarray:
+    """Compute flexible-price consumption c_t from (A_t, g_t, tau_t), pointwise in time.
+
+    Solves the static flex equation used in the author code and paper-consistent identities:
+        ((c_t + g_t) / A_t)^omega - A_t * c_t^{-gamma} / (M * (1+tau_t)) = 0
+    where M = eps/(eps-1).
+    """
+    A = np.asarray(A, dtype=np.float64).reshape(-1)
+    g = np.asarray(g, dtype=np.float64).reshape(-1)
+    if one_plus_tau is None:
+        if tau is None:
+            raise ValueError("Provide either tau or one_plus_tau.")
+        opt = 1.0 + np.asarray(tau, dtype=np.float64).reshape(-1)
+    else:
+        opt = np.asarray(one_plus_tau, dtype=np.float64).reshape(-1)
+    if A.size != g.size or A.size != opt.size:
+        raise ValueError("A, g, and tau/one_plus_tau must have the same number of observations.")
+
+    gamma = float(getattr(params, "gamma"))
+    omega = float(getattr(params, "omega"))
+    M = float(getattr(params, "M"))
+
+    A = np.clip(A, 1e-12, None)
+    opt = np.clip(opt, 1e-12, None)
+    g = np.asarray(g, dtype=np.float64)
+
+    # Author Variables.py-style warm start (includes (1+tau), excludes g).
+    c = (A ** (1.0 + omega) / np.clip(M * opt, 1e-12, None)) ** (1.0 / (omega + gamma))
+    c = np.maximum(c - 0.5 * np.maximum(g, 0.0), 1e-10)
+
+    for _ in range(int(max_iter)):
+        c_old = c
+        c_pos = np.clip(c_old, 1e-12, None)
+        cpg = np.clip(c_pos + g, 1e-12, None)
+
+        f = (cpg / A) ** omega - A * (c_pos ** (-gamma)) / (M * opt)
+        if float(np.max(np.abs(f))) < float(tol):
+            break
+
+        df = (
+            omega * (cpg / A) ** (omega - 1.0) / A
+            + A * gamma * (c_pos ** (-gamma - 1.0)) / (M * opt)
+        )
+        step = f / np.clip(df, 1e-12, None)
+        c_new = c_pos - step
+        bad = (~np.isfinite(c_new)) | (c_new <= 1e-12)
+        if np.any(bad):
+            c_new[bad] = np.maximum(1e-12, 0.5 * c_pos[bad])
+        c = c_new
+
+        num = float(np.max(np.abs(c - c_old)))
+        den = float(1.0 + np.max(np.abs(c_old)))
+        if num <= float(tol) * den:
+            break
+
+    return np.clip(c, 1e-12, None)
+
+
 
 
 def _efficient_c_hat_series_from_A_g(
@@ -194,6 +261,18 @@ def output_gap_from_consumption(
 
     c_hat_t = _efficient_c_hat_series_from_A_g(params, A=A, g=g)
     return np.log(c) - np.log(c_hat_t)
+
+
+def efficient_c_hat_series_from_A_g(
+    params: Any,
+    *,
+    A: np.ndarray,
+    g: np.ndarray,
+    max_iter: int = 200,
+    tol: float = 1e-12,
+) -> np.ndarray:
+    """Public wrapper for efficient-allocation consumption hat{c}_t from (A_t, g_t)."""
+    return _efficient_c_hat_series_from_A_g(params, A=A, g=g, max_iter=max_iter, tol=tol)
 
 
 def table2_dataframe(sss_by_policy: Dict[str, Dict[str, Any]]):

@@ -15,7 +15,7 @@ from .sss_from_policy import switching_policy_sss_by_regime_from_policy, frozen_
 from .deqn import PolicyNetwork, implied_nominal_rate_from_euler
 from .deqn import Trainer
 from .config import TrainConfig
-from .metrics import output_gap_from_consumption
+from .metrics import output_gap_from_consumption, efficient_c_hat_series_from_A_g
 from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
 from .experiments import DeterministicPathSpec, simulate_deterministic_path
 from .sanity_checks import _state_from_policy_sss
@@ -372,7 +372,8 @@ def _deterministic_no_innovation_policy_moments(
     c = np.asarray(out["c"], dtype=np.float64).reshape(-1)[sl]
     pi = np.asarray(out["pi"], dtype=np.float64).reshape(-1)[sl]
     i_nom = np.asarray(out["i"], dtype=np.float64).reshape(-1)[sl]
-    x_gap = np.log(np.clip(c, 1e-12, None) / max(float(c_hat), 1e-12))
+    x_all = output_gap_from_consumption(out, c_hat, params=params, time_varying=True)
+    x_gap = np.asarray(x_all, dtype=np.float64).reshape(-1)[sl]
     if i_nom.size >= 2 and pi.size >= 2:
         r_real = (1.0 + i_nom[:-1]) / (1.0 + pi[1:]) - 1.0
     else:
@@ -673,6 +674,7 @@ def _load_author_flex_regime_moments(
     run_dir: str,
     regime: int,
     *,
+    params: ModelParams,
     c_hat: float,
 ) -> Dict[str, Dict[str, float]] | None:
     """
@@ -693,7 +695,16 @@ def _load_author_flex_regime_moments(
     if c_flex.size == 0 or i_flex.size == 0:
         return None
     pi = np.zeros_like(i_flex)
-    x_gap = np.log(np.clip(c_flex, 1e-12, None) / float(c_hat))
+    if ("a_x" in data.files) and ("g_x" in data.files):
+        A = np.asarray(data["a_x"]).reshape(-1)
+        g = np.asarray(data["g_x"]).reshape(-1)
+        if A.size == c_flex.size and g.size == c_flex.size:
+            c_hat_t = efficient_c_hat_series_from_A_g(params, A=A, g=g)
+            x_gap = np.log(np.clip(c_flex, 1e-12, None) / np.clip(c_hat_t, 1e-12, None))
+        else:
+            x_gap = np.log(np.clip(c_flex, 1e-12, None) / float(c_hat))
+    else:
+        x_gap = np.log(np.clip(c_flex, 1e-12, None) / float(c_hat))
     r_real = i_flex.copy()
     return {
         "pi": _moments_with_skew(pi),
@@ -927,7 +938,7 @@ def build_table0(
         # Prefer author post-process fixed-regime moment files in sim_conditional mode.
         if sss_source_norm == "sim_conditional":
             if (policy_key == "flex") and (run_dir is not None):
-                am_flex = _load_author_flex_regime_moments(run_dir, regime, c_hat=c_hat)
+                am_flex = _load_author_flex_regime_moments(run_dir, regime, params=params, c_hat=c_hat)
                 if strict_author_table2 and am_flex is None:
                     fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
                     raise FileNotFoundError(
@@ -976,8 +987,15 @@ def build_table0(
         else:
             # Diagnostic object: policy fixed-point SSS.
             pi_ss = float(sss["pi"])
-            # output gap SSS: log(c) - log(c_hat)
-            x_ss = float(np.log(float(sss["c"])) - np.log(c_hat))
+            # output gap SSS: prefer state-consistent hat{c}(A,g); fallback to constant c_hat.
+            c_val = float(sss["c"])
+            if ("logA" in sss) and ("loggtilde" in sss):
+                A_ss = np.array([np.exp(float(sss["logA"]))], dtype=np.float64)
+                g_ss = np.array([float(params.g_bar) * np.exp(float(sss["loggtilde"]))], dtype=np.float64)
+                c_hat_ss = float(efficient_c_hat_series_from_A_g(params, A=A_ss, g=g_ss).reshape(-1)[0])
+                x_ss = float(np.log(max(c_val, 1e-12)) - np.log(max(c_hat_ss, 1e-12)))
+            else:
+                x_ss = float(np.log(max(c_val, 1e-12)) - np.log(max(float(c_hat), 1e-12)))
             # nominal/real in SSS
             if policy_key == "flex":
                 i_ss = float(flex.by_regime[regime]["r_star"])  # pi=0 so nominal=real
