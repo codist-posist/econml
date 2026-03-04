@@ -63,11 +63,10 @@ class PolicyNetwork(nn.Module):
         if mode != "author_variance_scaling":
             return
         linear_layers = [m for m in self.modules() if isinstance(m, nn.Linear)]
-        # Author Keras model uses fixed per-layer seeds 1/2/5.
-        # To keep cfg_seed effective while preserving this layer-wise pattern,
-        # we offset these seeds by cfg seed when provided.
-        base = 0 if seed is None else int(seed)
-        layer_seeds = [base + 1, base + 2, base + 5]
+        # Strict author parity: fixed per-layer seeds 1/2/5.
+        # Keep the optional arg for API compatibility; it is intentionally not used.
+        _ = seed
+        layer_seeds = [1, 2, 5]
         for idx, m in enumerate(linear_layers):
             if not isinstance(m, nn.Linear):
                 continue
