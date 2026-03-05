@@ -6,7 +6,7 @@ from typing import Dict, Optional
 import torch
 
 from .config import ModelParams, PolicyName
-from .model_common import unpack_state, shock_laws_of_motion
+from .model_common import unpack_state, transition_probs_to_next_regimes
 from .transforms import decode_outputs
 
 
@@ -100,7 +100,8 @@ def switching_policy_sss_by_regime_from_policy(
     This matches the paper's Table-2 'SSS by regime' definition:
       - innovations set to zero
       - continuous shocks fixed at their drift-corrected stationary means
-      - regime switching enters through expectations/backward weights via params.P
+      - regime switching enters through expectations/backward weights via effective transition rows
+        (constant params.P or state-dependent transition_probs_to_next_regimes)
 
     """
     if floors is None:
@@ -120,38 +121,39 @@ def switching_policy_sss_by_regime_from_policy(
         net_dt = params.dtype
 
     dev, dt = params.device, net_dt
-    P = (P_override.to(device=dev, dtype=dt) if P_override is not None else params.P.to(device=dev, dtype=dt))
+    P_base = (P_override.to(device=dev, dtype=dt) if P_override is not None else params.P.to(device=dev, dtype=dt))
     if (policy in ("mod_taylor", "mod_taylor_zlb")) and (rbar_by_regime is not None):
         rbar_by_regime = rbar_by_regime.to(device=dev, dtype=dt)
-    pi_stat = _stationary_dist_2state(P)
 
     # Exogenous states fixed at unconditional means (drift-corrected AR(1))
     logA0 = _uncond_mean_log_ar1(float(params.rho_A), float(params.sigma_A))
     logg0 = _uncond_mean_log_ar1(float(params.rho_g), float(params.sigma_g))
-    xi0 = _uncond_mean_log_ar1(float(params.rho_tau), float(params.sigma_tau))
+    sigma_by_regime = tuple(float(v) for v in params.sigma_tau_by_regime)
+    xi0 = _uncond_mean_log_ar1(float(params.rho_tau), float(sigma_by_regime[0]))
+    xi1 = _uncond_mean_log_ar1(float(params.rho_tau), float(sigma_by_regime[1]))
 
     if policy == "commitment_zlb":
         x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0, 0.0, 0.0, 1.0, 0.002461, -0.000012], device=dev, dtype=dt).view(1, -1)
-        x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0, 0.0, 0.0, 1.0, 0.002461, -0.000012], device=dev, dtype=dt).view(1, -1)
+        x1 = torch.tensor([1.0, logA0, logg0, xi1, 1.0, 0.0, 0.0, 1.0, 0.002461, -0.000012], device=dev, dtype=dt).view(1, -1)
     elif policy == "taylor_para":
         i_nom_ss = (1.0 + float(params.pi_bar)) / float(params.beta) - 1.0
         p21_mid = 0.5 * (float(getattr(params, "p21_l", params.p21)) + float(getattr(params, "p21_u", params.p21)))
         x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0, i_nom_ss, p21_mid], device=dev, dtype=dt).view(1, -1)
-        x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0, i_nom_ss, p21_mid], device=dev, dtype=dt).view(1, -1)
+        x1 = torch.tensor([1.0, logA0, logg0, xi1, 1.0, i_nom_ss, p21_mid], device=dev, dtype=dt).view(1, -1)
     elif policy == "commitment":
         d_in = _infer_policy_input_dim(net) or 7
         if d_in >= 8:
             # State: (Delta_prev, logA, logg, xi, s, vartheta_prev, varrho_prev, c_prev)
             x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0, 0.0, 0.0, 1.0], device=dev, dtype=dt).view(1, -1)
-            x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0, 0.0, 0.0, 1.0], device=dev, dtype=dt).view(1, -1)
+            x1 = torch.tensor([1.0, logA0, logg0, xi1, 1.0, 0.0, 0.0, 1.0], device=dev, dtype=dt).view(1, -1)
         else:
             # Backward-compatible state: (Delta_prev, logA, logg, xi, s, vartheta_prev, varrho_prev)
             x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0, 0.0, 0.0], device=dev, dtype=dt).view(1, -1)
-            x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0, 0.0, 0.0], device=dev, dtype=dt).view(1, -1)
+            x1 = torch.tensor([1.0, logA0, logg0, xi1, 1.0, 0.0, 0.0], device=dev, dtype=dt).view(1, -1)
     else:
         # State: (Delta_prev, logA, logg, xi, s)
         x0 = torch.tensor([1.0, logA0, logg0, xi0, 0.0], device=dev, dtype=dt).view(1, -1)
-        x1 = torch.tensor([1.0, logA0, logg0, xi0, 1.0], device=dev, dtype=dt).view(1, -1)
+        x1 = torch.tensor([1.0, logA0, logg0, xi1, 1.0], device=dev, dtype=dt).view(1, -1)
 
     for _ in range(int(max_iter)):
         st0 = unpack_state(x0, policy)
@@ -177,8 +179,22 @@ def switching_policy_sss_by_regime_from_policy(
         Delta1 = out1["Delta"].view(())
 
         # backward weights for previous regime given current regime
-        wprev0 = _backward_weights_2state(P, pi_stat, 0)
-        wprev1 = _backward_weights_2state(P, pi_stat, 1)
+        if P_override is None:
+            p21_state = None
+            if policy == "taylor_para" and int(x0.shape[-1]) >= 7 and int(x1.shape[-1]) >= 7:
+                p21_state = torch.tensor(
+                    [float(x0[0, 6].item()), float(x1[0, 6].item())],
+                    device=dev,
+                    dtype=dt,
+                )
+            s_rows = torch.tensor([0, 1], device=dev, dtype=torch.long)
+            xi_rows = torch.tensor([float(x0[0, 3].item()), float(x1[0, 3].item())], device=dev, dtype=dt)
+            P_eff = transition_probs_to_next_regimes(params, s_rows, xi=xi_rows, p21_state=p21_state)
+        else:
+            P_eff = P_base
+        pi_stat = _stationary_dist_2state(P_eff)
+        wprev0 = _backward_weights_2state(P_eff, pi_stat, 0)
+        wprev1 = _backward_weights_2state(P_eff, pi_stat, 1)
 
         DeltaPrev0 = (wprev0[0] * Delta0 + wprev0[1] * Delta1).view(())
         DeltaPrev1 = (wprev1[0] * Delta0 + wprev1[1] * Delta1).view(())
@@ -225,7 +241,7 @@ def switching_policy_sss_by_regime_from_policy(
                     float(DeltaPrev1.item()),
                     logA0,
                     logg0,
-                    xi0,
+                    xi1,
                     1.0,
                     float(varthetaPrev1.item()),
                     float(varrhoPrev1.item()),
@@ -254,15 +270,15 @@ def switching_policy_sss_by_regime_from_policy(
                     device=dev, dtype=dt
                 ).view(1, -1)
                 x1_next = torch.tensor(
-                    [float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0, float(varthetaPrev1.item()), float(varrhoPrev1.item()), float(cPrev1.item())],
+                    [float(DeltaPrev1.item()), logA0, logg0, xi1, 1.0, float(varthetaPrev1.item()), float(varrhoPrev1.item()), float(cPrev1.item())],
                     device=dev, dtype=dt
                 ).view(1, -1)
             else:
                 x0_next = torch.tensor([float(DeltaPrev0.item()), logA0, logg0, xi0, 0.0, float(varthetaPrev0.item()), float(varrhoPrev0.item())], device=dev, dtype=dt).view(1, -1)
-                x1_next = torch.tensor([float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0, float(varthetaPrev1.item()), float(varrhoPrev1.item())], device=dev, dtype=dt).view(1, -1)
+                x1_next = torch.tensor([float(DeltaPrev1.item()), logA0, logg0, xi1, 1.0, float(varthetaPrev1.item()), float(varrhoPrev1.item())], device=dev, dtype=dt).view(1, -1)
         else:
             x0_next = torch.tensor([float(DeltaPrev0.item()), logA0, logg0, xi0, 0.0], device=dev, dtype=dt).view(1, -1)
-            x1_next = torch.tensor([float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0], device=dev, dtype=dt).view(1, -1)
+            x1_next = torch.tensor([float(DeltaPrev1.item()), logA0, logg0, xi1, 1.0], device=dev, dtype=dt).view(1, -1)
             if policy == "taylor_para":
                 i0 = out0["i_nom"].view(())
                 i1 = out1["i_nom"].view(())
@@ -276,7 +292,7 @@ def switching_policy_sss_by_regime_from_policy(
                     dtype=dt,
                 ).view(1, -1)
                 x1_next = torch.tensor(
-                    [float(DeltaPrev1.item()), logA0, logg0, xi0, 1.0, float(iPrev1.item()), p21_1],
+                    [float(DeltaPrev1.item()), logA0, logg0, xi1, 1.0, float(iPrev1.item()), p21_1],
                     device=dev,
                     dtype=dt,
                 ).view(1, -1)

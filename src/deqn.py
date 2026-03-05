@@ -16,7 +16,13 @@ from tqdm.auto import trange
 
 from .config import ModelParams, TrainConfig, set_seeds, PolicyName
 from .quadrature import gauss_hermite
-from .model_common import unpack_state, shock_laws_of_motion, identities
+from .model_common import (
+    unpack_state,
+    shock_laws_of_motion,
+    identities,
+    transition_probs_to_next_regimes,
+    regime_sigma_tau,
+)
 from .transforms import decode_outputs
 from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
 from .residuals_a1 import residuals_a1
@@ -162,24 +168,16 @@ def _gh_grid_3d(params: ModelParams, gh_n: int) -> Tuple[torch.Tensor, torch.Ten
     return eps_grid, w_grid
 
 
-def _transition_probs_to_next(params: ModelParams, st) -> Tuple[torch.Tensor, torch.Tensor]:
+def _transition_probs_to_next(params: ModelParams, st) -> torch.Tensor:
     """
-    Return transition probabilities (to regime 0, to regime 1) as vectors of shape (B,).
+    Return transition probabilities to next regimes as tensor (B, R).
     """
-    p0 = params.P[st.s, 0]
-    # Author dsge_taylor_para keeps p21 as a state component (path-specific bad->normal prob).
-    p21_state = getattr(st, "p21", None)
-    if p21_state is not None:
-        p21_clamped = torch.clamp(
-            p21_state.to(device=p0.device, dtype=p0.dtype),
-            min=1e-8,
-            max=1.0 - 1e-8,
-        )
-        p0_bad = p21_clamped
-        p0_good = torch.full_like(p0_bad, 1.0 - float(params.p12))
-        p0 = torch.where(st.s == 0, p0_good, p0_bad)
-    p1 = 1.0 - p0
-    return p0, p1
+    return transition_probs_to_next_regimes(
+        params,
+        st.s,
+        xi=st.xi,
+        p21_state=getattr(st, "p21", None),
+    )
 
 
 def expectation_operator_appendixB(
@@ -200,31 +198,25 @@ def expectation_operator_appendixB(
     B = st.Delta_prev.shape[0]
     Q = eps_grid.shape[0]
 
-    # shocks: (B,Q,2)
-    epsA = eps_grid[:, 0].view(1, Q, 1).expand(B, Q, 2)
-    epsg = eps_grid[:, 1].view(1, Q, 1).expand(B, Q, 2)
-    epst = eps_grid[:, 2].view(1, Q, 1).expand(B, Q, 2)
+    R = int(params.P.shape[1])
+    # shocks: (B,Q,R)
+    epsA = eps_grid[:, 0].view(1, Q, 1).expand(B, Q, R)
+    epsg = eps_grid[:, 1].view(1, Q, 1).expand(B, Q, R)
+    epst = eps_grid[:, 2].view(1, Q, 1).expand(B, Q, R)
 
-    # next regime values: (B,Q,2) with r=0 => 0, r=1 => 1
-    s_next = torch.stack(
-        [
-            torch.zeros(B, Q, device=dev, dtype=torch.long),
-            torch.ones(B, Q, device=dev, dtype=torch.long),
-        ],
-        dim=-1,
-    )
+    # next regime values: (B,Q,R) with last axis enumerating regime ids
+    s_next = torch.arange(R, device=dev, dtype=torch.long).view(1, 1, R).expand(B, Q, R)
 
-    val = f(epsA, epsg, epst, s_next)  # (B,Q,2) or (B,Q,2,K)
+    val = f(epsA, epsg, epst, s_next)  # (B,Q,R) or (B,Q,R,K)
 
     wq = w_grid.view(1, Q, 1)  # (1,Q,1)
-    p0, p1 = _transition_probs_to_next(params, st)
-    pi = torch.stack([p0, p1], dim=-1).view(B, 1, 2)  # (B,1,2)
+    pi = _transition_probs_to_next(params, st).view(B, 1, R)  # (B,1,R)
 
     if val.ndim == 3:
         return (val * wq * pi).sum(dim=1).sum(dim=-1)  # (B,)
     if val.ndim == 4:
         wq4 = w_grid.view(1, Q, 1, 1)
-        pi4 = torch.stack([p0, p1], dim=-1).view(B, 1, 2, 1)
+        pi4 = pi.view(B, 1, R, 1)
         return (val * wq4 * pi4).sum(dim=1).sum(dim=1)  # (B,K)
 
     raise ValueError(f"Unexpected f output ndim={val.ndim}; expected 3 or 4")
@@ -415,7 +407,7 @@ class Trainer:
         dev, dt = self.params.device, self.params.dtype
         rho_A, sig_A = float(self.params.rho_A), float(self.params.sigma_A)
         rho_g, sig_g = float(self.params.rho_g), float(self.params.sigma_g)
-        rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
+        rho_xi = float(self.params.rho_tau)
 
         # Public Keras Hooks.py semantics:
         # - exogenous states centered at zero with author scaling
@@ -423,15 +415,20 @@ class Trainer:
         # - small noise around disp_old_x = 1
         sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
         sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
-        sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
         logA = sd_logA * torch.randn(B, device=dev, dtype=dt)
         logg = sd_logg * torch.randn(B, device=dev, dtype=dt)
-        xi = sd_xi * torch.randn(B, device=dev, dtype=dt)
         s = torch.where(
             torch.rand(B, device=dev, dtype=dt) < 0.5,
             torch.zeros(B, device=dev, dtype=torch.long),
             torch.ones(B, device=dev, dtype=torch.long),
         )
+        sig_xi_reg = regime_sigma_tau(self.params, s).to(device=dev, dtype=dt)
+        sd_xi_reg = torch.where(
+            torch.abs(torch.tensor(rho_xi, device=dev, dtype=dt)) < 1.0,
+            (sig_xi_reg ** 2) / max(1e-12, (1.0 - rho_xi ** 2)),
+            sig_xi_reg ** 2,
+        )
+        xi = sd_xi_reg * torch.randn(B, device=dev, dtype=dt)
         if self.policy == "taylor_para":
             Delta_prev = torch.ones(B, device=dev, dtype=dt) + 2e-3 * torch.randn(B, device=dev, dtype=dt)
             i_nom_ss = (1.0 + float(self.params.pi_bar)) / float(self.params.beta) - 1.0
@@ -494,23 +491,28 @@ class Trainer:
 
         rho_A, sig_A = float(self.params.rho_A), float(self.params.sigma_A)
         rho_g, sig_g = float(self.params.rho_g), float(self.params.sigma_g)
-        rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
+        rho_xi = float(self.params.rho_tau)
         sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
         sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
-        sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
 
         def _reset_exogenous_if_needed() -> None:
             if int(episode_idx) >= 2:
                 return
             x_new[:, 1] = sd_logA * torch.randn(B, device=dev, dtype=dt)
             x_new[:, 2] = sd_logg * torch.randn(B, device=dev, dtype=dt)
-            x_new[:, 3] = sd_xi * torch.randn(B, device=dev, dtype=dt)
             s = torch.where(
                 torch.rand(B, device=dev, dtype=dt) < 0.5,
                 torch.zeros(B, device=dev, dtype=torch.long),
                 torch.ones(B, device=dev, dtype=torch.long),
             )
             x_new[:, 4] = s.to(dt)
+            sig_xi_reg = regime_sigma_tau(self.params, s).to(device=dev, dtype=dt)
+            sd_xi_reg = torch.where(
+                torch.abs(torch.tensor(rho_xi, device=dev, dtype=dt)) < 1.0,
+                (sig_xi_reg ** 2) / max(1e-12, (1.0 - rho_xi ** 2)),
+                sig_xi_reg ** 2,
+            )
+            x_new[:, 3] = sd_xi_reg * torch.randn(B, device=dev, dtype=dt)
 
         if self.policy == "taylor_para":
             # Always refresh p21_x in author hooks.
@@ -1107,8 +1109,10 @@ class Trainer:
                     epst[-nss_eff:] = 0.0
 
         u = torch.rand(B, device=dev, dtype=dt)
-        p0, _ = _transition_probs_to_next(self.params, st)
-        s_next = torch.where(u < p0, torch.zeros_like(st.s), torch.ones_like(st.s))
+        probs = _transition_probs_to_next(self.params, st)  # (B,R)
+        cdf = torch.cumsum(probs, dim=-1)
+        cdf[:, -1] = 1.0
+        s_next = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
 
         logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)
 
@@ -2091,17 +2095,7 @@ class Trainer:
 
             # Optional dtype switch (compute-only)
             if bool(getattr(phase, "use_float64", False)) and self.params.dtype != torch.float64:
-                self.params = ModelParams(
-                    beta=self.params.beta, gamma=self.params.gamma, omega=self.params.omega,
-                    theta=self.params.theta, eps=self.params.eps, tau_bar=self.params.tau_bar,
-                    rho_A=self.params.rho_A, rho_tau=self.params.rho_tau, rho_g=self.params.rho_g,
-                    sigma_A=self.params.sigma_A, sigma_tau=self.params.sigma_tau, sigma_g=self.params.sigma_g,
-                    g_bar=self.params.g_bar, eta_bar=self.params.eta_bar,
-                    bad_state=self.params.bad_state,
-                    p12=self.params.p12, p21=self.params.p21, p21_l=self.params.p21_l, p21_u=self.params.p21_u,
-                    pi_bar=self.params.pi_bar, psi=self.params.psi, rho_i=self.params.rho_i,
-                    device=self.params.device, dtype=torch.float64
-                ).to_torch()
+                self.params = replace(self.params, dtype=torch.float64).to_torch()
                 self.net = self.net.to(dev).double()
                 x = x.to(device=dev, dtype=torch.float64)
                 self._set_gh(int(phase.gh_n_train))
@@ -2271,17 +2265,7 @@ def simulate_paths(
     net_dtype = next(net.parameters()).dtype
     params_sim = params
     if net_dtype != params.dtype:
-        params_sim = ModelParams(
-            beta=params.beta, gamma=params.gamma, omega=params.omega,
-            theta=params.theta, eps=params.eps, tau_bar=params.tau_bar,
-            rho_A=params.rho_A, rho_tau=params.rho_tau, rho_g=params.rho_g,
-            sigma_A=params.sigma_A, sigma_tau=params.sigma_tau, sigma_g=params.sigma_g,
-            g_bar=params.g_bar, eta_bar=params.eta_bar,
-            bad_state=params.bad_state,
-            p12=params.p12, p21=params.p21, p21_l=params.p21_l, p21_u=params.p21_u,
-            pi_bar=params.pi_bar, psi=params.psi, rho_i=params.rho_i,
-            device=params.device, dtype=net_dtype,
-        ).to_torch()
+        params_sim = replace(params, dtype=net_dtype).to_torch()
         if rbar_by_regime is not None:
             rbar_by_regime = rbar_by_regime.to(device=params_sim.device, dtype=params_sim.dtype)
 

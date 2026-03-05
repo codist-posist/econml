@@ -15,6 +15,7 @@ from .sss_from_policy import switching_policy_sss_by_regime_from_policy, frozen_
 from .deqn import PolicyNetwork, implied_nominal_rate_from_euler
 from .deqn import Trainer
 from .config import TrainConfig
+from .model_common import regime_eta, regime_sigma_tau, transition_probs_to_next_regimes
 from .metrics import output_gap_from_consumption, efficient_c_hat_series_from_A_g
 from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
 from .experiments import DeterministicPathSpec, simulate_deterministic_path
@@ -96,8 +97,7 @@ def _solve_flex_c_batch(
     A = torch.exp(logA)
     g = params.g_bar * torch.exp(logg)
     # (1+tau_t) = 1 - tau_bar + xi_t + eta_t
-    bad = (s.to(torch.long) == int(params.bad_state))
-    eta = torch.where(bad, torch.tensor(params.eta_bar, device=dev, dtype=dt), torch.zeros_like(xi))
+    eta = regime_eta(params, s.to(torch.long)).to(device=dev, dtype=dt)
     one_plus_tau = (1.0 - params.tau_bar) + xi + eta
     M = params.M
     w = A / (M * one_plus_tau)
@@ -153,14 +153,15 @@ def _simulate_flex_prices_for_table2(
 
     logA = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_A)), device=dev, dtype=dt)
     logg = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_g)), device=dev, dtype=dt)
-    xi = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_tau)), device=dev, dtype=dt)
     s = torch.zeros((B,), device=dev, dtype=torch.long)  # start normal
+    sigma_xi_init = regime_sigma_tau(params, s).to(device=dev, dtype=dt)
+    xi = -0.5 * sigma_xi_init.pow(2)
     h_guess = h0.expand(B)
 
     # drift corrections (same as in model_common)
     driftA = _ar1_lognorm_drift(float(params.rho_A), float(params.sigma_A))
     driftg = _ar1_lognorm_drift(float(params.rho_g), float(params.sigma_g))
-    drift_xi = _ar1_lognorm_drift(float(params.rho_tau), float(params.sigma_tau))
+    rho_xi = float(params.rho_tau)
 
     c_list = []
     s_list = []
@@ -178,45 +179,28 @@ def _simulate_flex_prices_for_table2(
         # Build next exogenous states for each node (broadcast B x N)
         logA_n = driftA + params.rho_A * logA[:, None] + params.sigma_A * epsA_nodes[None, :]
         logg_n = driftg + params.rho_g * logg[:, None] + params.sigma_g * epsg_nodes[None, :]
-        xi_n = drift_xi + params.rho_tau * xi[:, None] + params.sigma_tau * epst_nodes[None, :]
-
-        # Two possible next regimes
-        P = params.P  # shape (2,2) with orientation P[s_current, s_next] (row-stochastic)
-        p0 = P[s.to(torch.long), 0]  # (B,)
-        p1 = P[s.to(torch.long), 1]  # (B,)
-
-        # compute lambda_next for s_next=0 and s_next=1
-        s0 = torch.zeros((B, N), device=dev, dtype=dt)
-        s1 = torch.ones((B, N), device=dev, dtype=dt)
+        probs = transition_probs_to_next_regimes(params, s.to(torch.long), xi=xi)  # (B,R)
+        R = int(probs.shape[1])
+        s_next_all = torch.arange(R, device=dev, dtype=torch.long).view(1, R).expand(B, R)
+        sigma_xi_next = regime_sigma_tau(params, s_next_all.reshape(-1)).to(device=dev, dtype=dt).view(B, R)
+        drift_xi_next = (1.0 - rho_xi) * (-(sigma_xi_next.pow(2)) / 2.0)
+        xi_n = drift_xi_next[:, None, :] + rho_xi * xi[:, None, None] + sigma_xi_next[:, None, :] * epst_nodes[None, :, None]
 
         # initial h guess for next period: keep last h_guess
         h_init_n = h_guess[:, None].expand(B, N).reshape(-1)
-        c0 = _solve_flex_c_batch(
-            params,
-            logA=logA_n.reshape(-1),
-            logg=logg_n.reshape(-1),
-            xi=xi_n.reshape(-1),
-            s=s0.reshape(-1),
-            h_init=h_init_n,
-        ).reshape(B, N)
-        c1 = _solve_flex_c_batch(
-            params,
-            logA=logA_n.reshape(-1),
-            logg=logg_n.reshape(-1),
-            xi=xi_n.reshape(-1),
-            s=s1.reshape(-1),
-            h_init=h_init_n,
-        ).reshape(B, N)
-        lam0 = c0.pow(-params.gamma)
-        lam1 = c1.pow(-params.gamma)
-
-        # E_t[lambda_{t+1}] = sum_{s'} P(s'|s_t) * E[lambda_{t+1}(s') | s']
-        # NOTE: (lam0*w_nodes).sum(dim=1) is (B,), so the transition probabilities must also be (B,)
-        # to avoid unintended broadcasting to (B,B).
-        Et_lam_next = (
-            p0 * (lam0 * w_nodes[None, :]).sum(dim=1)
-            + p1 * (lam1 * w_nodes[None, :]).sum(dim=1)
-        )
+        Et_lam_next = torch.zeros((B,), device=dev, dtype=dt)
+        for sp in range(R):
+            s_sp = torch.full((B, N), int(sp), device=dev, dtype=torch.long)
+            c_sp = _solve_flex_c_batch(
+                params,
+                logA=logA_n.reshape(-1),
+                logg=logg_n.reshape(-1),
+                xi=xi_n[:, :, sp].reshape(-1),
+                s=s_sp.reshape(-1),
+                h_init=h_init_n,
+            ).reshape(B, N)
+            lam_sp = c_sp.pow(-params.gamma)
+            Et_lam_next = Et_lam_next + probs[:, sp] * (lam_sp * w_nodes[None, :]).sum(dim=1)
 
         i = (1.0 / params.beta) * (lam / torch.clamp(Et_lam_next, min=1e-12)) - 1.0
 
@@ -235,12 +219,15 @@ def _simulate_flex_prices_for_table2(
         epst = torch.randn((B,), device=dev, dtype=dt)
         logA = driftA + params.rho_A * logA + params.sigma_A * epsA
         logg = driftg + params.rho_g * logg + params.sigma_g * epsg
-        xi = drift_xi + params.rho_tau * xi + params.sigma_tau * epst
-
-        # Markov draw for next regime
+        probs = transition_probs_to_next_regimes(params, s.to(torch.long), xi=xi)
         u = torch.rand((B,), device=dev, dtype=dt)
-        pstay0 = P[s.to(torch.long), 0]
-        s = torch.where(u < pstay0, torch.zeros_like(s), torch.ones_like(s))
+        cdf = torch.cumsum(probs, dim=1)
+        cdf[:, -1] = 1.0
+        s = torch.sum(u[:, None] > cdf, dim=1).to(torch.long)
+
+        sigma_xi_realized = regime_sigma_tau(params, s).to(device=dev, dtype=dt)
+        drift_xi_realized = (1.0 - rho_xi) * (-(sigma_xi_realized.pow(2)) / 2.0)
+        xi = drift_xi_realized + rho_xi * xi + sigma_xi_realized * epst
 
         # update h_guess roughly with current h implied
         # (approx: h = (c+g)/A)

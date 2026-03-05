@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal, Tuple
+import math
 import os
 import torch
 
@@ -50,6 +51,8 @@ class ModelParams:
     g_bar: float = 0.20
     eta_bar: float = 1.0 / 7.0  # = 1/eps
     bad_state: int = 1  # s=0 normal, s=1 bad
+    eta0: float = 0.0
+    eta1: float | None = None
 
     # Markov transition probabilities (normal->bad, bad->normal)
     p12: float = 1.0 / 48.0
@@ -57,6 +60,15 @@ class ModelParams:
     # Author taylor_para uses per-path p21 sampled in [p21_l, p21_u].
     p21_l: float = 1.0 / 60.0
     p21_u: float = 1.0
+    state_dependent_transitions: bool = False
+    p21_xi_slope: float = 0.0
+    p12_xi_slope: float = 0.0
+    transition_xi_ref: float | None = None
+    transition_prob_floor: float = 1e-8
+
+    # Regime-dependent uncertainty extension:
+    # sigma_tau(s=1) = sigma_tau * sigma_tau_bad_mult
+    sigma_tau_bad_mult: float = 1.0
 
     # Taylor-rule objects (paper uses pi_bar = 0)
     pi_bar: float = 0.0
@@ -117,16 +129,52 @@ class ModelParams:
         return self.eps / (self.eps - 1.0)
 
     @property
+    def n_regimes(self) -> int:
+        return 2
+
+    @property
+    def eta_by_regime(self) -> Tuple[float, float]:
+        eta1 = float(self.eta_bar) if self.eta1 is None else float(self.eta1)
+        return (float(self.eta0), eta1)
+
+    @property
+    def sigma_tau_by_regime(self) -> Tuple[float, float]:
+        sig0 = max(0.0, float(self.sigma_tau))
+        sig1 = sig0 * max(0.0, float(self.sigma_tau_bad_mult))
+        return (sig0, sig1)
+
+    @property
+    def sigma_tau_by_regime_tensor(self) -> torch.Tensor:
+        return torch.tensor(self.sigma_tau_by_regime, device=self.device, dtype=self.dtype)
+
+    def transition_xi_reference(self) -> float:
+        if self.transition_xi_ref is not None and math.isfinite(float(self.transition_xi_ref)):
+            return float(self.transition_xi_ref)
+        return float(-(float(self.sigma_tau) ** 2) / 2.0)
+
+    @property
     def P(self) -> torch.Tensor:
         # IMPORTANT: P[s_current, s_next] (row-stochastic, as in paper Appendix A.1)
-        p11 = 1.0 - self.p12
-        p22 = 1.0 - self.p21
-        return torch.tensor(
-            [[p11, self.p12],
-             [self.p21, p22]],
+        p12 = float(self.p12)
+        p21 = float(self.p21)
+        if not (0.0 <= p12 <= 1.0 and 0.0 <= p21 <= 1.0):
+            raise ValueError(f"Invalid Markov probabilities: p12={p12}, p21={p21}")
+        p11 = 1.0 - p12
+        p22 = 1.0 - p21
+        if not (0.0 <= p11 <= 1.0 and 0.0 <= p22 <= 1.0):
+            raise ValueError(f"Invalid Markov rows: p11={p11}, p22={p22}")
+        P = torch.tensor(
+            [
+                [p11, p12],
+                [p21, p22],
+            ],
             device=self.device,
             dtype=self.dtype,
         )
+        rows = P.sum(dim=1)
+        if not torch.allclose(rows, torch.ones_like(rows), atol=1e-7, rtol=0.0):
+            raise ValueError(f"Transition matrix rows must sum to 1, got {rows.tolist()}")
+        return P
 
 
 @dataclass(frozen=True)

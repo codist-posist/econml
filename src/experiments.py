@@ -10,7 +10,7 @@ Design principles:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional, Sequence, Tuple, Callable
 
 import numpy as np
@@ -58,8 +58,10 @@ def _deterministic_step(
     if s_next is None:
         # default: follow Markov draw (stochastic). For deterministic IRFs, pass s_next explicitly.
         u = torch.rand(B, device=dev, dtype=dt)
-        p0, _ = _transition_probs_to_next(params, st)
-        s_next = torch.where(u < p0, torch.zeros_like(st.s), torch.ones_like(st.s))
+        probs = _transition_probs_to_next(params, st)  # (B,R)
+        cdf = torch.cumsum(probs, dim=-1)
+        cdf[:, -1] = 1.0
+        s_next = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
 
     logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params, st, epsA_t, epsg_t, epst_t, s_next)
 
@@ -181,15 +183,7 @@ def calibrate_xi_jump_to_match_pi_impact(
     p = params
     if rho_tau_override is not None:
         # create shallow copy of params with different rho_tau
-        p = ModelParams(
-            beta=p.beta, gamma=p.gamma, omega=p.omega, theta=p.theta, eps=p.eps, tau_bar=p.tau_bar,
-            rho_A=p.rho_A, rho_tau=float(rho_tau_override), rho_g=p.rho_g,
-            sigma_A=p.sigma_A, sigma_tau=p.sigma_tau, sigma_g=p.sigma_g,
-            g_bar=p.g_bar, eta_bar=p.eta_bar, bad_state=p.bad_state,
-            p12=p.p12, p21=p.p21, p21_l=p.p21_l, p21_u=p.p21_u,
-            pi_bar=p.pi_bar, psi=p.psi, rho_i=p.rho_i,
-            device=p.device, dtype=p.dtype
-        ).to_torch()
+        p = replace(p, rho_tau=float(rho_tau_override)).to_torch()
 
     # indices: x = [Delta_prev, logA, loggtilde, xi, s] (or + multipliers for commitment)
     xi_idx = 3
