@@ -47,16 +47,24 @@ class ModelParams:
     sigma_tau: float = 0.0014
     sigma_g: float = 0.0052
 
-    # Levels / regimes (2-regime baseline: normal/bad)
+    # Levels / regimes (3-regime baseline: normal/bad/severe)
     g_bar: float = 0.20
     eta_bar: float = 1.0 / 7.0  # = 1/eps
     eta0: float = 0.0
     eta1: float | None = None
+    eta2: float | None = None
     bad_state: int = 1
+    severe_state: int = 2
 
-    # Markov transition probabilities (normal->bad, bad->normal)
+    # Markov transition probabilities:
+    # - p12: normal(0) -> bad(1)
+    # - p21: bad(1) -> normal(0)
+    # - p23: bad(1) -> severe(2)
+    # - p32: severe(2) -> bad(1)
     p12: float = 1.0 / 48.0
     p21: float = 1.0 / 24.0
+    p23: float = 1.0 / 96.0
+    p32: float = 1.0 / 48.0
     # Author taylor_para uses per-path p21 sampled in [p21_l, p21_u].
     p21_l: float = 1.0 / 60.0
     p21_u: float = 1.0
@@ -73,7 +81,9 @@ class ModelParams:
 
     # Regime-dependent uncertainty extension.
     # sigma_tau(s=1) = sigma_tau * sigma_tau_bad_mult
+    # sigma_tau(s=2) = sigma_tau * sigma_tau_severe_mult
     sigma_tau_bad_mult: float = 1.0
+    sigma_tau_severe_mult: float = 1.0
 
     # Taylor-rule objects (paper uses pi_bar = 0)
     pi_bar: float = 0.0
@@ -135,18 +145,20 @@ class ModelParams:
 
     @property
     def n_regimes(self) -> int:
-        return 2
+        return len(self.eta_by_regime)
 
     @property
-    def eta_by_regime(self) -> Tuple[float, float]:
+    def eta_by_regime(self) -> Tuple[float, float, float]:
         eta1 = float(self.eta_bar) if self.eta1 is None else float(self.eta1)
-        return (float(self.eta0), eta1)
+        eta2 = float(2.0 * eta1) if self.eta2 is None else float(self.eta2)
+        return (float(self.eta0), eta1, eta2)
 
     @property
-    def sigma_tau_by_regime(self) -> Tuple[float, float]:
+    def sigma_tau_by_regime(self) -> Tuple[float, float, float]:
         sig0 = max(0.0, float(self.sigma_tau))
         sig1 = sig0 * max(0.0, float(self.sigma_tau_bad_mult))
-        return (sig0, sig1)
+        sig2 = sig0 * max(0.0, float(self.sigma_tau_severe_mult))
+        return (sig0, sig1, sig2)
 
     @property
     def sigma_tau_by_regime_tensor(self) -> torch.Tensor:
@@ -157,16 +169,20 @@ class ModelParams:
         # IMPORTANT: P[s_current, s_next] (row-stochastic, as in paper Appendix A.1)
         p12 = float(self.p12)
         p21 = float(self.p21)
-        if not (0.0 <= p12 <= 1.0 and 0.0 <= p21 <= 1.0):
-            raise ValueError(f"Invalid Markov probabilities: p12={p12}, p21={p21}")
+        p23 = float(self.p23)
+        p32 = float(self.p32)
+        if not (0.0 <= p12 <= 1.0 and 0.0 <= p21 <= 1.0 and 0.0 <= p23 <= 1.0 and 0.0 <= p32 <= 1.0):
+            raise ValueError(f"Invalid Markov probabilities: p12={p12}, p21={p21}, p23={p23}, p32={p32}")
         p11 = 1.0 - p12
-        p22 = 1.0 - p21
-        if not (0.0 <= p11 <= 1.0 and 0.0 <= p22 <= 1.0):
-            raise ValueError(f"Invalid Markov rows: p11={p11}, p22={p22}")
+        p22 = 1.0 - p21 - p23
+        p33 = 1.0 - p32
+        if not (0.0 <= p11 <= 1.0 and 0.0 <= p22 <= 1.0 and 0.0 <= p33 <= 1.0):
+            raise ValueError(f"Invalid Markov rows: p11={p11}, p22={p22}, p33={p33}")
         P = torch.tensor(
             [
-                [p11, p12],
-                [p21, p22],
+                [p11, p12, 0.0],
+                [p21, p22, p23],
+                [0.0, p32, p33],
             ],
             device=self.device,
             dtype=self.dtype,

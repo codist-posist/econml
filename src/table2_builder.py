@@ -335,7 +335,7 @@ def _deterministic_no_innovation_policy_moments(
     """
     Deterministic/no-innovation moments by regime:
       - epsA=epsg=epst=0 each period,
-      - regime fixed to 0 or 1.
+      - regime fixed to the requested regime id.
     """
     # Keep state dimensionality compatible with commitment legacy/new state size.
     commit_d_in = None

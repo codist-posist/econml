@@ -417,7 +417,14 @@ def trajectory_residuals_check(
 
     keys = trainer.res_keys
     m = residual_metrics(resid, keys, tol=float(tol))
-    m_reg = residual_metrics_by_regime(x, resid, keys, tol=float(tol), policy=policy)
+    m_reg = residual_metrics_by_regime(
+        x,
+        resid,
+        keys,
+        tol=float(tol),
+        policy=policy,
+        n_regimes=int(params.n_regimes),
+    )
     m.update(m_reg)
 
     return TrajectoryResidualCheckResult(n_states_evaluated=int(x.shape[0]), tol=float(tol), metrics=m)

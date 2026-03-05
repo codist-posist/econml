@@ -66,6 +66,17 @@ def _regime_name(reg: int) -> str:
     return f"regime_{r}"
 
 
+def _regime_tag(reg: int) -> str:
+    r = int(reg)
+    if r == 0:
+        return "NT"
+    if r == 1:
+        return "SS"
+    if r == 2:
+        return "SEV"
+    return f"R{r}"
+
+
 def _hist_by_regime(
     ax,
     values: np.ndarray,
@@ -296,6 +307,23 @@ def _load_ir_label(path: str, label: str) -> Dict[str, np.ndarray]:
     return {k: np.asarray(v) for k, v in d.items()}
 
 
+def _load_transition_by_start(path: str, n_regimes: int) -> Dict[int, Dict[str, np.ndarray]]:
+    out: Dict[int, Dict[str, np.ndarray]] = {}
+    missing: list[str] = []
+    for r in range(max(1, int(n_regimes))):
+        tag = _regime_tag(r)
+        try:
+            out[int(r)] = _load_ir_label(path, tag)
+        except KeyError:
+            missing.append(tag)
+    if missing:
+        raise KeyError(
+            f"Missing baseline transition label(s) in {path}: {missing}. "
+            "Rebuild IR exports for all regimes."
+        )
+    return out
+
+
 def _vec(d: Dict[str, np.ndarray], k: str) -> np.ndarray:
     x = np.asarray(d[k], dtype=np.float64)
     if x.ndim == 2 and x.shape[1] >= 1:
@@ -440,7 +468,7 @@ def build_figures(
         use_selected=use_selected,
         enabled=ensure_ir,
         out_subdir="IRS_fig9_base",
-        params_override={"eta_bar": 0.0, "p12": 0.0, "p21": 1.0},
+        params_override={"eta_bar": 0.0, "p12": 0.0, "p21": 1.0, "p23": 0.0},
         force_rebuild=force_rebuild_ir,
         cons_mode=mode,
     )
@@ -453,7 +481,7 @@ def build_figures(
         use_selected=use_selected,
         enabled=ensure_ir,
         out_subdir="IRS_fig9_hi",
-        params_override={"eta_bar": 0.0, "p12": 0.0, "p21": 1.0, "rho_tau": 0.99},
+        params_override={"eta_bar": 0.0, "p12": 0.0, "p21": 1.0, "p23": 0.0, "rho_tau": 0.99},
         force_rebuild=force_rebuild_ir,
         cons_mode=mode,
     )
@@ -485,10 +513,22 @@ def build_figures(
     ir_d_npz = os.path.join(ir_d, "IR_definitions.npz")
     ir_c_npz = os.path.join(ir_c, "IR_definitions.npz")
     ir_cz_npz = os.path.join(ir_cz, "IR_definitions.npz")
-    tr_t = _load_ir_label(ir_t_npz, "NT")
-    tr_m = _load_ir_label(ir_m_npz, "NT")
-    tr_d = _load_ir_label(ir_d_npz, "NT")
-    tr_c = _load_ir_label(ir_c_npz, "NT")
+    tr_t_by_start = _load_transition_by_start(ir_t_npz, int(p_t.n_regimes))
+    tr_m_by_start = _load_transition_by_start(ir_m_npz, int(p_m.n_regimes))
+    tr_d_by_start = _load_transition_by_start(ir_d_npz, int(p_d.n_regimes))
+    tr_c_by_start = _load_transition_by_start(ir_c_npz, int(p_c.n_regimes))
+    common_tm = sorted(set(tr_t_by_start.keys()) & set(tr_m_by_start.keys()))
+    common_cd = sorted(set(tr_c_by_start.keys()) & set(tr_d_by_start.keys()))
+    if not common_tm:
+        raise KeyError("No shared baseline transition labels for Taylor vs Mod Taylor IR files.")
+    if not common_cd:
+        raise KeyError("No shared baseline transition labels for Commitment vs Discretion IR files.")
+    base_tm = 0 if 0 in common_tm else common_tm[0]
+    base_cd = 0 if 0 in common_cd else common_cd[0]
+    tr_t = tr_t_by_start[base_tm]
+    tr_m = tr_m_by_start[base_tm]
+    tr_d = tr_d_by_start[base_cd]
+    tr_c = tr_c_by_start[base_cd]
     tr_cz = _load_ir_label(ir_cz_npz, "NT")
     ir7_c = _load_ir_label(ir_c_npz, "1sigT_SS")
     ir7_m = _load_ir_label(ir_m_npz, "1sigT_SS")
@@ -548,6 +588,36 @@ def build_figures(
     plt.tight_layout()
     _savefig(fig_dir, "figure3")
     plt.close(fig)
+    for start_reg in common_tm:
+        pi_ta_s, x_ta_s, r_ta_s, D_ta_s = _transition_pack(tr_t_by_start[start_reg], pre=pre, n_post=n_post)
+        pi_ma_s, x_ma_s, r_ma_s, D_ma_s = _transition_pack(tr_m_by_start[start_reg], pre=pre, n_post=n_post)
+        t_s = np.arange(-pre, n_post)
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].plot(t_s, _ann(pi_ta_s), label="Taylor")
+        ax[0, 0].plot(t_s, _ann(pi_ma_s), "--", label="Modified Taylor")
+        ax[0, 0].axhline(0, color="k", lw=1)
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 1].plot(t_s, 100.0 * x_ta_s, label="Taylor")
+        ax[0, 1].plot(t_s, 100.0 * x_ma_s, "--", label="Modified Taylor")
+        ax[0, 1].axhline(0, color="k", lw=1)
+        ax[0, 1].set_title("(b) Output gap")
+        ax[1, 0].plot(t_s, _ann(r_ta_s), label="Taylor")
+        ax[1, 0].plot(t_s, _ann(r_ma_s), "--", label="Modified Taylor")
+        ax[1, 0].axhline(0, color="k", lw=1)
+        ax[1, 0].set_title("(c) Real interest rate")
+        ax[1, 1].plot(t_s, D_ta_s, label="Taylor")
+        ax[1, 1].plot(t_s, D_ma_s, "--", label="Modified Taylor")
+        ax[1, 1].set_title("(d) Price dispersion")
+        for a in ax.ravel():
+            a.set_xlabel("Time in quarters")
+        ax[0, 0].legend()
+        fig.suptitle(
+            f"Figure 3 (start={_regime_name(start_reg)}): Response to a regime change (Taylor rule)",
+            y=1.02,
+        )
+        plt.tight_layout()
+        _savefig(fig_dir, f"figure3_start_{_regime_tag(start_reg).lower()}")
+        plt.close(fig)
 
     params0 = p_t
     grid_p21 = np.linspace(0.02, 0.98, 40)
@@ -680,6 +750,36 @@ def build_figures(
     plt.tight_layout()
     _savefig(fig_dir, "figure8")
     plt.close(fig)
+    for start_reg in common_cd:
+        pi_c8_s, x_c8_s, r_c8_s, D_c8_s = _transition_pack(tr_c_by_start[start_reg], pre=pre, n_post=n_post)
+        pi_d8_s, x_d8_s, r_d8_s, D_d8_s = _transition_pack(tr_d_by_start[start_reg], pre=pre, n_post=n_post)
+        t8_s = np.arange(-pre, n_post)
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].plot(t8_s, _ann(pi_c8_s), label="Commitment")
+        ax[0, 0].plot(t8_s, _ann(pi_d8_s), "--", label="Discretion")
+        ax[0, 0].axhline(0, color="k", lw=1)
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 1].plot(t8_s, 100.0 * x_c8_s, label="Commitment")
+        ax[0, 1].plot(t8_s, 100.0 * x_d8_s, "--", label="Discretion")
+        ax[0, 1].axhline(0, color="k", lw=1)
+        ax[0, 1].set_title("(b) Output gap")
+        ax[1, 0].plot(t8_s, _ann(r_c8_s), label="Commitment")
+        ax[1, 0].plot(t8_s, _ann(r_d8_s), "--", label="Discretion")
+        ax[1, 0].axhline(0, color="k", lw=1)
+        ax[1, 0].set_title("(c) Real interest rate")
+        ax[1, 1].plot(t8_s, D_c8_s, label="Commitment")
+        ax[1, 1].plot(t8_s, D_d8_s, "--", label="Discretion")
+        ax[1, 1].set_title("(d) Price dispersion")
+        for a in ax.ravel():
+            a.set_xlabel("Time in quarters")
+        ax[0, 0].legend()
+        fig.suptitle(
+            f"Figure 8 (start={_regime_name(start_reg)}): Response to a regime change (Commitment vs Discretion)",
+            y=1.02,
+        )
+        plt.tight_layout()
+        _savefig(fig_dir, f"figure8_start_{_regime_tag(start_reg).lower()}")
+        plt.close(fig)
 
     pi_b9, x_b9, r_b9, P_b9 = _irf_pack(ir9_b, pre=pre, ir_h=ir_h)
     pi_h9, x_h9, r_h9, P_h9 = _irf_pack(ir9_h, pre=pre, ir_h=ir_h)

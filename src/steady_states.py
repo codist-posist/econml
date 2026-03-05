@@ -17,8 +17,8 @@ def _robust_solve(J: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
     Strategy:
       1) try direct solve; if it produces non-finite values, treat as failure
-      2) try Tikhonov-regularized solves (J + λI) with increasing λ
-      3) try normal-equations ridge solve: (JᵀJ + λI) x = Jᵀ b
+      2) try Tikhonov-regularized solves (J + lambda * I) with increasing lambda
+      3) try normal-equations ridge solve: (J^T J + lambda * I) x = J^T b
       4) fall back to least-squares solution
     """
     # 1) direct solve
@@ -32,7 +32,7 @@ def _robust_solve(J: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     n = J.shape[0]
     I = torch.eye(n, dtype=J.dtype, device=J.device)
 
-    # 2) (J + λI) x = b
+    # 2) (J + lambda * I) x = b
     lam = torch.tensor(1e-12, dtype=J.dtype, device=J.device)
     for _ in range(12):
         try:
@@ -69,20 +69,20 @@ class FlexSSS:
 def solve_efficient_sss(params: ModelParams, max_iter: int = 20000, tol: float = 1e-14) -> Dict[str, float]:
     """Efficient (planner) non-stochastic steady state, per paper eq. (??) around page 12.
 
-    With A=1 and g=g_bar, efficient consumption ĉ solves:
-        ((ĉ + g_bar)/A)^omega - A * ĉ^{-gamma} = 0
+    With A=1 and g=g_bar, efficient consumption c_hat solves:
+        ((c_hat + g_bar)/A)^omega - A * c_hat^{-gamma} = 0
     which at A=1 simplifies to:
-        (ĉ + g_bar)^omega - ĉ^{-gamma} = 0
+        (c_hat + g_bar)^omega - c_hat^{-gamma} = 0
 
     Returns a dict with:
-      - c_hat: ĉ
+      - c_hat: efficient consumption
       - r_hat: 1/beta - 1  (non-stochastic efficient real rate)
     """
     g = float(params.g_bar)
     omega = float(params.omega)
     gamma = float(params.gamma)
 
-    # Newton on scalar ĉ
+    # Newton on scalar c_hat
     c = 0.9  # good generic starting point for this calibration
     for _ in range(max_iter):
         val = (c + g) ** omega - (c ** (-gamma))
@@ -470,237 +470,63 @@ def commitment_author_like_sss(
 
 def solve_commitment_sss_switching(params: ModelParams, max_iter: int = 200, tol: float = 1e-12, damping: float = 1.0) -> CommitmentSSS:
     """
-    LEGACY helper: regime-conditional point solution for the A.3 system using a Bayes-closure
-    for lagged co-states.
+    LEGACY helper: regime-conditional commitment initialization under switching.
 
-    IMPORTANT (paper-faithful usage): The paper's "timeless" commitment results are computed
-    from the optimal policy itself (a fixed point / center of the ergodic distribution), not by
-    imposing a single deterministic value for lagged co-states conditional on s_t.
+    IMPORTANT (paper-faithful usage): The paper's commitment SSS objects are computed
+    from the trained policy fixed point (solve_commitment_sss_from_policy), not from
+    this warm-start builder.
 
-    This routine is kept for backward compatibility and as a warm-start diagnostic, but the
-    recommended, "strictly per paper" SSS for commitment is:
-
-        solve_commitment_sss_from_policy(params, net)
-
-    where net is the trained commitment policy network.
+    This routine remains as a generic multi-regime warm-start object:
+      1) solve local commitment SS in each regime separately;
+      2) map lagged objects with backward (Bayes) weights implied by the full P matrix.
     """
-    if int(params.n_regimes) < 2 or int(params.n_regimes) > 2:
-        # Multi-regime fallback for legacy callers: return local per-regime SS guesses.
-        # For paper-consistent switching SSS use solve_commitment_sss_from_policy(...).
-        by = {s: commitment_local_ss(params, s) for s in range(int(params.n_regimes))}
-        return CommitmentSSS(by_regime=by)
+    _ = (max_iter, tol, damping)  # kept for backward-compatible signature
 
-    dev, dt = params.device, params.dtype
-    beta, gamma, omega, eps, theta, M = params.beta, params.gamma, params.omega, params.eps, params.theta, params.M
+    n_reg = int(params.n_regimes)
+    if n_reg <= 0:
+        raise ValueError("params.n_regimes must be >= 1")
 
-    P = params.P  # [s_next, s]
+    local = {s: commitment_local_ss(params, s) for s in range(n_reg)}
+    P = np.asarray(params.P.detach().cpu(), dtype=np.float64)
 
-    g = torch.tensor(params.g_bar, device=dev, dtype=dt)
-    A = torch.tensor(1.0, device=dev, dtype=dt)
-    xi = torch.tensor(0.0, device=dev, dtype=dt)
-    eta0 = torch.tensor(0.0, device=dev, dtype=dt)
-    eta1 = torch.tensor(params.eta_bar, device=dev, dtype=dt)
+    # Stationary distribution pi such that pi = pi P.
+    pi_stat = np.full(n_reg, 1.0 / n_reg, dtype=np.float64)
+    for _ in range(2048):
+        pi_next = pi_stat @ P
+        if np.max(np.abs(pi_next - pi_stat)) < 1e-14:
+            pi_stat = pi_next
+            break
+        pi_stat = pi_next
+    pi_stat = np.clip(pi_stat, 1e-15, None)
+    pi_stat = pi_stat / np.sum(pi_stat)
 
-    def one_plus_tau(s: int) -> torch.Tensor:
-        eta = eta0 if s == 0 else eta1
-        return torch.tensor(1.0 - params.tau_bar, device=dev, dtype=dt) + xi + eta
+    gamma = float(params.gamma)
+    Delta_vec = np.array([float(local[s]["Delta"]) for s in range(n_reg)], dtype=np.float64)
+    vp_vec = np.array(
+        [float(local[s].get("vartheta", 0.0)) * (float(local[s]["c"]) ** gamma) for s in range(n_reg)],
+        dtype=np.float64,
+    )
+    rp_vec = np.array(
+        [float(local[s].get("varrho", 0.0)) * (float(local[s]["c"]) ** gamma) for s in range(n_reg)],
+        dtype=np.float64,
+    )
 
-    def unpack(u: torch.Tensor):
-        return tuple(u[i] for i in range(13))
+    by_regime: Dict[int, Dict[str, float]] = {}
+    for cur in range(n_reg):
+        num = pi_stat * P[:, cur]
+        den = float(np.sum(num))
+        if den <= 0.0:
+            wprev = np.full(n_reg, 1.0 / n_reg, dtype=np.float64)
+        else:
+            wprev = num / den
 
-    def pack(U0: torch.Tensor, U1: torch.Tensor) -> torch.Tensor:
-        return torch.cat([U0, U1], dim=0)
+        d = dict(local[cur])
+        d["Delta_prev"] = float(np.dot(wprev, Delta_vec))
+        d["vartheta_prev"] = float(np.dot(wprev, vp_vec))
+        d["varrho_prev"] = float(np.dot(wprev, rp_vec))
+        by_regime[int(cur)] = d
 
-    def split(Z: torch.Tensor):
-        return Z[:13], Z[13:]
-
-    def residual_regime(u: torch.Tensor, s: int, u0_next: torch.Tensor, u1_next: torch.Tensor) -> torch.Tensor:
-        c, pi, pstar, lam, w, XiN, XiD, Delta, mu, nu, zeta, vartheta, varrho = unpack(u)
-
-        c = c**2 + 1e-12
-        Delta = Delta**2 + 1e-12
-        pstar = pstar**2 + 1e-12
-        XiN = XiN**2 + 1e-14
-        XiD = XiD**2 + 1e-14
-
-        y = c + g
-        h = y * Delta / A
-        optau = one_plus_tau(s)
-
-        def decode_next(u_next):
-            cN, piN, pstarN, lamN, wN, XiNN, XiDN, DeltaN, muN, nuN, zetaN, varthetaN, varrhoN = unpack(u_next)
-            cN = cN**2 + 1e-12
-            DeltaN = DeltaN**2 + 1e-12
-            pstarN = pstarN**2 + 1e-12
-            XiNN = XiNN**2 + 1e-14
-            XiDN = XiDN**2 + 1e-14
-            return cN, piN, pstarN, lamN, wN, XiNN, XiDN, DeltaN, muN, nuN, zetaN, varthetaN, varrhoN
-
-        c0, pi0, pstar0, lam0, w0, XiN0, XiD0, Delta0, mu0, nu0, zeta0, vartheta0, varrho0 = decode_next(u0_next)
-        c1, pi1, pstar1, lam1, w1, XiN1, XiD1, Delta1, mu1, nu1, zeta1, vartheta1, varrho1 = decode_next(u1_next)
-
-        Lam0 = beta * (lam0 / lam)
-        Lam1 = beta * (lam1 / lam)
-
-        pi0w = P[s, 0]
-        pi1w = P[s, 1]
-
-        Et_XiN = theta * (pi0w * (Lam0 * (1.0 + pi0).pow(eps) * XiN0) + pi1w * (Lam1 * (1.0 + pi1).pow(eps) * XiN1))
-        Et_XiD = theta * (pi0w * (Lam0 * (1.0 + pi0).pow(eps - 1.0) * XiD0) + pi1w * (Lam1 * (1.0 + pi1).pow(eps - 1.0) * XiD1))
-
-        Et_theta_zeta_pi = (pi0w * (theta * (1.0 + pi0).pow(eps) * zeta0) + pi1w * (theta * (1.0 + pi1).pow(eps) * zeta1))
-
-        Et_termN = beta * theta * gamma * c.pow(gamma - 1.0) * (
-            pi0w * (c0.pow(-gamma) * (1.0 + pi0).pow(eps) * XiN0) + pi1w * (c1.pow(-gamma) * (1.0 + pi1).pow(eps) * XiN1)
-        )
-        Et_termD = beta * theta * gamma * c.pow(gamma - 1.0) * (
-            pi0w * (c0.pow(-gamma) * (1.0 + pi0).pow(eps - 1.0) * XiD0) + pi1w * (c1.pow(-gamma) * (1.0 + pi1).pow(eps - 1.0) * XiD1)
-        )
-
-        # Lagged objects in regime-conditional SSS equal same-regime steady values
-        # Lagged objects in the state are realized from t-1. Conditioning on s_t does not pin s_{t-1},
-        # so in a regime-switching SSS we use backward (Bayes) weights based on the stationary distribution.
-        p12 = float(params.p12); p21 = float(params.p21)
-        pi0_stat = p21 / (p12 + p21)
-        pi1_stat = p12 / (p12 + p21)
-        pi_s = pi0_stat if s == 0 else pi1_stat
-        B0 = (pi0_stat * float(P[0, s])) / pi_s
-        B1 = (pi1_stat * float(P[1, s])) / pi_s
-
-        Delta_prev_ss = B0 * Delta0 + B1 * Delta1
-
-        vp0_ss = vartheta0 * c0.pow(gamma)
-        vp1_ss = vartheta1 * c1.pow(gamma)
-        rp0_ss = varrho0 * c0.pow(gamma)
-        rp1_ss = varrho1 * c1.pow(gamma)
-
-        vp_prev_ss = B0 * vp0_ss + B1 * vp1_ss
-        rp_prev_ss = B0 * rp0_ss + B1 * rp1_ss
-
-        res = []
-
-        term_util = c.pow(-gamma) - (y * Delta / A).pow(1.0 + omega)
-        term_vartheta_now = (((1.0 + omega) * c + gamma * y) * y.pow(omega) * c.pow(gamma - 1.0) * (Delta / A).pow(omega) * optau / A) + Et_termN
-        term_vartheta_lag = (-gamma) * theta * vp_prev_ss * c.pow(-gamma - 1.0) * (1.0 + pi).pow(eps) * XiN
-        term_varrho_now = 1.0 + Et_termD
-        term_varrho_lag = (-gamma) * theta * rp_prev_ss * c.pow(-gamma - 1.0) * (1.0 + pi).pow(eps - 1.0) * XiD
-        res.append(term_util + vartheta * term_vartheta_now + term_vartheta_lag + varrho * term_varrho_now + term_varrho_lag)
-
-        disutil_over_D = -(y * Delta / A).pow(1.0 + omega) / Delta
-        res.append(disutil_over_D - zeta + beta * Et_theta_zeta_pi + vartheta * omega * y.pow(1.0 + omega) * c.pow(gamma) * (Delta / A).pow(omega) * (1.0 / Delta) * optau / A)
-
-        res.append(
-            nu * theta * (eps - 1.0) * (1.0 + pi).pow(eps - 2.0)
-            + zeta * theta * eps * (1.0 + pi).pow(eps - 1.0) * Delta_prev_ss
-            + eps * theta * vp_prev_ss * c.pow(-gamma) * (1.0 + pi).pow(eps - 1.0) * XiN
-            + (eps - 1.0) * theta * rp_prev_ss * c.pow(-gamma) * (1.0 + pi).pow(eps - 2.0) * XiD
-        )
-
-        res.append(-mu * XiD + nu * (1.0 - theta) * (1.0 - eps) * pstar.pow(-eps) + zeta * (1.0 - theta) * (-eps) * pstar.pow(-eps - 1.0))
-
-        res.append(mu * M - vartheta + theta * vp_prev_ss * c.pow(-gamma) * (1.0 + pi).pow(eps))
-        res.append(-mu * pstar - varrho + theta * rp_prev_ss * c.pow(-gamma) * (1.0 + pi).pow(eps - 1.0))
-
-        res.append(c.pow(-gamma) - lam)
-        res.append(h.pow(omega) - w * lam)
-
-        res.append(XiN - (y * w * optau / A) - Et_XiN)
-        res.append(XiD - y - Et_XiD)
-
-        res.append(pstar - (M * XiN / XiD))
-        res.append(1.0 - (theta * (1.0 + pi).pow(eps - 1.0) + (1.0 - theta) * pstar.pow(1.0 - eps)))
-
-        res.append(Delta - (theta * (1.0 + pi).pow(eps) * Delta_prev_ss + (1.0 - theta) * pstar.pow(-eps)))
-
-        return torch.stack(res)
-
-    def F(Z: torch.Tensor) -> torch.Tensor:
-        U0, U1 = split(Z)
-        r0 = residual_regime(U0, 0, U0, U1)
-        r1 = residual_regime(U1, 1, U0, U1)
-        return torch.cat([r0, r1], dim=0)
-
-    def u_from_dict(d):
-        return torch.tensor(
-            [d["c"], d["pi"], d["pstar"], d["lam"], d["w"], d["XiN"], d["XiD"], d["Delta"], d["mu"], d["nu"], d["zeta"], d["vartheta"], d["varrho"]],
-            device=dev,
-            dtype=dt,
-        )
-
-    U0 = u_from_dict(commitment_local_ss(params, 0))
-    U1 = u_from_dict(commitment_local_ss(params, 1))
-
-    def inv_param(u):
-        u = u.clone()
-        for i in [0, 2, 5, 6, 7]:
-            u[i] = torch.sqrt(torch.clamp(u[i] - (1e-12 if i in [0, 2, 7] else 1e-14), min=1e-16))
-        return u
-
-    Z0 = pack(inv_param(U0), inv_param(U1))
-
-    Z = _newton_solve(F, Z0, max_iter=max_iter, tol=tol, damping=damping)
-    U0s, U1s = split(Z)
-
-    def decode(U, vp_prev: float, rp_prev: float):
-        c, pi, pstar, lam, w, XiN, XiD, Delta, mu, nu, zeta, vartheta, varrho = unpack(U)
-        c = float((c**2 + 1e-12).cpu())
-        pstar = float((pstar**2 + 1e-12).cpu())
-        XiN = float((XiN**2 + 1e-14).cpu())
-        XiD = float((XiD**2 + 1e-14).cpu())
-        Delta = float((Delta**2 + 1e-12).cpu())
-        return {
-            "c": c,
-            "pi": float(pi.cpu()),
-            "pstar": pstar,
-            "lam": float(lam.cpu()),
-            "w": float(w.cpu()),
-            "XiN": XiN,
-            "XiD": XiD,
-            "Delta": Delta,
-            "mu": float(mu.cpu()),
-            "nu": float(nu.cpu()),
-            "zeta": float(zeta.cpu()),
-            "vartheta": float(vartheta.cpu()),
-            "varrho": float(varrho.cpu()),
-            "vartheta_prev": float(vp_prev),
-            "varrho_prev": float(rp_prev),
-        }
-
-    c0 = float((U0s[0] ** 2 + 1e-12).cpu())
-    c1 = float((U1s[0] ** 2 + 1e-12).cpu())
-    vartheta0 = float(U0s[11].cpu())
-    vartheta1 = float(U1s[11].cpu())
-    varrho0 = float(U0s[12].cpu())
-    varrho1 = float(U1s[12].cpu())
-    vp0 = vartheta0 * (c0 ** float(gamma))
-    vp1 = vartheta1 * (c1 ** float(gamma))
-    rp0 = varrho0 * (c0 ** float(gamma))
-    rp1 = varrho1 * (c1 ** float(gamma))
-
-        # backward-conditional lags for storage (same logic as inside residual_regime)
-    p12 = float(params.p12); p21 = float(params.p21)
-    pi0_stat = p21 / (p12 + p21)
-    pi1_stat = p12 / (p12 + p21)
-
-    def B(current_s: int):
-        pi_s = pi0_stat if current_s == 0 else pi1_stat
-        # Backward weights use Pr(s_t=current_s | s_{t-1}=j) = P[j, current_s].
-        B0 = (pi0_stat * float(params.P[0, current_s].detach().cpu())) / pi_s
-        B1 = (pi1_stat * float(params.P[1, current_s].detach().cpu())) / pi_s
-        return B0, B1
-
-    B00, B10 = B(0)
-    B01, B11 = B(1)
-
-    vp_prev_0 = B00 * vp0 + B10 * vp1
-    vp_prev_1 = B01 * vp0 + B11 * vp1
-    rp_prev_0 = B00 * rp0 + B10 * rp1
-    rp_prev_1 = B01 * rp0 + B11 * rp1
-
-    return CommitmentSSS(by_regime={
-        0: decode(U0s, vp_prev=vp_prev_0, rp_prev=rp_prev_0),
-        1: decode(U1s, vp_prev=vp_prev_1, rp_prev=rp_prev_1),
-    })
+    return CommitmentSSS(by_regime=by_regime)
 
 
 def solve_commitment_sss_from_policy(
@@ -1064,3 +890,4 @@ def commitment_init_from_sss(params: ModelParams) -> Dict[int, Dict[str, float]]
             "varrho_prev": float(sss[s].get("varrho_prev", 0.0)),
         }
     return out
+

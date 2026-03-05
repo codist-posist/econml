@@ -146,13 +146,17 @@ def residual_metrics_by_regime(
     *,
     tol: float,
     policy: PolicyName,
-    n_regimes: int = 2,
+    n_regimes: int | None = None,
 ) -> Dict[str, float]:
     """Same metrics split by regime s."""
     st = unpack_state(x, policy)
     s = st.s
     out: Dict[str, float] = {}
-    n_reg = max(1, int(n_regimes))
+    if n_regimes is None:
+        n_reg = int(torch.max(s).item()) + 1 if s.numel() > 0 else 1
+    else:
+        n_reg = int(n_regimes)
+    n_reg = max(1, n_reg)
     for r in range(n_reg):
         mask = (s == r)
         if mask.any():
@@ -163,6 +167,8 @@ def residual_metrics_by_regime(
             # keep keys stable
             out[f"r{r}__n"] = 0.0
     return out
+
+
 def _gh_grid_3d(params: ModelParams, gh_n: int) -> Tuple[torch.Tensor, torch.Tensor]:
     """Precompute 3D Gauss–Hermite nodes and weights.
 
@@ -380,8 +386,12 @@ class Trainer:
         if self.policy in ("mod_taylor", "mod_taylor_zlb"):
             if self.rbar_by_regime is None:
                 raise ValueError(f"policy={self.policy} requires rbar_by_regime from flex-price SSS")
-            if self.rbar_by_regime.numel() != 2:
-                raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
+            expected = int(self.params.n_regimes)
+            if self.rbar_by_regime.numel() != expected:
+                raise ValueError(
+                    f"rbar_by_regime must have {expected} elements (one per regime), "
+                    f"got {int(self.rbar_by_regime.numel())}"
+                )
 
         if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
@@ -414,6 +424,23 @@ class Trainer:
         self.gh_n = int(gh_n)
         self._eps_grid, self._w_grid = _gh_grid_3d(self.params, self.gh_n)
 
+    def _sample_regimes_for_init(self, B: int, *, device: torch.device | str, dtype: torch.dtype) -> torch.Tensor:
+        """Sample initial regime ids for synthetic batches.
+
+        Keeps 50/50 draw for legacy 2-regime setups and uses a uniform draw over
+        all regimes for R>=3 so every regime is present from the start.
+        """
+        R = max(1, int(self.params.n_regimes))
+        if R <= 1:
+            return torch.zeros(B, device=device, dtype=torch.long)
+        if R == 2:
+            return torch.where(
+                torch.rand(B, device=device, dtype=dtype) < 0.5,
+                torch.zeros(B, device=device, dtype=torch.long),
+                torch.ones(B, device=device, dtype=torch.long),
+            )
+        return torch.randint(low=0, high=R, size=(B,), device=device, dtype=torch.long)
+
     # --------------------
     # State init / stepping
     # --------------------
@@ -425,17 +452,13 @@ class Trainer:
 
         # Public Keras Hooks.py semantics:
         # - exogenous states centered at zero with author scaling
-        # - 50/50 initial regime mix
         # - small noise around disp_old_x = 1
+        # Regime initialization is generalized for R regimes.
         sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
         sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
         logA = sd_logA * torch.randn(B, device=dev, dtype=dt)
         logg = sd_logg * torch.randn(B, device=dev, dtype=dt)
-        s = torch.where(
-            torch.rand(B, device=dev, dtype=dt) < 0.5,
-            torch.zeros(B, device=dev, dtype=torch.long),
-            torch.ones(B, device=dev, dtype=torch.long),
-        )
+        s = self._sample_regimes_for_init(B, device=dev, dtype=dt)
         sig_xi_reg = regime_sigma_tau(self.params, s).to(device=dev, dtype=dt)
         sd_xi_reg = torch.where(
             torch.abs(torch.tensor(rho_xi, device=dev, dtype=dt)) < 1.0,
@@ -515,11 +538,7 @@ class Trainer:
                 return
             x_new[:, 1] = sd_logA * torch.randn(B, device=dev, dtype=dt)
             x_new[:, 2] = sd_logg * torch.randn(B, device=dev, dtype=dt)
-            s = torch.where(
-                torch.rand(B, device=dev, dtype=dt) < 0.5,
-                torch.zeros(B, device=dev, dtype=torch.long),
-                torch.ones(B, device=dev, dtype=torch.long),
-            )
+            s = self._sample_regimes_for_init(B, device=dev, dtype=dt)
             x_new[:, 4] = s.to(dt)
             sig_xi_reg = regime_sigma_tau(self.params, s).to(device=dev, dtype=dt)
             sd_xi_reg = torch.where(
