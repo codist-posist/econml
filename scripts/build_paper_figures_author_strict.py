@@ -133,7 +133,7 @@ def _ensure_author_postprocess(
     use_selected: bool,
     enabled: bool,
     force_rebuild: bool = False,
-    cons_mode: str = "author",
+    cons_mode: str = "paper",
 ) -> str:
     mode = _resolve_cons_mode(cons_mode)
     out_dir = os.path.join(run_dir, "author_postprocess")
@@ -193,7 +193,7 @@ def _ensure_author_ir(
     out_subdir: str = "IRS",
     params_override: Dict[str, float] | None = None,
     force_rebuild: bool = False,
-    cons_mode: str = "author",
+    cons_mode: str = "paper",
 ) -> str:
     mode = _resolve_cons_mode(cons_mode)
     out_dir = os.path.join(run_dir, out_subdir)
@@ -825,7 +825,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--use-selected", type=str, default="true")
     ap.add_argument("--ensure-postprocess", type=str, default="true")
     ap.add_argument("--ensure-ir", type=str, default="true")
-    ap.add_argument("--cons-mode", type=str, default="author", choices=["author", "paper"])
+    ap.add_argument("--cons-mode", type=str, default="paper", choices=["author", "paper"])
     ap.add_argument("--force-rebuild-postprocess", type=str, default="false")
     ap.add_argument("--force-rebuild-ir", type=str, default="false")
     ap.add_argument("--pre", type=int, default=5)

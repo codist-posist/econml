@@ -244,7 +244,7 @@ def _to_author_defs(
     sim: Dict[str, np.ndarray],
     params: ModelParams,
     *,
-    cons_mode: str = "author",
+    cons_mode: str = "paper",
 ) -> Dict[str, np.ndarray]:
     mode = _resolve_cons_mode(cons_mode)
     c = np.asarray(sim["c"], dtype=np.float64).reshape(-1)
@@ -326,7 +326,7 @@ def _export_for_policy(
     dtype: torch.dtype,
     use_selected: bool,
     T: int,
-    cons_mode: str = "author",
+    cons_mode: str = "paper",
 ) -> str:
     mode = _resolve_cons_mode(cons_mode)
     if run_dir is None:
@@ -465,9 +465,9 @@ def main() -> int:
     ap.add_argument("--T", type=int, default=10000, help="Simulation length (author post_process uses 10000).")
     ap.add_argument(
         "--cons-mode",
-        default="author",
+        default="paper",
         choices=["author", "paper"],
-        help="Flex-consumption/output-gap mode for saved definitions.",
+        help="Output-gap consumption mode for saved definitions (default: paper/effective).",
     )
     ap.add_argument("--use_selected", action=argparse.BooleanOptionalAction, default=True)
     args = ap.parse_args()

@@ -167,7 +167,7 @@ def build_and_print_policy_reports(
     artifacts_root: str,
     device: str = "cpu",
     dtype: torch.dtype = torch.float64,
-    cons_mode: str = "author",
+    cons_mode: str = "paper",
     rebuild_author_postprocess: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -235,7 +235,7 @@ def build_and_print_author_nt_ss_report(
     artifacts_root: str,
     device: str = "cpu",
     dtype: torch.dtype = torch.float64,
-    cons_mode: str = "author",
+    cons_mode: str = "paper",
     rebuild_author_postprocess: bool = False,
 ) -> pd.DataFrame:
     """

@@ -468,7 +468,7 @@ def _to_author_defs_shaped(
     params: ModelParams,
     *,
     compute_i_flex: bool,
-    cons_mode: str = "author",
+    cons_mode: str = "paper",
 ) -> Dict[str, np.ndarray]:
     mode = _resolve_cons_mode(cons_mode)
     c = np.asarray(sim["c"], dtype=np.float64)
@@ -656,7 +656,7 @@ def run_export(
     save_states: bool,
     clean_out_dir: bool,
     params_override: Dict[str, float] | None = None,
-    cons_mode: str = "author",
+    cons_mode: str = "paper",
 ) -> str:
     mode = _resolve_cons_mode(cons_mode)
     rd = run_dir
@@ -792,9 +792,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     ap.add_argument(
         "--cons-mode",
-        default="author",
+        default="paper",
         choices=["author", "paper"],
-        help="Flex-consumption/output-gap mode for saved definitions.",
+        help="Output-gap consumption mode for saved definitions (default: paper/effective).",
     )
     ap.add_argument(
         "--override",
