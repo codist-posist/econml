@@ -54,7 +54,7 @@ def main() -> int:
         "--strict_author_table2",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Require author NT/SS simulation files for sim_conditional mode (no fallback).",
+        help="Require author by-regime simulation files (NT/SS/SEV/...) for sim_conditional mode (no fallback).",
     )
     ap.add_argument(
         "--include_taylor_para_robustness",
