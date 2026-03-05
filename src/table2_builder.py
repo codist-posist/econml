@@ -846,6 +846,7 @@ def build_table0(
           * "sim_conditional" (paper/author default): regime-conditional
             long-simulation moments (prefer author `simulated_definitions_NT/SS.npz`,
             fallback to conditional moments from `sim_paths.npz`).
+            SSS levels are taken from switching-consistent policy fixed points.
           * "fixed_point": regime-conditional policy fixed points (diagnostic mode).
           * "deterministic_no_innovation": deterministic/no-innovation
             regime-conditional path moments (diagnostic no-shock object).
@@ -977,15 +978,15 @@ def build_table0(
             x_m = dm["x"]
             r_m = dm["r"]
 
-        if sss_source_norm in ("sim_conditional", "deterministic_no_innovation"):
-            # Paper/author object: stochastic steady state by regime as conditional means
-            # from long simulated paths (or deterministic no-innovation path means).
+        if sss_source_norm == "deterministic_no_innovation":
+            # Diagnostic no-shock object: SSS proxy is the deterministic path mean.
             pi_ss = float(pi_m["mean"])
             x_ss = float(x_m["mean"])
             i_ss = float(i_m["mean"])
             r_ss = float(r_m["mean"])
         else:
-            # Diagnostic object: policy fixed-point SSS.
+            # Paper object (sim_conditional) and fixed_point diagnostic both use
+            # switching-consistent policy fixed-point SSS levels.
             pi_ss = float(sss["pi"])
             # output gap SSS: prefer state-consistent hat{c}(A,g); fallback to constant c_hat.
             c_val = float(sss["c"])
