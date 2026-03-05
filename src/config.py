@@ -411,7 +411,7 @@ class TrainConfig:
         )
         auto_warmup = 10_000 if long_patience_family else 6_000
         auto_patience = 40_000 if long_patience_family else 25_000
-        auto_min_rel_delta = 5e-5 if long_patience_family else 1e-4
+        auto_min_rel_delta = 1e-5
 
         base = TrainConfig(
             mode="author",
