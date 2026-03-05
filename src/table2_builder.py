@@ -374,8 +374,12 @@ def _deterministic_no_innovation_policy_moments(
     i_nom = np.asarray(out["i"], dtype=np.float64).reshape(-1)[sl]
     x_all = output_gap_from_consumption(out, c_hat, params=params, time_varying=True)
     x_gap = np.asarray(x_all, dtype=np.float64).reshape(-1)[sl]
-    if i_nom.size >= 2 and pi.size >= 2:
-        r_real = (1.0 + i_nom[:-1]) / (1.0 + pi[1:]) - 1.0
+    if i_nom.size >= 1 and pi.size >= 1:
+        # Author/table convention for real rate:
+        #   r_t = i_t - pi_t
+        # Old ex-post alternative (not used):
+        #   r_real = (1.0 + i_nom[:-1]) / (1.0 + pi[1:]) - 1.0
+        r_real = i_nom - pi
     else:
         r_real = np.array([np.nan], dtype=np.float64)
     return {
@@ -716,17 +720,19 @@ def _load_author_flex_regime_moments(
 
 def _compute_real_rate_series(sim: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Real rate per period computed from realized next inflation:
-        r_t = (1+i_t)/(1+pi_{t+1}) - 1
-    Returned arrays aligned with s_t (length T-1):
+    Real rate per period, author/table convention:
+        r_t = i_t - pi_t
+    Returned arrays aligned with s_t (length T):
         r, s_aligned
     """
     i = np.asarray(sim["i"])
     pi = np.asarray(sim["pi"])
     s = np.asarray(sim["s"])
-    # align to t where pi_{t+1} exists
-    r = (1.0 + i[:-1]) / (1.0 + pi[1:]) - 1.0
-    s_aligned = s[:-1]
+    # Old ex-post alternative (not used):
+    # r = (1.0 + i[:-1]) / (1.0 + pi[1:]) - 1.0
+    # s_aligned = s[:-1]
+    r = i - pi
+    s_aligned = s
     return r, s_aligned
 
 
@@ -931,7 +937,7 @@ def build_table0(
             # nominal
             i_series = _split_by_regime(sim["i"], s, regime)
             i_m = _moments_with_skew(i_series)
-            # real (aligned to t with pi_{t+1})
+            # real (author/table convention): r_t = i_t - pi_t
             r_all, s_al = _compute_real_rate_series(sim)
             r_series = _split_by_regime(r_all, s_al, regime)
             r_m = _moments_with_skew(r_series)
@@ -1035,7 +1041,11 @@ def build_table0(
                     regime=regime,
                     rbar_by_regime=None,
                 )
-            r_ss = (1.0 + i_ss) / (1.0 + pi_ss) - 1.0
+            # Author/table convention for real rate at SSS:
+            #   r_ss = i_ss - pi_ss
+            # Old alternative (not used):
+            #   r_ss = (1.0 + i_ss) / (1.0 + pi_ss) - 1.0
+            r_ss = i_ss - pi_ss
 
         rows.append({
             "policy": label,

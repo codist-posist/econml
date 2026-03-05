@@ -127,9 +127,14 @@ def _sim_paths_conditional_moments(run_dir: str, *, params: ModelParams) -> pd.D
     has_i = "i" in sim
     if has_i:
         i = np.asarray(sim["i"]).reshape(-1)
+        # Author/table convention for real rate:
+        #   r_t = i_t - pi_t
         r_same = i - pi
-        r_next = (1.0 + i[:-1]) / (1.0 + pi[1:]) - 1.0
-        s_next = s[:-1]
+        # Old ex-post alternative (not used):
+        # r_next = (1.0 + i[:-1]) / (1.0 + pi[1:]) - 1.0
+        # s_next = s[:-1]
+        r_next = None
+        s_next = None
     else:
         i = None
         r_same = None
