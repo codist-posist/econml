@@ -1,7 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Tuple
+
 import torch
+
 from .config import ModelParams
 
 
@@ -25,8 +27,9 @@ class State:
     For policy: "commitment_zlb"
         x = [Delta_prev, logA, loggtilde, xi, s, vartheta_prev, varrho_prev, c_prev, i_nom_prev, varphi_prev] (dim=10)
 
-    Convention: s in {0,1,2}, with 0=normal, 1=bad, 2=severe.
+    Convention: s is an integer regime id in [0, ..., params.n_regimes-1].
     """
+
     Delta_prev: torch.Tensor
     logA: torch.Tensor
     loggtilde: torch.Tensor
@@ -95,6 +98,126 @@ def unpack_state(x: torch.Tensor, policy: str) -> State:
     raise ValueError(f"Unknown policy: {policy}")
 
 
+def _logit(p: torch.Tensor) -> torch.Tensor:
+    p_safe = torch.clamp(p, min=1e-9, max=1.0 - 1e-9)
+    return torch.log(p_safe) - torch.log1p(-p_safe)
+
+
+def _inv_logit(z: torch.Tensor) -> torch.Tensor:
+    return torch.sigmoid(z)
+
+
+def _regime_lookup(levels: Tuple[float, ...], s: torch.Tensor, *, device: str | torch.device, dtype: torch.dtype) -> torch.Tensor:
+    vals = torch.tensor(levels, device=device, dtype=dtype)
+    idx = torch.clamp(s.to(device=device, dtype=torch.long), min=0, max=int(vals.numel()) - 1)
+    return vals[idx]
+
+
+def regime_eta(params: ModelParams, s: torch.Tensor) -> torch.Tensor:
+    return _regime_lookup(
+        tuple(float(v) for v in params.eta_by_regime),
+        s,
+        device=s.device,
+        dtype=params.dtype,
+    )
+
+
+def regime_sigma_tau(params: ModelParams, s: torch.Tensor) -> torch.Tensor:
+    return _regime_lookup(
+        tuple(float(v) for v in params.sigma_tau_by_regime),
+        s,
+        device=s.device,
+        dtype=params.dtype,
+    )
+
+
+def transition_probs_to_next_regimes(
+    params: ModelParams,
+    s: torch.Tensor,
+    *,
+    xi: torch.Tensor | None = None,
+    p21_state: torch.Tensor | None = None,
+    p12_state: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Regime transition probabilities with optional xi-dependent adjustments.
+
+    Returns probs with shape s.shape + (R,), where probs[..., j] = Pr(s_{t+1}=j | state_t)
+    and R = params.n_regimes.
+
+    For R>=3 we preserve the escalation structure:
+      - row 0 uses p12 (0->1)
+      - row 1 uses p21 (1->0) and keeps row-1 mass to higher regimes from params.P
+      - rows >=2 follow params.P (e.g., severe row uses p32 from config)
+    """
+    s_t = s.to(device=params.device, dtype=torch.long)
+    dt = params.dtype
+    for cand in (xi, p21_state, p12_state):
+        if torch.is_tensor(cand) and cand.dtype.is_floating_point:
+            dt = cand.dtype
+            break
+    zeros = torch.zeros_like(s_t, dtype=dt)
+    P = params.P.to(device=s_t.device, dtype=dt)
+    R = int(P.shape[0])
+    if R <= 0:
+        raise ValueError("params.P must have positive size")
+    if P.shape[1] != R:
+        raise ValueError(f"params.P must be square, got shape={tuple(P.shape)}")
+
+    s_idx = torch.clamp(s_t, min=0, max=R - 1)
+    probs = P[s_idx, :].clone()
+
+    p21 = torch.full_like(zeros, float(params.p21))
+    if p21_state is not None:
+        p21 = torch.as_tensor(p21_state, device=s_t.device, dtype=dt) + zeros * 0.0
+
+    p12 = torch.full_like(zeros, float(params.p12))
+    if p12_state is not None:
+        p12 = torch.as_tensor(p12_state, device=s_t.device, dtype=dt) + zeros * 0.0
+
+    xi_t = None
+    if xi is not None:
+        xi_t = torch.as_tensor(xi, device=s_t.device, dtype=dt) + zeros * 0.0
+
+    if bool(getattr(params, "state_dependent_transitions", False)) and (xi_t is not None):
+        if params.transition_xi_ref is None:
+            sigma_ref = regime_sigma_tau(params, s_t).to(device=s_t.device, dtype=dt)
+            xi_ref = -0.5 * sigma_ref.pow(2)
+        else:
+            xi_ref = torch.full_like(zeros, float(params.transition_xi_ref))
+        xi_centered = xi_t - xi_ref
+        # Positive p21_xi_slope lowers bad->normal recovery probability when xi is high.
+        p21 = _inv_logit(_logit(p21) - float(params.p21_xi_slope) * xi_centered)
+        # Positive p12_xi_slope raises normal->bad probability when xi is high.
+        p12 = _inv_logit(_logit(p12) + float(params.p12_xi_slope) * xi_centered)
+
+    eps = max(1e-9, min(0.49, float(getattr(params, "transition_prob_floor", 1e-8))))
+    p21 = torch.clamp(p21, min=eps, max=1.0 - eps)
+    p12 = torch.clamp(p12, min=eps, max=1.0 - eps)
+
+    if R == 1:
+        return probs
+
+    mask0 = (s_idx == 0)
+    if mask0.any():
+        probs[mask0, 0] = 1.0 - p12[mask0]
+        probs[mask0, 1] = p12[mask0]
+        if R > 2:
+            probs[mask0, 2:] = 0.0
+
+    mask1 = (s_idx == 1)
+    if mask1.any():
+        tail = probs[mask1, 2:].sum(dim=-1) if R > 2 else torch.zeros_like(p21[mask1])
+        p21_max = torch.clamp(1.0 - tail - eps, min=eps, max=1.0 - eps)
+        p21_row = torch.minimum(torch.maximum(p21[mask1], torch.full_like(p21[mask1], eps)), p21_max)
+        probs[mask1, 0] = p21_row
+        probs[mask1, 1] = 1.0 - p21_row - tail
+
+    probs = torch.clamp(probs, min=0.0)
+    probs = probs / torch.clamp(probs.sum(dim=-1, keepdim=True), min=1e-12)
+    return probs
+
+
 def identities(params: ModelParams, st: State, out: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """
     Pure identities (NOT residuals), strictly per paper.
@@ -107,10 +230,7 @@ def identities(params: ModelParams, st: State, out: Dict[str, torch.Tensor]) -> 
     gtilde = torch.exp(st.loggtilde)
     g = params.g_bar * gtilde
 
-    # Level cost-push shock by regime.
-    eta_vec = params.eta_by_regime_tensor()
-    s_idx = torch.clamp(st.s.to(torch.long), min=0, max=int(eta_vec.numel()) - 1)
-    eta = eta_vec[s_idx]
+    eta = regime_eta(params, st.s).to(device=st.xi.device, dtype=st.xi.dtype)
 
     # (1 + tau_t) = 1 - tau_bar + xi_t + eta_t
     one_plus_tau = 1.0 - params.tau_bar + st.xi + eta
@@ -161,10 +281,8 @@ def shock_laws_of_motion(
     assert st.logA.ndim == 1 and st.loggtilde.ndim == 1 and st.xi.ndim == 1, \
         "State shock components must be 1D (B,) at this stage"
 
-    # Drift corrections per paper (Appendix A.1) and author code.
     driftA = _ar1_lognorm_drift(float(params.rho_A), float(params.sigma_A))
     driftg = _ar1_lognorm_drift(float(params.rho_g), float(params.sigma_g))
-    drift_xi = _ar1_lognorm_drift(float(params.rho_tau), float(params.sigma_tau))
 
     B = st.logA.shape[0]
     view_shape = (B,) + (1,) * (epsA.ndim - 1)  # (B,1,1,...)
@@ -173,8 +291,11 @@ def shock_laws_of_motion(
     logg = st.loggtilde.view(view_shape)
     xi = st.xi.view(view_shape)
 
+    sigma_xi_next = regime_sigma_tau(params, s_next.long()).to(device=epsA.device, dtype=epsA.dtype)
+    drift_xi_next = (1.0 - float(params.rho_tau)) * (-(sigma_xi_next ** 2) / 2.0)
+
     logA_next = driftA + params.rho_A * logA + params.sigma_A * epsA
     logg_next = driftg + params.rho_g * logg + params.sigma_g * epsg
-    xi_next = drift_xi + params.rho_tau * xi + params.sigma_tau * epstau
+    xi_next = drift_xi_next + params.rho_tau * xi + sigma_xi_next * epstau
 
     return logA_next, logg_next, xi_next, s_next.long()

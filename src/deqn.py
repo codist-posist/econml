@@ -16,7 +16,13 @@ from tqdm.auto import trange
 
 from .config import ModelParams, TrainConfig, set_seeds, PolicyName
 from .quadrature import gauss_hermite
-from .model_common import unpack_state, shock_laws_of_motion, identities
+from .model_common import (
+    unpack_state,
+    shock_laws_of_motion,
+    identities,
+    transition_probs_to_next_regimes,
+    regime_sigma_tau,
+)
 from .transforms import decode_outputs
 from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
 from .residuals_a1 import residuals_a1
@@ -140,7 +146,7 @@ def residual_metrics_by_regime(
     *,
     tol: float,
     policy: PolicyName,
-    n_regimes: int = 3,
+    n_regimes: int = 2,
 ) -> Dict[str, float]:
     """Same metrics split by regime s."""
     st = unpack_state(x, policy)
@@ -173,41 +179,19 @@ def _gh_grid_3d(params: ModelParams, gh_n: int) -> Tuple[torch.Tensor, torch.Ten
 
 def _transition_probs_to_next(params: ModelParams, st) -> torch.Tensor:
     """
-    Return transition probabilities to next regimes as tensor (B, R),
-    where R is the number of regimes.
+    Return transition probabilities to next regimes as tensor (B, R).
+
+    Supports:
+      - baseline escalation Markov matrix params.P
+      - optional taylor_para path-level p21 state
+      - optional state-dependent p12_t / p21_t via params.*_xi_slope
     """
-    P = params.P
-    R = int(P.shape[1])
-    probs = P.index_select(0, st.s.to(torch.long))
-    # Author dsge_taylor_para keeps p21 as a state component (path-specific bad->normal prob).
-    p21_state = getattr(st, "p21", None)
-    if p21_state is not None and R >= 2:
-        normal_reg = 0
-        bad_reg = int(getattr(params, "bad_state", 1))
-        if bad_reg < 0 or bad_reg >= R:
-            bad_reg = 1 if R > 1 else 0
-        p21_clamped = torch.clamp(
-            p21_state.to(device=probs.device, dtype=probs.dtype),
-            min=1e-8,
-            max=1.0 - 1e-8,
-        )
-        if R == 2:
-            p0_bad = p21_clamped
-            p0_good = torch.full_like(p0_bad, 1.0 - float(params.p12))
-            p0 = torch.where(st.s == int(normal_reg), p0_good, p0_bad)
-            p1 = 1.0 - p0
-            probs = torch.stack([p0, p1], dim=-1)
-        else:
-            # Bad-regime override:
-            # keep bad->severe fixed at p23, adapt bad->normal by path-state p21.
-            p12_bad = torch.full_like(p21_clamped, float(params.p23))
-            p10_bad = torch.clamp(p21_clamped, min=1e-8)
-            p10_bad = torch.minimum(p10_bad, 1.0 - p12_bad - 1e-8)
-            p11_bad = 1.0 - p10_bad - p12_bad
-            row_bad = torch.stack([p10_bad, p11_bad, p12_bad], dim=-1)
-            mask_bad = (st.s == int(bad_reg)).view(-1, 1)
-            probs = torch.where(mask_bad, row_bad, probs)
-    return probs
+    return transition_probs_to_next_regimes(
+        params,
+        st.s,
+        xi=st.xi,
+        p21_state=getattr(st, "p21", None),
+    )
 
 
 def expectation_operator_appendixB(
@@ -266,8 +250,8 @@ def implied_nominal_rate_from_euler(
     => i_t = ( E_t[ beta * lam_{t+1}/(lam_t*(1+pi_{t+1})) ] )^{-1} - 1
     """
     st = unpack_state(x_t, policy)
-    # Ensure broadcastability against next-period objects shaped (B,Q,2).
-    # out_t["lam"] is (B,), while on["lam"] inside the expectation is (B,Q,2).
+    # Ensure broadcastability against next-period objects shaped (B,Q,R).
+    # out_t["lam"] is (B,), while on["lam"] inside the expectation is (B,Q,R).
     lam_t = out_t["lam"].view(-1, 1, 1)
 
     def x_next(epsA, epsg, epst, s_next):
@@ -396,10 +380,8 @@ class Trainer:
         if self.policy in ("mod_taylor", "mod_taylor_zlb"):
             if self.rbar_by_regime is None:
                 raise ValueError(f"policy={self.policy} requires rbar_by_regime from flex-price SSS")
-            if self.rbar_by_regime.numel() != int(self.params.n_regimes):
-                raise ValueError(
-                    f"rbar_by_regime must have {int(self.params.n_regimes)} elements (one per regime)"
-                )
+            if self.rbar_by_regime.numel() != 2:
+                raise ValueError("rbar_by_regime must have 2 elements (one per regime)")
 
         if self.policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb"):
             self.res_keys = ["res_euler", "res_XiN", "res_XiD", "res_pstar_def"]
@@ -432,27 +414,6 @@ class Trainer:
         self.gh_n = int(gh_n)
         self._eps_grid, self._w_grid = _gh_grid_3d(self.params, self.gh_n)
 
-    def _stationary_regime_probs(self) -> torch.Tensor:
-        """Compute stationary distribution of row-stochastic Markov matrix P."""
-        P = self.params.P
-        R = int(P.shape[0])
-        pi = torch.full((R,), 1.0 / float(R), device=P.device, dtype=P.dtype)
-        for _ in range(512):
-            nxt = pi @ P
-            if torch.max(torch.abs(nxt - pi)) < 1e-12:
-                pi = nxt
-                break
-            pi = nxt
-        pi = torch.clamp(pi, min=0.0)
-        s = torch.sum(pi)
-        if float(s) <= 0.0:
-            return torch.full_like(pi, 1.0 / float(R))
-        return pi / s
-
-    def _sample_initial_regime(self, B: int) -> torch.Tensor:
-        probs = self._stationary_regime_probs()
-        return torch.multinomial(probs, int(B), replacement=True).to(torch.long)
-
     # --------------------
     # State init / stepping
     # --------------------
@@ -462,17 +423,26 @@ class Trainer:
         rho_g, sig_g = float(self.params.rho_g), float(self.params.sigma_g)
         rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
 
-        # Public Keras Hooks.py semantics generalized to multi-regime:
+        # Public Keras Hooks.py semantics:
         # - exogenous states centered at zero with author scaling
-        # - initial regime sampled from stationary distribution of P
+        # - 50/50 initial regime mix
         # - small noise around disp_old_x = 1
         sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
         sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
-        sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
         logA = sd_logA * torch.randn(B, device=dev, dtype=dt)
         logg = sd_logg * torch.randn(B, device=dev, dtype=dt)
-        xi = sd_xi * torch.randn(B, device=dev, dtype=dt)
-        s = self._sample_initial_regime(B)
+        s = torch.where(
+            torch.rand(B, device=dev, dtype=dt) < 0.5,
+            torch.zeros(B, device=dev, dtype=torch.long),
+            torch.ones(B, device=dev, dtype=torch.long),
+        )
+        sig_xi_reg = regime_sigma_tau(self.params, s).to(device=dev, dtype=dt)
+        sd_xi_reg = torch.where(
+            torch.abs(torch.tensor(rho_xi, device=dev, dtype=dt)) < 1.0,
+            (sig_xi_reg ** 2) / max(1e-12, (1.0 - rho_xi ** 2)),
+            sig_xi_reg ** 2,
+        )
+        xi = sd_xi_reg * torch.randn(B, device=dev, dtype=dt)
         if self.policy == "taylor_para":
             Delta_prev = torch.ones(B, device=dev, dtype=dt) + 2e-3 * torch.randn(B, device=dev, dtype=dt)
             i_nom_ss = (1.0 + float(self.params.pi_bar)) / float(self.params.beta) - 1.0
@@ -538,16 +508,26 @@ class Trainer:
         rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
         sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
         sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
-        sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
+        _ = sig_xi  # retained for backward-compat comments below
 
         def _reset_exogenous_if_needed() -> None:
             if int(episode_idx) >= 2:
                 return
             x_new[:, 1] = sd_logA * torch.randn(B, device=dev, dtype=dt)
             x_new[:, 2] = sd_logg * torch.randn(B, device=dev, dtype=dt)
-            x_new[:, 3] = sd_xi * torch.randn(B, device=dev, dtype=dt)
-            s = self._sample_initial_regime(B)
+            s = torch.where(
+                torch.rand(B, device=dev, dtype=dt) < 0.5,
+                torch.zeros(B, device=dev, dtype=torch.long),
+                torch.ones(B, device=dev, dtype=torch.long),
+            )
             x_new[:, 4] = s.to(dt)
+            sig_xi_reg = regime_sigma_tau(self.params, s).to(device=dev, dtype=dt)
+            sd_xi_reg = torch.where(
+                torch.abs(torch.tensor(rho_xi, device=dev, dtype=dt)) < 1.0,
+                (sig_xi_reg ** 2) / max(1e-12, (1.0 - rho_xi ** 2)),
+                sig_xi_reg ** 2,
+            )
+            x_new[:, 3] = sd_xi_reg * torch.randn(B, device=dev, dtype=dt)
 
         if self.policy == "taylor_para":
             # Always refresh p21_x in author hooks.
@@ -1146,7 +1126,7 @@ class Trainer:
         u = torch.rand(B, device=dev, dtype=dt)
         probs = _transition_probs_to_next(self.params, st)  # (B,R)
         cdf = torch.cumsum(probs, dim=-1)
-        cdf[..., -1] = 1.0
+        cdf[:, -1] = 1.0
         s_next = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
 
         logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)

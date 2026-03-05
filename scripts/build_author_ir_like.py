@@ -28,15 +28,26 @@ from scripts.build_author_postprocess_like import _i_flex_author_like, _i_flex_p
 # Author impulse_response.py uses quantile=0.84134 and norm.ppf(quantile).
 _AUTHOR_IRS_SIGMA = 0.9998150936147446
 
-_SHOCK_GROUPS = [
-    ["3sigA_NT", "1sigA_NT", "-1sigA_NT", "-3sigA_NT"],
-    ["3sigT_NT", "1sigT_NT", "-1sigT_NT", "-3sigT_NT"],
-    ["3sigG_NT", "1sigG_NT", "-1sigG_NT", "-3sigG_NT"],
-    ["3sigA_SS", "1sigA_SS", "-1sigA_SS", "-3sigA_SS"],
-    ["3sigT_SS", "1sigT_SS", "-1sigT_SS", "-3sigT_SS"],
-    ["3sigG_SS", "1sigG_SS", "-1sigG_SS", "-3sigG_SS"],
-    ["NT", "SS"],
-]
+def _regime_tag(reg: int) -> str:
+    r = int(reg)
+    if r == 0:
+        return "NT"
+    if r == 1:
+        return "SS"
+    if r == 2:
+        return "SEV"
+    return f"R{r}"
+
+
+def _shock_groups(params: ModelParams) -> list[list[str]]:
+    groups: list[list[str]] = []
+    for r in range(int(params.n_regimes)):
+        tag = _regime_tag(r)
+        groups.append([f"3sigA_{tag}", f"1sigA_{tag}", f"-1sigA_{tag}", f"-3sigA_{tag}"])
+        groups.append([f"3sigT_{tag}", f"1sigT_{tag}", f"-1sigT_{tag}", f"-3sigT_{tag}"])
+        groups.append([f"3sigG_{tag}", f"1sigG_{tag}", f"-1sigG_{tag}", f"-3sigG_{tag}"])
+    groups.append([_regime_tag(r) for r in range(int(params.n_regimes))])
+    return groups
 
 _PARA_GRID_AUTHOR = np.array(
     [
@@ -86,9 +97,9 @@ def _resolve_cons_mode(mode: str) -> str:
     return m
 
 
-def _flatten_shock_labels() -> list[str]:
+def _flatten_shock_labels(params: ModelParams) -> list[str]:
     out: list[str] = []
-    for row in _SHOCK_GROUPS:
+    for row in _shock_groups(params):
         out.extend(row)
     return out
 
@@ -180,136 +191,66 @@ def _compose_next_state(
     raise ValueError(f"Unsupported policy: {policy!r}")
 
 
-def _author_ir_shock_vectors(params: ModelParams, *, n_batches: int = 26) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if int(n_batches) != 26:
-        raise ValueError(f"Author IR setup requires n_batches=26, got {n_batches}.")
+def _author_ir_shock_vectors(
+    params: ModelParams,
+    *,
+    n_batches: int | None = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n_reg = int(params.n_regimes)
+    expected = 13 * n_reg
+    if n_batches is None:
+        n_batches = expected
+    if int(n_batches) != expected:
+        raise ValueError(f"Author IR setup requires n_batches={expected}, got {n_batches}.")
     z = float(_AUTHOR_IRS_SIGMA)
     # Keep eps in standard-normal units. sigma scaling is applied once in
     # shock_laws_of_motion(...): log_next = ... + sigma * eps.
-    # This matches author Dynamics.ir_shock semantics (3*sigma*IRS_shock, ...).
-    sA = z
-    sT = z
-    sG = z
-    epsA = np.array(
-        [
-            3.0 * sA,
-            sA,
-            -sA,
-            -3.0 * sA,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            3.0 * sA,
-            sA,
-            -sA,
-            -3.0 * sA,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-        ],
-        dtype=np.float64,
+    shock_vals = [3.0 * z, z, -z, -3.0 * z]
+
+    epsA: list[float] = []
+    epsG: list[float] = []
+    epsT: list[float] = []
+    for _ in range(n_reg):
+        for v in shock_vals:  # A shocks
+            epsA.append(float(v)); epsG.append(0.0); epsT.append(0.0)
+        for v in shock_vals:  # Tau shocks
+            epsA.append(0.0); epsG.append(0.0); epsT.append(float(v))
+        for v in shock_vals:  # G shocks
+            epsA.append(0.0); epsG.append(float(v)); epsT.append(0.0)
+    # Baseline scenarios per regime.
+    for _ in range(n_reg):
+        epsA.append(0.0); epsG.append(0.0); epsT.append(0.0)
+
+    return (
+        np.asarray(epsA, dtype=np.float64),
+        np.asarray(epsG, dtype=np.float64),
+        np.asarray(epsT, dtype=np.float64),
     )
-    epsT = np.array(
-        [
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            3.0 * sT,
-            sT,
-            -sT,
-            -3.0 * sT,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            3.0 * sT,
-            sT,
-            -sT,
-            -3.0 * sT,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-        ],
-        dtype=np.float64,
-    )
-    epsG = np.array(
-        [
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            3.0 * sG,
-            sG,
-            -sG,
-            -3.0 * sG,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            3.0 * sG,
-            sG,
-            -sG,
-            -3.0 * sG,
-            0.0,
-            0.0,
-        ],
-        dtype=np.float64,
-    )
-    return epsA, epsG, epsT
 
 
 def _author_regimes(
     params: ModelParams,
     *,
-    n_batches: int = 26,
+    n_batches: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    if int(n_batches) != 26:
-        raise ValueError(f"Author IR setup requires n_batches=26, got {n_batches}.")
-    bad_reg = int(params.bad_state) if int(params.n_regimes) > 1 else 0
-    half = (int(n_batches) - 2) // 2
-    init = np.concatenate(
-        [
-            np.zeros(half, dtype=np.int64),
-            np.full(half, bad_reg, dtype=np.int64),
-            np.array([0, bad_reg], dtype=np.int64),
-        ]
-    )
-    shock = np.concatenate(
-        [
-            np.zeros(half, dtype=np.int64),
-            np.full(half, bad_reg, dtype=np.int64),
-            np.array([bad_reg, 0], dtype=np.int64),
-        ]
-    )
-    return init, shock
+    n_reg = int(params.n_regimes)
+    expected = 13 * n_reg
+    if n_batches is None:
+        n_batches = expected
+    if int(n_batches) != expected:
+        raise ValueError(f"Author IR setup requires n_batches={expected}, got {n_batches}.")
+
+    init: list[int] = []
+    shock: list[int] = []
+    for r in range(n_reg):
+        for _ in range(12):
+            init.append(int(r))
+            shock.append(int(r))
+    for r in range(n_reg):
+        init.append(int(r))
+        shock.append(int(r))
+
+    return np.asarray(init, dtype=np.int64), np.asarray(shock, dtype=np.int64)
 
 
 def _load_starting_state(trainer: Trainer, run_dir: str) -> torch.Tensor:
@@ -344,7 +285,7 @@ def _run_author_ir_episode(
     policy = trainer.policy
     dev, dt = params.device, params.dtype
 
-    n_batches = 26
+    n_batches = 13 * int(params.n_regimes)
     epsA_26, epsg_26, epst_26 = _author_ir_shock_vectors(params, n_batches=n_batches)
     reg_init_26, reg_shock_26 = _author_regimes(params, n_batches=n_batches)
 
@@ -602,7 +543,7 @@ def _export_ir_npz(
     cons_mode: str,
     save_states: bool,
 ) -> None:
-    labels = _flatten_shock_labels()
+    labels = _flatten_shock_labels(params)
     T, B, D = states.shape
     states_np = states.cpu().numpy().astype(np.float64, copy=False)
     defs_npz: Dict[str, Dict[str, np.ndarray]] = {}

@@ -60,7 +60,7 @@ def _deterministic_step(
         u = torch.rand(B, device=dev, dtype=dt)
         probs = _transition_probs_to_next(params, st)  # (B,R)
         cdf = torch.cumsum(probs, dim=-1)
-        cdf[..., -1] = 1.0
+        cdf[:, -1] = 1.0
         s_next = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
 
     logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params, st, epsA_t, epsg_t, epst_t, s_next)

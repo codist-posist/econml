@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 import numpy as np
 
 try:
@@ -43,7 +43,7 @@ def split_by_regime(arr: np.ndarray, s: np.ndarray) -> Dict[int, np.ndarray]:
     a = np.asarray(arr)
     out: Dict[int, np.ndarray] = {}
     for reg in sorted({int(v) for v in np.unique(s)}):
-        out[reg] = a[s == reg]
+        out[int(reg)] = a[s == int(reg)]
     return out
 
 
@@ -55,9 +55,9 @@ def ergodic_moments(sim_paths: Dict[str, np.ndarray], *, by_regime: bool = True)
             continue
         out[k] = moments(v)
         if by_regime and s is not None and v.shape == s.shape:
-            by_reg = split_by_regime(v, s)
-            for reg, vals in by_reg.items():
-                out[f"{k}_s{int(reg)}"] = moments(vals)
+            by_s = split_by_regime(v, s)
+            for reg, vv in by_s.items():
+                out[f"{k}_s{int(reg)}"] = moments(vv)
     return out
 
 
@@ -282,8 +282,8 @@ def table2_dataframe(sss_by_policy: Dict[str, Dict[str, Any]]):
     """Build a robust Table-2-like DataFrame from arbitrary SSS dicts.
 
     Expects each policy dict to have either:
-      - {"by_regime": {s:{...}}} (preferred), or
-      - {s:{...}} directly.
+      - {"by_regime": {0:{...}, 1:{...}, 2:{...}, ...}} (preferred), or
+      - {0:{...}, 1:{...}, 2:{...}, ...} directly.
     Produces a tidy DataFrame with rows (policy, regime) and columns = union of keys.
     """
     if pd is None:
@@ -291,13 +291,13 @@ def table2_dataframe(sss_by_policy: Dict[str, Dict[str, Any]]):
     rows = []
     for pol, obj in sss_by_policy.items():
         by_reg = obj.get("by_regime", obj)
-        keys = set()
+        reg_ids = []
         for k in by_reg.keys():
             try:
-                keys.add(int(k))
+                reg_ids.append(int(k))
             except Exception:
                 continue
-        for s in sorted(keys):
+        for s in sorted(set(reg_ids)):
             d = dict(by_reg.get(str(s), by_reg.get(s, {})))
             d["policy"] = pol
             d["regime"] = s

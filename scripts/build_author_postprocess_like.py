@@ -32,6 +32,21 @@ def _resolve_cons_mode(mode: str) -> str:
     return m
 
 
+def _author_regime_tag(reg: int) -> str:
+    r = int(reg)
+    if r == 0:
+        return "NT"
+    if r == 1:
+        return "SS"
+    if r == 2:
+        return "SEV"
+    return f"R{r}"
+
+
+def _author_regime_filename(reg: int) -> str:
+    return f"simulated_definitions_{_author_regime_tag(int(reg))}.npz"
+
+
 def _load_params_from_run(
     run_dir: str,
     *,
@@ -76,35 +91,97 @@ def _cons_flex_paper(
 def _transition_probs_to_next_regime(
     params: ModelParams,
     s: np.ndarray,
+    xi: np.ndarray | None = None,
     p21_state: np.ndarray | None = None,
+    p12_state: np.ndarray | None = None,
 ) -> np.ndarray:
     s_i = np.asarray(s, dtype=np.int64).reshape(-1)
-    P = params.P.detach().cpu().numpy().astype(np.float64)
-    R = int(P.shape[0])
-    bad_reg = int(getattr(params, "bad_state", 1))
-    if bad_reg < 0 or bad_reg >= R:
-        bad_reg = 1 if R > 1 else 0
-    if R <= 0:
-        raise ValueError("Invalid transition matrix with zero regimes.")
-    s_clip = np.clip(s_i, 0, R - 1)
-    probs = P[s_clip, :].copy()
-    if p21_state is not None and R >= 2:
-        p21v = np.clip(np.asarray(p21_state, dtype=np.float64).reshape(-1), 1e-8, 1.0 - 1e-8)
-        bad = (s_clip == int(bad_reg))
-        if np.any(bad):
-            if R == 2:
-                probs[bad, 0] = p21v[bad]
-                probs[bad, 1] = 1.0 - p21v[bad]
-            else:
-                p12_bad = float(params.p23)
-                p10 = np.clip(p21v[bad], 1e-8, 1.0 - p12_bad - 1e-8)
-                p11 = 1.0 - p10 - p12_bad
-                probs[bad, 0] = p10
-                probs[bad, 1] = p11
-                probs[bad, 2] = p12_bad
-    probs = np.clip(probs, 0.0, 1.0)
-    row_sum = np.clip(np.sum(probs, axis=1, keepdims=True), 1e-12, None)
-    return probs / row_sum
+    R = int(params.n_regimes)
+    P = np.asarray(params.P.detach().cpu().numpy(), dtype=np.float64)
+    if P.ndim != 2 or P.shape[0] != P.shape[1]:
+        raise ValueError(f"params.P must be square; got shape={P.shape!r}")
+    if int(P.shape[0]) != R:
+        raise ValueError(f"params.n_regimes={R} but P has shape={P.shape!r}")
+    idx = np.clip(s_i, 0, max(0, R - 1))
+    probs = P[idx, :].copy()
+
+    floor = max(1e-12, float(getattr(params, "transition_prob_floor", 1e-8)))
+    p12 = np.asarray(p12_state, dtype=np.float64).reshape(-1) if p12_state is not None else None
+    p21 = np.asarray(p21_state, dtype=np.float64).reshape(-1) if p21_state is not None else None
+
+    # Direct per-path overrides (same semantics as model_common.transition_probs_to_next_regimes).
+    if R >= 2:
+        if p12 is not None:
+            m0 = idx == 0
+            if np.any(m0):
+                fixed_other = probs[m0].copy()
+                fixed_other[:, 0] = 0.0
+                fixed_other[:, 1] = 0.0
+                fixed_sum = fixed_other.sum(axis=1)
+                p01_max = np.clip(1.0 - floor - fixed_sum, floor, 1.0 - floor)
+                p01 = np.clip(p12[m0], floor, p01_max)
+                probs[m0, 1] = p01
+                probs[m0, 0] = 1.0 - p01 - fixed_sum
+        if p21 is not None:
+            m1 = idx == 1
+            if np.any(m1):
+                fixed_other = probs[m1].copy()
+                fixed_other[:, 0] = 0.0
+                fixed_other[:, 1] = 0.0
+                fixed_sum = fixed_other.sum(axis=1)
+                p10_max = np.clip(1.0 - floor - fixed_sum, floor, 1.0 - floor)
+                p10 = np.clip(p21[m1], floor, p10_max)
+                probs[m1, 0] = p10
+                probs[m1, 1] = 1.0 - p10 - fixed_sum
+
+    if bool(getattr(params, "state_dependent_transitions", False)) and xi is not None and R >= 2:
+        xi_v = np.asarray(xi, dtype=np.float64).reshape(-1)
+        if params.transition_xi_ref is None:
+            sigma_levels = np.asarray(params.sigma_tau_by_regime, dtype=np.float64)
+            if sigma_levels.size == 0:
+                sigma_levels = np.asarray([float(params.sigma_tau)], dtype=np.float64)
+            sigma_ref = sigma_levels[np.clip(idx, 0, sigma_levels.size - 1)]
+            xi_ref = -(sigma_ref**2) / 2.0
+        else:
+            xi_ref = float(params.transition_xi_ref)
+        z = xi_v - xi_ref
+
+        slope12 = float(getattr(params, "p12_xi_slope", 0.0))
+        slope21 = float(getattr(params, "p21_xi_slope", 0.0))
+
+        if abs(slope12) > 0.0:
+            m0 = idx == 0
+            if np.any(m0):
+                p01_base = np.clip(p12[m0], floor, 1.0 - floor) if p12 is not None else np.clip(probs[m0, 1], floor, 1.0 - floor)
+                z0 = np.log(np.clip(p01_base, floor, 1.0 - floor) / np.clip(1.0 - p01_base, floor, 1.0 - floor)) + slope12 * z[m0]
+                p01 = 1.0 / (1.0 + np.exp(-z0))
+                fixed_other = probs[m0].copy()
+                fixed_other[:, 0] = 0.0
+                fixed_other[:, 1] = 0.0
+                fixed_sum = fixed_other.sum(axis=1)
+                p01_max = np.clip(1.0 - floor - fixed_sum, floor, 1.0 - floor)
+                p01 = np.clip(p01, floor, p01_max)
+                probs[m0, 1] = p01
+                probs[m0, 0] = 1.0 - p01 - fixed_sum
+
+        if abs(slope21) > 0.0:
+            m1 = idx == 1
+            if np.any(m1):
+                p10_base = np.clip(p21[m1], floor, 1.0 - floor) if p21 is not None else np.clip(probs[m1, 0], floor, 1.0 - floor)
+                z1 = np.log(np.clip(p10_base, floor, 1.0 - floor) / np.clip(1.0 - p10_base, floor, 1.0 - floor)) - slope21 * z[m1]
+                p10 = 1.0 / (1.0 + np.exp(-z1))
+                fixed_other = probs[m1].copy()
+                fixed_other[:, 0] = 0.0
+                fixed_other[:, 1] = 0.0
+                fixed_sum = fixed_other.sum(axis=1)
+                p10_max = np.clip(1.0 - floor - fixed_sum, floor, 1.0 - floor)
+                p10 = np.clip(p10, floor, p10_max)
+                probs[m1, 0] = p10
+                probs[m1, 1] = 1.0 - p10 - fixed_sum
+
+    probs = np.clip(probs, 0.0, None)
+    probs = probs / np.clip(np.sum(probs, axis=1, keepdims=True), 1e-12, None)
+    return probs
 
 
 def _i_flex_author_like(
@@ -198,14 +275,16 @@ def _i_flex_paper_like(
     rho_g = float(params.rho_g)
     sigma_g = float(params.sigma_g)
     rho_tau = float(params.rho_tau)
-    sigma_tau = float(params.sigma_tau)
     tau_bar = float(params.tau_bar)
-    eta_vec = np.asarray(params.eta_by_regime, dtype=np.float64).reshape(-1)
+    eta_by_reg = tuple(float(v) for v in params.eta_by_regime)
+    sigma_by_reg = tuple(float(v) for v in params.sigma_tau_by_regime)
     gamma = float(params.gamma)
 
     driftA = (1.0 - rho_A) * (-(sigma_A**2) / 2.0)
     driftg = (1.0 - rho_g) * (-(sigma_g**2) / 2.0)
-    drift_xi = (1.0 - rho_tau) * (-(sigma_tau**2) / 2.0)
+    sigma_levels = np.asarray(sigma_by_reg, dtype=np.float64)
+    if sigma_levels.size == 0:
+        sigma_levels = np.asarray([float(params.sigma_tau)], dtype=np.float64)
 
     # N(0,1) GH nodes/weights
     x, w = hermgauss(int(n_quad_pts))
@@ -215,12 +294,11 @@ def _i_flex_paper_like(
     lam_t = np.clip(cons_flex, 1e-12, None) ** (-gamma)
     logA_next = driftA + rho_A * logA[:, None] + sigma_A * nodes[None, :]
     logg_next = driftg + rho_g * logg[:, None] + sigma_g * nodes[None, :]
-    xi_next = drift_xi + rho_tau * xi[:, None] + sigma_tau * nodes[None, :]
-
-    p_next = _transition_probs_to_next_regime(params, s, p21_state=p21_state)  # (B,R)
-    R = int(p_next.shape[1])
-    if eta_vec.size < R:
-        raise ValueError(f"eta_by_regime has size {eta_vec.size}, but transition matrix has {R} regimes.")
+    probs_next = _transition_probs_to_next_regime(params, s, xi=xi, p21_state=p21_state)
+    R = int(probs_next.shape[1])
+    eta_levels = np.asarray(eta_by_reg, dtype=np.float64)
+    if eta_levels.size == 0:
+        eta_levels = np.asarray([0.0], dtype=np.float64)
 
     E_lam_next = np.zeros_like(lam_t)
     for ia in range(int(n_quad_pts)):
@@ -231,10 +309,13 @@ def _i_flex_paper_like(
             wAG = wA * weights[ig]
             for it in range(int(n_quad_pts)):
                 w_all = wAG * weights[it]
-                xi_n = xi_next[:, it]
-                weighted_lam = np.zeros_like(lam_t)
-                for rp in range(R):
-                    one_plus_tau_r = (1.0 - tau_bar) + xi_n + float(eta_vec[rp])
+                lam_next_by_reg = np.zeros((A_n.size, R), dtype=np.float64)
+                for r in range(R):
+                    eta_r = float(eta_levels[min(r, eta_levels.size - 1)])
+                    sigma_r = float(sigma_levels[min(r, sigma_levels.size - 1)])
+                    drift_xi_r = (1.0 - rho_tau) * (-(sigma_r**2) / 2.0)
+                    xi_n_r = drift_xi_r + rho_tau * xi + sigma_r * nodes[it]
+                    one_plus_tau_r = (1.0 - tau_bar) + xi_n_r + eta_r
                     c_next_r = flex_c_series_from_A_g_tau(
                         params,
                         A=A_n,
@@ -243,9 +324,8 @@ def _i_flex_paper_like(
                         max_iter=80,
                         tol=1e-12,
                     )
-                    lam_next_r = np.clip(c_next_r, 1e-12, None) ** (-gamma)
-                    weighted_lam += p_next[:, rp] * lam_next_r
-                E_lam_next += w_all * weighted_lam
+                    lam_next_by_reg[:, r] = np.clip(c_next_r, 1e-12, None) ** (-gamma)
+                E_lam_next += w_all * np.sum(probs_next * lam_next_by_reg, axis=1)
 
     return lam_t / np.clip(beta * E_lam_next, 1e-12, None) - 1.0
 
@@ -371,21 +451,19 @@ def _export_for_policy(
             "Use an author-compatible run (or retrain this policy), then re-run this script."
         ) from e
 
-    names = ["full", "NT", "SS", "SV", "ss_only", "xi_only"]
-    n_reg = int(params.n_regimes)
-    normal_reg = 0
-    bad_reg = 1 if n_reg > 1 else 0
-    severe_reg = 2 if n_reg > 2 else bad_reg
-    idx_nt = names.index("NT")
-    idx_ss = names.index("SS")
-    idx_sv = names.index("SV")
-    idx_ss_only = names.index("ss_only")
-    idx_xi_only = names.index("xi_only")
+    reg_ids = list(range(int(params.n_regimes)))
+    reg_names = [_author_regime_tag(r) for r in reg_ids]
+    names = ["full", *reg_names, "ss_only", "xi_only"]
     explicit_i = {"taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb"}
     keys = ["c", "pi", "pstar", "Delta", "y", "h", "g", "A", "tau", "s", "i", "xi", "p21"]
     sims: Dict[str, Dict[str, np.ndarray]] = {
         nm: {k: np.zeros((int(T), 1), dtype=np.float64) for k in keys} for nm in names
     }
+
+    idx_reg = {int(r): 1 + i for i, r in enumerate(reg_ids)}
+    idx_ss_only = 1 + len(reg_ids)
+    idx_xi_only = idx_ss_only + 1
+    xi_only_reg = int(params.bad_state) if 0 <= int(params.bad_state) < int(params.n_regimes) else 0
 
     x = x0.repeat(len(names), 1)
     for t in range(int(T)):
@@ -416,13 +494,12 @@ def _export_for_policy(
             else:
                 sims[nm]["p21"][t, 0] = float(params.p21)
 
-        # One shared episode step, then branch transformations.
+        # One shared episode step, then branch transformations as in author post_process.py
         x = trainer._step_state(x)
-        # regime_x: [full, normal, bad, severe, keep, bad]
-        x[idx_nt, 4] = float(normal_reg)
-        x[idx_ss, 4] = float(bad_reg)
-        x[idx_sv, 4] = float(severe_reg)
-        x[idx_xi_only, 4] = float(bad_reg)
+        # regime_x: full keeps stochastic draw; by-regime branches are pinned.
+        for r, idx_r in idx_reg.items():
+            x[idx_r, 4] = float(r)
+        x[idx_xi_only, 4] = float(xi_only_reg)
         # log_a_x for ss_only/xi_only -> 0
         x[idx_ss_only, 1] = 0.0
         x[idx_xi_only, 1] = 0.0
@@ -440,18 +517,11 @@ def _export_for_policy(
         os.path.join(out_dir, "simulated_definitions.npz"),
         **_to_author_defs(sims["full"], params, cons_mode=mode),
     )
-    np.savez_compressed(
-        os.path.join(out_dir, "simulated_definitions_NT.npz"),
-        **_to_author_defs(sims["NT"], params, cons_mode=mode),
-    )
-    np.savez_compressed(
-        os.path.join(out_dir, "simulated_definitions_SS.npz"),
-        **_to_author_defs(sims["SS"], params, cons_mode=mode),
-    )
-    np.savez_compressed(
-        os.path.join(out_dir, "simulated_definitions_SEV.npz"),
-        **_to_author_defs(sims["SV"], params, cons_mode=mode),
-    )
+    for r, nm in zip(reg_ids, reg_names):
+        np.savez_compressed(
+            os.path.join(out_dir, _author_regime_filename(int(r))),
+            **_to_author_defs(sims[nm], params, cons_mode=mode),
+        )
     np.savez_compressed(
         os.path.join(out_dir, "simulated_definitions_ss_only.npz"),
         **_to_author_defs(sims["ss_only"], params, cons_mode=mode),

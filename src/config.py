@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal, Tuple
 import os
+import math
 import torch
 
 PolicyName = Literal[
@@ -46,32 +47,33 @@ class ModelParams:
     sigma_tau: float = 0.0014
     sigma_g: float = 0.0052
 
-    # Levels / regimes
+    # Levels / regimes (2-regime baseline: normal/bad)
     g_bar: float = 0.20
-    # Legacy alias for regime-1 cost-push level (kept for compatibility).
-    eta_bar: float = 1.0 / 7.0
-    # Regime-specific level cost-push shifters:
-    #   s=0 normal, s=1 bad, s=2 severe.
-    # If eta1/eta2 are None, they are derived from eta_bar.
+    eta_bar: float = 1.0 / 7.0  # = 1/eps
     eta0: float = 0.0
     eta1: float | None = None
-    eta2: float | None = None
-    # Legacy label used by old two-regime paths.
     bad_state: int = 1
 
-    # Markov transition probabilities (escalation chain):
-    #   0 -> 1 with p12 (normal -> bad)
-    #   1 -> 0 with p21 (bad -> normal)
-    #   1 -> 2 with p23 (bad -> severe)
-    #   2 -> 1 with p32 (severe -> bad)
-    # Direct 0 <-> 2 jumps are fixed to zero in the baseline.
+    # Markov transition probabilities (normal->bad, bad->normal)
     p12: float = 1.0 / 48.0
     p21: float = 1.0 / 24.0
-    p23: float = 1.0 / 96.0
-    p32: float = 1.0 / 12.0
     # Author taylor_para uses per-path p21 sampled in [p21_l, p21_u].
     p21_l: float = 1.0 / 60.0
     p21_u: float = 1.0
+    # Optional state-dependent transitions for critique experiments.
+    # If enabled, p12_t and p21_t are obtained by a logit shift driven by xi_t:
+    #   logit(p21_t) = logit(p21_base) - p21_xi_slope * (xi_t - xi_ref)
+    #   logit(p12_t) = logit(p12_base) + p12_xi_slope * (xi_t - xi_ref)
+    # where xi_ref is transition_xi_ref or the stationary mean -sigma_tau^2/2.
+    state_dependent_transitions: bool = False
+    p21_xi_slope: float = 0.0
+    p12_xi_slope: float = 0.0
+    transition_xi_ref: float | None = None
+    transition_prob_floor: float = 1e-8
+
+    # Regime-dependent uncertainty extension.
+    # sigma_tau(s=1) = sigma_tau * sigma_tau_bad_mult
+    sigma_tau_bad_mult: float = 1.0
 
     # Taylor-rule objects (paper uses pi_bar = 0)
     pi_bar: float = 0.0
@@ -133,48 +135,51 @@ class ModelParams:
 
     @property
     def n_regimes(self) -> int:
-        return 3
+        return 2
 
     @property
-    def eta_by_regime(self) -> Tuple[float, float, float]:
+    def eta_by_regime(self) -> Tuple[float, float]:
         eta1 = float(self.eta_bar) if self.eta1 is None else float(self.eta1)
-        eta2 = float(2.0 * eta1) if self.eta2 is None else float(self.eta2)
-        return (float(self.eta0), eta1, eta2)
+        return (float(self.eta0), eta1)
 
-    def eta_by_regime_tensor(self) -> torch.Tensor:
-        return torch.tensor(
-            self.eta_by_regime,
-            device=self.device,
-            dtype=self.dtype,
-        )
+    @property
+    def sigma_tau_by_regime(self) -> Tuple[float, float]:
+        sig0 = max(0.0, float(self.sigma_tau))
+        sig1 = sig0 * max(0.0, float(self.sigma_tau_bad_mult))
+        return (sig0, sig1)
+
+    @property
+    def sigma_tau_by_regime_tensor(self) -> torch.Tensor:
+        return torch.tensor(self.sigma_tau_by_regime, device=self.device, dtype=self.dtype)
 
     @property
     def P(self) -> torch.Tensor:
         # IMPORTANT: P[s_current, s_next] (row-stochastic, as in paper Appendix A.1)
-        # Escalation chain:
-        #   0(normal) -> {0,1}
-        #   1(bad)    -> {0,1,2}
-        #   2(severe) -> {1,2}
-        p00 = 1.0 - self.p12
-        p11 = 1.0 - self.p21 - self.p23
-        p22 = 1.0 - self.p32
-        if p00 < 0.0 or p11 < 0.0 or p22 < 0.0:
-            raise ValueError(
-                "Invalid Markov probabilities: ensure p12<=1, p21+p23<=1, p32<=1."
-            )
+        p12 = float(self.p12)
+        p21 = float(self.p21)
+        if not (0.0 <= p12 <= 1.0 and 0.0 <= p21 <= 1.0):
+            raise ValueError(f"Invalid Markov probabilities: p12={p12}, p21={p21}")
+        p11 = 1.0 - p12
+        p22 = 1.0 - p21
+        if not (0.0 <= p11 <= 1.0 and 0.0 <= p22 <= 1.0):
+            raise ValueError(f"Invalid Markov rows: p11={p11}, p22={p22}")
         P = torch.tensor(
             [
-                [p00, self.p12, 0.0],
-                [self.p21, p11, self.p23],
-                [0.0, self.p32, p22],
+                [p11, p12],
+                [p21, p22],
             ],
             device=self.device,
             dtype=self.dtype,
         )
-        row_sums = P.sum(dim=1)
-        if not torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-7, rtol=1e-7):
-            raise ValueError("Transition matrix rows must sum to 1.")
+        rows = P.sum(dim=1)
+        if not torch.allclose(rows, torch.ones_like(rows), atol=1e-7, rtol=0.0):
+            raise ValueError(f"Transition matrix rows must sum to 1, got {rows.tolist()}")
         return P
+
+    def transition_xi_reference(self) -> float:
+        if self.transition_xi_ref is not None and math.isfinite(float(self.transition_xi_ref)):
+            return float(self.transition_xi_ref)
+        return float(-(float(self.sigma_tau) ** 2) / 2.0)
 
 
 @dataclass(frozen=True)

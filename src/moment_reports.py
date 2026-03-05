@@ -77,7 +77,7 @@ def _author_postprocess_ready(run_dir: str, *, cons_mode: str) -> bool:
         return False
 
 
-def _author_regime_moments(run_dir: str) -> pd.DataFrame:
+def _author_nt_ss_moments(run_dir: str) -> pd.DataFrame:
     out_dir = os.path.join(run_dir, "author_postprocess")
     rows = []
     entries: list[tuple[int, str]] = [
@@ -175,8 +175,7 @@ def _sim_paths_conditional_moments(run_dir: str, *, params: ModelParams) -> pd.D
         s_next = None
 
     rows = []
-    reg_ids = sorted({int(v) for v in np.unique(s)})
-    for reg in reg_ids:
+    for reg in sorted({int(v) for v in np.unique(s)}):
         m = s == reg
         row = {
             "regime": _regime_name(reg),
@@ -234,7 +233,7 @@ def build_and_print_policy_reports(
         )
 
     params = _load_params_from_run(run_dir, device=device, dtype=dtype)
-    author_df = _author_regime_moments(run_dir)
+    author_df = _author_nt_ss_moments(run_dir)
     sim_df = _sim_paths_conditional_moments(run_dir, params=params)
 
     print("\n[author_postprocess by regime] (table-comparison object)")
@@ -246,7 +245,6 @@ def build_and_print_policy_reports(
         "run_dir": run_dir,
         "policy": str(policy),
         "cons_mode": mode,
-        "author_by_regime": author_df,
         "author_nt_ss": author_df,
         "sim_paths": sim_df,
     }
@@ -279,8 +277,7 @@ def build_and_print_author_nt_ss_report(
     rebuild_author_postprocess: bool = False,
 ) -> pd.DataFrame:
     """
-    Ensure author postprocess files and print regime moments (table object).
-    Kept with legacy name for backward compatibility.
+    Ensure author postprocess files and print by-regime moments (table object).
     """
     from scripts.build_author_postprocess_like import _export_for_policy
 
@@ -301,7 +298,7 @@ def build_and_print_author_nt_ss_report(
             cons_mode=mode,
         )
 
-    author_df = _author_regime_moments(run_dir)
+    author_df = _author_nt_ss_moments(run_dir)
     print("\n[author_postprocess by regime] (table-comparison object)")
     _to_display(author_df)
     return author_df
