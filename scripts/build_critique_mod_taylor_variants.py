@@ -76,8 +76,9 @@ def _load_params_from_run(run_dir: str, *, device: str, dtype: torch.dtype) -> M
 
 def _maybe_rbar(params: ModelParams) -> torch.Tensor:
     flex = solve_flexprice_sss(params)
+    regimes = sorted(int(k) for k in flex.by_regime.keys())
     return torch.tensor(
-        [flex.by_regime[s]["r_star"] for s in range(int(params.n_regimes))],
+        [flex.by_regime[s]["r_star"] for s in regimes],
         device=params.device,
         dtype=params.dtype,
     )
@@ -287,9 +288,13 @@ def _simulate_custom(
         else:
             u = torch.rand((B,), device=params.device, dtype=params.dtype)
             probs = _transition_probs_to_next(params, st)
-            cdf = torch.cumsum(probs, dim=-1)
-            cdf[..., -1] = 1.0
-            s_next = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
+            if isinstance(probs, tuple):
+                p0, _ = probs
+                s_next = torch.where(u < p0, torch.zeros_like(st.s), torch.ones_like(st.s))
+            else:
+                cdf = torch.cumsum(probs, dim=-1)
+                cdf[..., -1] = 1.0
+                s_next = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
 
         logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params, st, epsA, epsg, epst, s_next)
         x = torch.stack([out["Delta"], logA_n, logg_n, xi_n, s_n.to(params.dtype)], dim=-1)
