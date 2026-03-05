@@ -96,8 +96,9 @@ def _solve_flex_c_batch(
     A = torch.exp(logA)
     g = params.g_bar * torch.exp(logg)
     # (1+tau_t) = 1 - tau_bar + xi_t + eta_t
-    bad = (s.to(torch.long) == int(params.bad_state))
-    eta = torch.where(bad, torch.tensor(params.eta_bar, device=dev, dtype=dt), torch.zeros_like(xi))
+    eta_vec = params.eta_by_regime_tensor().to(device=dev, dtype=dt)
+    s_idx = torch.clamp(s.to(torch.long), min=0, max=int(eta_vec.numel()) - 1)
+    eta = eta_vec[s_idx]
     one_plus_tau = (1.0 - params.tau_bar) + xi + eta
     M = params.M
     w = A / (M * one_plus_tau)
@@ -180,43 +181,25 @@ def _simulate_flex_prices_for_table2(
         logg_n = driftg + params.rho_g * logg[:, None] + params.sigma_g * epsg_nodes[None, :]
         xi_n = drift_xi + params.rho_tau * xi[:, None] + params.sigma_tau * epst_nodes[None, :]
 
-        # Two possible next regimes
-        P = params.P  # shape (2,2) with orientation P[s_current, s_next] (row-stochastic)
-        p0 = P[s.to(torch.long), 0]  # (B,)
-        p1 = P[s.to(torch.long), 1]  # (B,)
-
-        # compute lambda_next for s_next=0 and s_next=1
-        s0 = torch.zeros((B, N), device=dev, dtype=dt)
-        s1 = torch.ones((B, N), device=dev, dtype=dt)
+        P = params.P  # shape (R,R), P[s_current, s_next]
+        R = int(P.shape[0])
+        p_next = P[s.to(torch.long), :]  # (B,R)
 
         # initial h guess for next period: keep last h_guess
         h_init_n = h_guess[:, None].expand(B, N).reshape(-1)
-        c0 = _solve_flex_c_batch(
-            params,
-            logA=logA_n.reshape(-1),
-            logg=logg_n.reshape(-1),
-            xi=xi_n.reshape(-1),
-            s=s0.reshape(-1),
-            h_init=h_init_n,
-        ).reshape(B, N)
-        c1 = _solve_flex_c_batch(
-            params,
-            logA=logA_n.reshape(-1),
-            logg=logg_n.reshape(-1),
-            xi=xi_n.reshape(-1),
-            s=s1.reshape(-1),
-            h_init=h_init_n,
-        ).reshape(B, N)
-        lam0 = c0.pow(-params.gamma)
-        lam1 = c1.pow(-params.gamma)
-
-        # E_t[lambda_{t+1}] = sum_{s'} P(s'|s_t) * E[lambda_{t+1}(s') | s']
-        # NOTE: (lam0*w_nodes).sum(dim=1) is (B,), so the transition probabilities must also be (B,)
-        # to avoid unintended broadcasting to (B,B).
-        Et_lam_next = (
-            p0 * (lam0 * w_nodes[None, :]).sum(dim=1)
-            + p1 * (lam1 * w_nodes[None, :]).sum(dim=1)
-        )
+        Et_lam_next = torch.zeros((B,), device=dev, dtype=dt)
+        for rp in range(R):
+            s_r = torch.full((B, N), float(rp), device=dev, dtype=dt)
+            c_r = _solve_flex_c_batch(
+                params,
+                logA=logA_n.reshape(-1),
+                logg=logg_n.reshape(-1),
+                xi=xi_n.reshape(-1),
+                s=s_r.reshape(-1),
+                h_init=h_init_n,
+            ).reshape(B, N)
+            lam_r = c_r.pow(-params.gamma)
+            Et_lam_next = Et_lam_next + p_next[:, rp] * (lam_r * w_nodes[None, :]).sum(dim=1)
 
         i = (1.0 / params.beta) * (lam / torch.clamp(Et_lam_next, min=1e-12)) - 1.0
 
@@ -239,8 +222,9 @@ def _simulate_flex_prices_for_table2(
 
         # Markov draw for next regime
         u = torch.rand((B,), device=dev, dtype=dt)
-        pstay0 = P[s.to(torch.long), 0]
-        s = torch.where(u < pstay0, torch.zeros_like(s), torch.ones_like(s))
+        cdf = torch.cumsum(P[s.to(torch.long), :], dim=-1)
+        cdf[:, -1] = 1.0
+        s = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
 
         # update h_guess roughly with current h implied
         # (approx: h = (c+g)/A)
@@ -306,6 +290,17 @@ def _annualize_pct(x: np.ndarray | float) -> np.ndarray | float:
 def _point_moments(v: float) -> Dict[str, float]:
     """Moments of a deterministic point-mass variable."""
     return {"mean": float(v), "std": 0.0, "skew": 0.0}
+
+
+def _regime_name(regime: int) -> str:
+    r = int(regime)
+    if r == 0:
+        return "normal"
+    if r == 1:
+        return "bad"
+    if r == 2:
+        return "severe"
+    return f"regime_{r}"
 
 
 def _deterministic_no_innovation_flex_moments(
@@ -645,6 +640,8 @@ def _load_author_regime_moments(
       - simulated_definitions_NT.npz  (regime=0)
       - simulated_definitions_SS.npz  (regime=1)
     """
+    if int(regime) not in (0, 1):
+        return None
     fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
     p = _find_author_defs_file(run_dir, fname)
     if p is None:
@@ -686,6 +683,8 @@ def _load_author_flex_regime_moments(
       - cons_flex_y, i_flex_y from simulated_definitions_NT/SS.npz
       - pi is identically zero under flex prices.
     """
+    if int(regime) not in (0, 1):
+        return None
     fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
     p = _find_author_defs_file(run_dir, fname)
     if p is None:
@@ -873,9 +872,9 @@ def build_table0(
     eff_ss = solve_efficient_sss(params)
     c_hat = float(eff_ss["c_hat"])
 
-        # rbar_by_regime (needed for mod_taylor): use flex-price natural rates if nothing saved
+    # rbar_by_regime (needed for mod_taylor): use flex-price natural rates if nothing saved
     rbar_by_regime = torch.tensor(
-        [flex.by_regime[0]["r_star"], flex.by_regime[1]["r_star"]],
+        [flex.by_regime[s]["r_star"] for s in range(int(params.n_regimes))],
         device=params.device,
         dtype=params.dtype,
     )
@@ -894,6 +893,7 @@ def build_table0(
         ("commitment", "commitment"),
         ("discretion", "discretion"),
     ]
+    regime_ids = list(range(int(params.n_regimes)))
     if include_rules:
         policies += [("taylor", "taylor"), ("mod_taylor", "mod_taylor")]
         if include_para:
@@ -946,7 +946,7 @@ def build_table0(
         if sss_source_norm == "sim_conditional":
             if (policy_key == "flex") and (run_dir is not None):
                 am_flex = _load_author_flex_regime_moments(run_dir, regime, params=params, c_hat=c_hat)
-                if strict_author_table2 and am_flex is None:
+                if strict_author_table2 and int(regime) in (0, 1) and am_flex is None:
                     fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
                     raise FileNotFoundError(
                         f"strict_author_table2=True requires '{fname}' with cons_flex_y/i_flex_y for flex row "
@@ -959,7 +959,7 @@ def build_table0(
                     r_m = am_flex["r"]
             elif run_dir is not None:
                 am = _load_author_regime_moments(run_dir, regime)
-                if strict_author_table2 and am is None:
+                if strict_author_table2 and int(regime) in (0, 1) and am is None:
                     fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
                     raise FileNotFoundError(
                         f"strict_author_table2=True requires '{fname}' for policy='{policy_key}' in run_dir={run_dir}. "
@@ -1049,7 +1049,7 @@ def build_table0(
 
         rows.append({
             "policy": label,
-            "regime": "normal" if regime == 0 else "bad",
+            "regime": _regime_name(regime),
             "sss_source": sss_source_norm,
             # Inflation
             "pi_sss_pct": _annualize_pct(pi_ss),
@@ -1109,7 +1109,7 @@ def build_table0(
     for label, pkey in policies:
         if pkey is None:
             continue
-        for s in (0, 1):
+        for s in regime_ids:
             policy_sss[(pkey, s)] = _policy_sss_for_policy(
                 params,
                 pkey,
@@ -1153,7 +1153,7 @@ def build_table0(
         )
 
     if sss_source_norm == "deterministic_no_innovation":
-        for s in (0, 1):
+        for s in regime_ids:
             deterministic_moments[("flex", s)] = _deterministic_no_innovation_flex_moments(
                 flex_sss=flex.by_regime[s],
                 c_hat=c_hat,
@@ -1161,7 +1161,7 @@ def build_table0(
         for label, pkey in policies:
             if pkey is None:
                 continue
-            for s in (0, 1):
+            for s in regime_ids:
                 deterministic_moments[(pkey, s)] = _deterministic_no_innovation_policy_moments(
                     params=params,
                     policy=pkey,
@@ -1184,7 +1184,7 @@ def build_table0(
         if flex_sim is None:
             # Fallback: simulate flex prices directly (no network) using switching + temporary shocks
             flex_sim = _simulate_flex_prices_for_table2(params)
-    for s in [0, 1]:
+    for s in regime_ids:
         add_block("flex", "flex", s, flex.by_regime[s], flex_sim, run_dir=flex_author_run_dir)
 
     # ---- Diagnostic: frozen-regime SSS (P = I), printed only ----
@@ -1194,7 +1194,7 @@ def build_table0(
             continue
         try:
             frz = frozen_policy_sss_by_regime_from_policy(params, nets[pkey], policy=pkey)
-            for reg in (0, 1):
+            for reg in regime_ids:
                 sss_r = frz.by_regime[reg]
                 print(
                     f"[frozen regime SSS] policy={pkey} regime={reg} "
@@ -1208,7 +1208,7 @@ def build_table0(
     for label, pkey in policies:
         if pkey is None:
             continue
-        for s in [0, 1]:
+        for s in regime_ids:
             sss = policy_sss[(pkey, s)]
             sim = sims.get(pkey)
             if (sss_source_norm == "sim_conditional") and (sim is None):
@@ -1232,7 +1232,8 @@ def build_table0(
         "commitment_zlb",
     ]
     df["policy"] = pd.Categorical(df["policy"], categories=pol_order, ordered=True)
-    df["regime"] = pd.Categorical(df["regime"], categories=["normal", "bad"], ordered=True)
+    regime_order = [_regime_name(s) for s in regime_ids]
+    df["regime"] = pd.Categorical(df["regime"], categories=regime_order, ordered=True)
     df = df.sort_values(["policy", "regime"]).reset_index(drop=True)
     return df
 

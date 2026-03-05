@@ -46,12 +46,23 @@ def _savefig(fig_dir: str, name: str) -> str:
     return p
 
 
+def _regime_label(reg: int) -> str:
+    r = int(reg)
+    if r == 0:
+        return "normal"
+    if r == 1:
+        return "bad"
+    if r == 2:
+        return "severe"
+    return f"regime_{r}"
+
+
 def _maybe_rbar(params: ModelParams, policy: str) -> torch.Tensor | None:
     if policy not in ("mod_taylor", "mod_taylor_zlb"):
         return None
     flex = solve_flexprice_sss(params)
     return torch.tensor(
-        [flex.by_regime[0]["r_star"], flex.by_regime[1]["r_star"]],
+        [flex.by_regime[s]["r_star"] for s in range(int(params.n_regimes))],
         device=params.device,
         dtype=params.dtype,
     )
@@ -303,7 +314,7 @@ def _simulate_custom(
         if float(noise_scale) != 0.0:
             z = torch.randn((B,), device=params.device, dtype=params.dtype)
             mult = torch.where(
-                st.s == int(params.bad_state),
+                st.s.to(torch.long) >= 1,
                 torch.full((B,), float(bad_sigma_mult), device=params.device, dtype=params.dtype),
                 torch.ones((B,), device=params.device, dtype=params.dtype),
             )
@@ -313,8 +324,10 @@ def _simulate_custom(
             s_next = torch.full((B,), int(regime_path[t + 1]), device=params.device, dtype=torch.long)
         else:
             u = torch.rand((B,), device=params.device, dtype=params.dtype)
-            p0, _ = _transition_probs_to_next(params, st)
-            s_next = torch.where(u < p0, torch.zeros_like(st.s), torch.ones_like(st.s))
+            probs = _transition_probs_to_next(params, st)  # (B,R)
+            cdf = torch.cumsum(probs, dim=-1)
+            cdf[:, -1] = 1.0
+            s_next = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
 
         logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(params, st, epsA, epsg, epst, s_next)
         x = _build_next_state(policy, x, st, out, logA_n, logg_n, xi_n, s_n, params)
@@ -441,7 +454,8 @@ def _regime_moments(sim: Dict[str, np.ndarray], key: str, burn_in: int) -> Dict[
     a = np.asarray(sim[key], dtype=np.float64)[burn_in:, :].reshape(-1)
     s = np.asarray(sim["s"], dtype=np.int64)[burn_in:, :].reshape(-1)
     out: Dict[str, Dict[str, float]] = {}
-    for reg, label in ((0, "normal"), (1, "bad")):
+    for reg in sorted({int(v) for v in np.unique(s)}):
+        label = _regime_label(reg)
         v = a[s == int(reg)]
         if v.size == 0:
             out[label] = {"mean": float("nan"), "std": float("nan")}
@@ -499,7 +513,8 @@ def _build_bad_uncertainty(
         m_base_x = _regime_moments({"x": 100.0 * sim_base["x"], "s": sim_base["s"]}, "x", burn_in)
         m_hi_x = _regime_moments({"x": 100.0 * sim_hi["x"], "s": sim_hi["s"]}, "x", burn_in)
 
-        for reg in ("normal", "bad"):
+        regime_labels = sorted(set(m_base_pi.keys()) | set(m_hi_pi.keys()))
+        for reg in regime_labels:
             rows.append(
                 {
                     "policy": policy,

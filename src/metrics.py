@@ -279,8 +279,8 @@ def table2_dataframe(sss_by_policy: Dict[str, Dict[str, Any]]):
     """Build a robust Table-2-like DataFrame from arbitrary SSS dicts.
 
     Expects each policy dict to have either:
-      - {"by_regime": {0:{...}, 1:{...}}} (preferred), or
-      - {0:{...}, 1:{...}} directly.
+      - {"by_regime": {s:{...}}} (preferred), or
+      - {s:{...}} directly.
     Produces a tidy DataFrame with rows (policy, regime) and columns = union of keys.
     """
     if pd is None:
@@ -288,7 +288,13 @@ def table2_dataframe(sss_by_policy: Dict[str, Dict[str, Any]]):
     rows = []
     for pol, obj in sss_by_policy.items():
         by_reg = obj.get("by_regime", obj)
-        for s in [0, 1]:
+        keys = set()
+        for k in by_reg.keys():
+            try:
+                keys.add(int(k))
+            except Exception:
+                continue
+        for s in sorted(keys):
             d = dict(by_reg.get(str(s), by_reg.get(s, {})))
             d["policy"] = pol
             d["regime"] = s

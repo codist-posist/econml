@@ -13,6 +13,17 @@ from .metrics import output_gap_from_consumption
 from .steady_states import solve_efficient_sss
 
 
+def _regime_name(reg: int) -> str:
+    r = int(reg)
+    if r == 0:
+        return "normal"
+    if r == 1:
+        return "bad"
+    if r == 2:
+        return "severe"
+    return f"regime_{r}"
+
+
 def _to_display(df: pd.DataFrame) -> None:
     try:
         from IPython.display import display  # type: ignore
@@ -80,7 +91,7 @@ def _author_nt_ss_moments(run_dir: str) -> pd.DataFrame:
                 r = i - pi
             rows.append(
                 {
-                    "regime": "normal" if reg == 0 else "bad",
+                    "regime": _regime_name(reg),
                     "n": int(pi.size),
                     "pi_mean_pct": 400.0 * float(np.mean(pi)),
                     "x_mean_pct": 100.0 * float(np.mean(x)),
@@ -142,10 +153,11 @@ def _sim_paths_conditional_moments(run_dir: str, *, params: ModelParams) -> pd.D
         s_next = None
 
     rows = []
-    for reg in (0, 1):
+    reg_ids = sorted({int(v) for v in np.unique(s)})
+    for reg in reg_ids:
         m = s == reg
         row = {
-            "regime": "normal" if reg == 0 else "bad",
+            "regime": _regime_name(reg),
             "n": int(np.sum(m)),
             "pi_mean_pct": 400.0 * float(np.mean(pi[m])) if np.any(m) else float("nan"),
             "x_mean_author_pct": 100.0 * float(np.mean(x_author[m])) if np.any(m) else float("nan"),

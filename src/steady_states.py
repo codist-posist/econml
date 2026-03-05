@@ -106,7 +106,7 @@ def solve_flexprice_sss(params: ModelParams, max_iter: int = 20000, tol: float =
         (c + g_bar)^omega - 1 / ((1+tau_s) * M * c^gamma) = 0
     where:
         (1+tau_s) = 1 - tau_bar + eta_s
-        eta_s = 0 in normal (s=0), eta_bar in bad (s=1)
+        eta_s = regime-specific cost-push level eta_s
         M = eps/(eps-1)
 
     IMPORTANT: The second term is the reciprocal, exactly as written in the paper.
@@ -117,8 +117,10 @@ def solve_flexprice_sss(params: ModelParams, max_iter: int = 20000, tol: float =
     omega = float(params.omega)
 
     out: Dict[int, Dict[str, float]] = {}
-    for s in [0, 1]:
-        eta_s = 0.0 if s == 0 else float(params.eta_bar)
+    eta_levels = params.eta_by_regime
+    n_regimes = int(params.n_regimes)
+    for s in range(n_regimes):
+        eta_s = float(eta_levels[s])
         one_plus_tau = (1.0 - float(params.tau_bar)) + eta_s  # xi=0 in SSS
 
         def f(c: float) -> float:
@@ -159,21 +161,23 @@ def solve_flexprice_sss(params: ModelParams, max_iter: int = 20000, tol: float =
             "pstar": 1.0,
         }
 
-# Natural rate in each regime (flex-price SSS): r*_s = 1/(beta * E_s[m_{t+1}]) - 1,
-    # where m_{t+1} = (c_{t+1}/c_t)^(-gamma) and expectation is over s_{t+1} only (Markov).
+    # Natural rate in each regime (flex-price SSS):
+    # r*_s = 1/(beta * E_s[m_{t+1}]) - 1, where
+    # m_{t+1} = (c_{t+1}/c_t)^(-gamma) and expectation is over s_{t+1}.
     P = params.P.detach().cpu().numpy()
-    c0, c1 = out[0]["c"], out[1]["c"]
+    c_by_regime = {k: out[k]["c"] for k in out.keys()}
 
     def r_star(s: int) -> float:
-        c_s = c0 if s == 0 else c1
-        pi0 = float(P[s, 0])
-        pi1 = float(P[s, 1])
-        # E[(c_{t+1}/c_t)^(-gamma)] over next regime only
-        E_m = pi0 * ((c0 / c_s) ** (-gamma)) + pi1 * ((c1 / c_s) ** (-gamma))
+        c_s = float(c_by_regime[s])
+        E_m = 0.0
+        for sp in range(n_regimes):
+            p_sp = float(P[s, sp])
+            c_sp = float(c_by_regime[sp])
+            E_m += p_sp * ((c_sp / c_s) ** (-gamma))
         return 1.0 / (float(params.beta) * E_m) - 1.0
 
-    out[0]["r_star"] = float(r_star(0))
-    out[1]["r_star"] = float(r_star(1))
+    for s in range(n_regimes):
+        out[s]["r_star"] = float(r_star(s))
     return FlexSSS(by_regime=out)
 
 
@@ -200,7 +204,7 @@ def solve_taylor_sss(params: ModelParams, flex: FlexSSS) -> TaylorSSS:
     rbar = (1.0 / float(params.beta)) - 1.0
 
     out: Dict[int, Dict[str, float]] = {}
-    for s in [0, 1]:
+    for s in range(int(params.n_regimes)):
         r_ss = float(flex.by_regime[s]["r_star"])
         pi_ss = float(params.pi_bar + (r_ss - rbar) / (psi - 1.0))
 
@@ -236,7 +240,7 @@ def solve_taylor_sss(params: ModelParams, flex: FlexSSS) -> TaylorSSS:
 
 def export_rbar_tensor(params: ModelParams, flex: FlexSSS) -> torch.Tensor:
     return torch.tensor(
-        [flex.by_regime[0]["r_star"], flex.by_regime[1]["r_star"]],
+        [flex.by_regime[s]["r_star"] for s in range(int(params.n_regimes))],
         device=params.device,
         dtype=params.dtype,
     )
@@ -269,13 +273,14 @@ def commitment_local_ss(params: ModelParams, regime: int) -> Dict[str, float]:
     Local (no-regime-switching) steady state for commitment (Appendix A.3 equations),
     used ONLY for principled initialization of lagged co-states (vartheta_prev, varrho_prev).
 
-    Regime enters only through eta (0 or eta_bar), hence (1+tau).
+    Regime enters only through eta_s, hence (1+tau).
     """
-    assert regime in (0, 1)
+    if int(regime) < 0 or int(regime) >= int(params.n_regimes):
+        raise ValueError(f"regime must be in [0, {int(params.n_regimes)-1}], got {regime!r}")
     dev, dt = params.device, params.dtype
 
     g = torch.tensor(params.g_bar, device=dev, dtype=dt)
-    eta = torch.tensor(0.0 if regime == 0 else params.eta_bar, device=dev, dtype=dt)
+    eta = torch.tensor(float(params.eta_by_regime[int(regime)]), device=dev, dtype=dt)
     one_plus_tau = torch.tensor(1.0 - params.tau_bar, device=dev, dtype=dt) + eta  # xi=0 in local SS
     A = torch.tensor(1.0, device=dev, dtype=dt)
 
@@ -423,8 +428,8 @@ def commitment_local_ss(params: ModelParams, regime: int) -> Dict[str, float]:
 
 
 def commitment_init_by_regime(params: ModelParams) -> Dict[int, Dict[str, float]]:
-    """Return principled (no-heuristic) commitment init multipliers for both regimes."""
-    return {0: commitment_local_ss(params, 0), 1: commitment_local_ss(params, 1)}
+    """Return principled (no-heuristic) commitment init multipliers for all regimes."""
+    return {s: commitment_local_ss(params, s) for s in range(int(params.n_regimes))}
 
 
 @dataclass
@@ -478,6 +483,12 @@ def solve_commitment_sss_switching(params: ModelParams, max_iter: int = 200, tol
 
     where net is the trained commitment policy network.
     """
+    if int(params.n_regimes) != 2:
+        raise NotImplementedError(
+            "solve_commitment_sss_switching currently supports only 2 regimes. "
+            "Use solve_commitment_sss_from_policy(...) for 3-regime runs."
+        )
+
     dev, dt = params.device, params.dtype
     beta, gamma, omega, eps, theta, M = params.beta, params.gamma, params.omega, params.eps, params.theta, params.M
 
@@ -807,6 +818,12 @@ def solve_discretion_sss_switching(
     Unknowns per regime (11):
       [c, pi, pstar, lam, w, XiN, XiD, Delta, mu, rho, zeta]
     """
+    if int(params.n_regimes) != 2:
+        raise NotImplementedError(
+            "solve_discretion_sss_switching currently supports only 2 regimes. "
+            "Use solve_discretion_sss_from_policy(...) for 3-regime runs."
+        )
+
     from .model_common import State
     from .residuals_a2 import residuals_a2
 
