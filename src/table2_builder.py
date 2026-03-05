@@ -629,6 +629,17 @@ def _find_author_defs_file(run_dir: str, filename: str) -> str | None:
     return None
 
 
+def _author_regime_filename(regime: int) -> str:
+    r = int(regime)
+    if r == 0:
+        return "simulated_definitions_NT.npz"
+    if r == 1:
+        return "simulated_definitions_SS.npz"
+    if r == 2:
+        return "simulated_definitions_SEV.npz"
+    return f"simulated_definitions_R{r}.npz"
+
+
 def _load_author_regime_moments(
     run_dir: str,
     regime: int,
@@ -637,12 +648,11 @@ def _load_author_regime_moments(
     Load author-style post-process moments from fixed-regime simulation files when available.
 
     Expected files (author naming):
-      - simulated_definitions_NT.npz  (regime=0)
-      - simulated_definitions_SS.npz  (regime=1)
+      - simulated_definitions_NT.npz   (regime=0)
+      - simulated_definitions_SS.npz   (regime=1)
+      - simulated_definitions_SEV.npz  (regime=2)
     """
-    if int(regime) not in (0, 1):
-        return None
-    fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
+    fname = _author_regime_filename(int(regime))
     p = _find_author_defs_file(run_dir, fname)
     if p is None:
         return None
@@ -680,12 +690,10 @@ def _load_author_flex_regime_moments(
 ) -> Dict[str, Dict[str, float]] | None:
     """
     Flex row from author post-process files:
-      - cons_flex_y, i_flex_y from simulated_definitions_NT/SS.npz
+      - cons_flex_y, i_flex_y from simulated_definitions_{NT,SS,SEV,...}.npz
       - pi is identically zero under flex prices.
     """
-    if int(regime) not in (0, 1):
-        return None
-    fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
+    fname = _author_regime_filename(int(regime))
     p = _find_author_defs_file(run_dir, fname)
     if p is None:
         return None

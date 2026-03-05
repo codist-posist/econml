@@ -287,24 +287,26 @@ def _author_ir_shock_vectors(params: ModelParams, *, n_batches: int = 26) -> Tup
 
 
 def _author_regimes(
+    params: ModelParams,
     *,
     n_batches: int = 26,
 ) -> Tuple[np.ndarray, np.ndarray]:
     if int(n_batches) != 26:
         raise ValueError(f"Author IR setup requires n_batches=26, got {n_batches}.")
+    bad_reg = int(params.bad_state) if int(params.n_regimes) > 1 else 0
     half = (int(n_batches) - 2) // 2
     init = np.concatenate(
         [
             np.zeros(half, dtype=np.int64),
-            np.ones(half, dtype=np.int64),
-            np.array([0, 1], dtype=np.int64),
+            np.full(half, bad_reg, dtype=np.int64),
+            np.array([0, bad_reg], dtype=np.int64),
         ]
     )
     shock = np.concatenate(
         [
             np.zeros(half, dtype=np.int64),
-            np.ones(half, dtype=np.int64),
-            np.array([1, 0], dtype=np.int64),
+            np.full(half, bad_reg, dtype=np.int64),
+            np.array([bad_reg, 0], dtype=np.int64),
         ]
     )
     return init, shock
@@ -344,7 +346,7 @@ def _run_author_ir_episode(
 
     n_batches = 26
     epsA_26, epsg_26, epst_26 = _author_ir_shock_vectors(params, n_batches=n_batches)
-    reg_init_26, reg_shock_26 = _author_regimes(n_batches=n_batches)
+    reg_init_26, reg_shock_26 = _author_regimes(params, n_batches=n_batches)
 
     x = x0_single.repeat(n_batches, 1)
     x[:, 4] = torch.as_tensor(reg_init_26, device=dev, dtype=dt)

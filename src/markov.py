@@ -7,32 +7,34 @@ def transition_probs(P: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
     Return transition probabilities for each element of a batch.
 
     Inputs:
-      P: (2,2) with orientation P[s_current, s_next] (row-stochastic)
-      s: (B,) long in {0,1}
+      P: (R,R) with orientation P[s_current, s_next] (row-stochastic)
+      s: (B,) long in {0,...,R-1}
 
     Output:
-      probs_next: (2,B) where probs_next[k,b] = P[s[b], k]
+      probs_next: (R,B) where probs_next[k,b] = P[s[b], k]
     """
-    assert P.shape == (2, 2)
+    assert P.ndim == 2 and P.shape[0] == P.shape[1], "P must be square (R,R)"
     assert s.dtype == torch.long
     assert s.ndim == 1
-    assert torch.all((s == 0) | (s == 1)), "s must be in {0,1}"
-    return P[s, :].T.contiguous()  # (2,B)
+    R = int(P.shape[0])
+    assert torch.all((s >= 0) & (s < R)), f"s must be in {{0,...,{R-1}}}"
+    return P[s, :].T.contiguous()  # (R,B)
 
 
 def simulate_markov(P: torch.Tensor, s0: torch.Tensor, T: int) -> torch.Tensor:
     """
-    Simulate a 2-state Markov chain.
+    Simulate an R-state Markov chain.
 
-    Convention: P[s_current, s_next] (row-stochastic), with states {0,1}.
+    Convention: P[s_current, s_next] (row-stochastic), with states {0,...,R-1}.
     Returns:
       s: (T,B) long
     """
-    assert P.shape == (2, 2)
+    assert P.ndim == 2 and P.shape[0] == P.shape[1], "P must be square (R,R)"
     assert T >= 1
     assert s0.dtype == torch.long
     assert s0.ndim == 1
-    assert torch.all((s0 == 0) | (s0 == 1)), "s0 must be in {0,1}"
+    R = int(P.shape[0])
+    assert torch.all((s0 >= 0) & (s0 < R)), f"s0 must be in {{0,...,{R-1}}}"
 
     # Optional but recommended: validate P rows sum to 1 (within tolerance)
     rowsum = P.sum(dim=1)
@@ -48,7 +50,9 @@ def simulate_markov(P: torch.Tensor, s0: torch.Tensor, T: int) -> torch.Tensor:
     for t in range(1, T):
         cur = s[t - 1]                # (B,)
         u = torch.rand(B, device=s0.device)
-        p0 = P[cur, 0]                # P(s_next=0 | s_current=cur)
-        s[t] = torch.where(u < p0, torch.zeros_like(cur), torch.ones_like(cur))
+        probs = P[cur, :]             # (B,R)
+        cdf = torch.cumsum(probs, dim=-1)
+        cdf[:, -1] = 1.0
+        s[t] = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
 
     return s

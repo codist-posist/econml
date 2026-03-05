@@ -61,6 +61,7 @@ def _author_postprocess_ready(run_dir: str, *, cons_mode: str) -> bool:
         os.path.join(out_dir, "simulated_definitions.npz"),
         os.path.join(out_dir, "simulated_definitions_NT.npz"),
         os.path.join(out_dir, "simulated_definitions_SS.npz"),
+        os.path.join(out_dir, "simulated_definitions_SEV.npz"),
         os.path.join(out_dir, "simulated_definitions_ss_only.npz"),
         os.path.join(out_dir, "simulated_definitions_xi_only.npz"),
     ]
@@ -76,11 +77,32 @@ def _author_postprocess_ready(run_dir: str, *, cons_mode: str) -> bool:
         return False
 
 
-def _author_nt_ss_moments(run_dir: str) -> pd.DataFrame:
+def _author_regime_moments(run_dir: str) -> pd.DataFrame:
     out_dir = os.path.join(run_dir, "author_postprocess")
     rows = []
-    for reg, fname in ((0, "simulated_definitions_NT.npz"), (1, "simulated_definitions_SS.npz")):
+    entries: list[tuple[int, str]] = [
+        (0, "simulated_definitions_NT.npz"),
+        (1, "simulated_definitions_SS.npz"),
+        (2, "simulated_definitions_SEV.npz"),
+    ]
+    for fname in sorted(os.listdir(out_dir)) if os.path.isdir(out_dir) else []:
+        if not (fname.startswith("simulated_definitions_R") and fname.endswith(".npz")):
+            continue
+        core = fname[len("simulated_definitions_R") : -len(".npz")]
+        try:
+            reg = int(core)
+        except Exception:
+            continue
+        entries.append((reg, fname))
+    used = set()
+    for reg, fname in sorted(entries, key=lambda x: int(x[0])):
+        key = (int(reg), str(fname))
+        if key in used:
+            continue
+        used.add(key)
         p = os.path.join(out_dir, fname)
+        if not os.path.exists(p):
+            continue
         with np.load(p) as z:
             pi = np.asarray(z["pi_tot_y"]).reshape(-1)
             x = np.asarray(z["out_gap_y"]).reshape(-1)
@@ -189,7 +211,7 @@ def build_and_print_policy_reports(
 ) -> Dict[str, Any]:
     """
     Build/ensure author postprocess files and print two summary blocks:
-      1) author NT/SS moments (table-comparison object)
+      1) author by-regime moments (table-comparison object)
       2) long sim_paths conditional moments (our diagnostic object)
     """
     from scripts.build_author_postprocess_like import _export_for_policy
@@ -212,10 +234,10 @@ def build_and_print_policy_reports(
         )
 
     params = _load_params_from_run(run_dir, device=device, dtype=dtype)
-    author_df = _author_nt_ss_moments(run_dir)
+    author_df = _author_regime_moments(run_dir)
     sim_df = _sim_paths_conditional_moments(run_dir, params=params)
 
-    print("\n[author_postprocess NT/SS] (table-comparison object)")
+    print("\n[author_postprocess by regime] (table-comparison object)")
     _to_display(author_df)
     print("\n[sim_paths conditional by regime] (our long-sim diagnostic object)")
     _to_display(sim_df)
@@ -224,6 +246,7 @@ def build_and_print_policy_reports(
         "run_dir": run_dir,
         "policy": str(policy),
         "cons_mode": mode,
+        "author_by_regime": author_df,
         "author_nt_ss": author_df,
         "sim_paths": sim_df,
     }
@@ -256,7 +279,8 @@ def build_and_print_author_nt_ss_report(
     rebuild_author_postprocess: bool = False,
 ) -> pd.DataFrame:
     """
-    Ensure author postprocess files and print NT/SS moments (table object).
+    Ensure author postprocess files and print regime moments (table object).
+    Kept with legacy name for backward compatibility.
     """
     from scripts.build_author_postprocess_like import _export_for_policy
 
@@ -277,7 +301,7 @@ def build_and_print_author_nt_ss_report(
             cons_mode=mode,
         )
 
-    author_df = _author_nt_ss_moments(run_dir)
-    print("\n[author_postprocess NT/SS] (table-comparison object)")
+    author_df = _author_regime_moments(run_dir)
+    print("\n[author_postprocess by regime] (table-comparison object)")
     _to_display(author_df)
     return author_df

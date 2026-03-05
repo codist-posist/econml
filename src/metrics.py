@@ -38,10 +38,13 @@ def summarize_series(series: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float
     return {k: moments(v) for k, v in series.items()}
 
 
-def split_by_regime(arr: np.ndarray, s: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def split_by_regime(arr: np.ndarray, s: np.ndarray) -> Dict[int, np.ndarray]:
     s = np.asarray(s).astype(int)
     a = np.asarray(arr)
-    return a[s == 0], a[s == 1]
+    out: Dict[int, np.ndarray] = {}
+    for reg in sorted({int(v) for v in np.unique(s)}):
+        out[reg] = a[s == reg]
+    return out
 
 
 def ergodic_moments(sim_paths: Dict[str, np.ndarray], *, by_regime: bool = True) -> Dict[str, Any]:
@@ -52,9 +55,9 @@ def ergodic_moments(sim_paths: Dict[str, np.ndarray], *, by_regime: bool = True)
             continue
         out[k] = moments(v)
         if by_regime and s is not None and v.shape == s.shape:
-            v0, v1 = split_by_regime(v, s)
-            out[k + "_s0"] = moments(v0)
-            out[k + "_s1"] = moments(v1)
+            by_reg = split_by_regime(v, s)
+            for reg, vals in by_reg.items():
+                out[f"{k}_s{int(reg)}"] = moments(vals)
     return out
 
 

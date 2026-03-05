@@ -55,6 +55,17 @@ def _ann(x: np.ndarray) -> np.ndarray:
     return 400.0 * np.asarray(x, dtype=np.float64)
 
 
+def _regime_name(regime: int) -> str:
+    r = int(regime)
+    if r == 0:
+        return "normal"
+    if r == 1:
+        return "bad"
+    if r == 2:
+        return "severe"
+    return f"regime_{r}"
+
+
 def _load_params_from_run(
     run_dir: str,
     *,
@@ -463,29 +474,53 @@ def build_figures(
     ir13_g = _load_ir_label(os.path.join(ir_c_fig13_big, "IR_definitions.npz"), "NT")
 
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].hist(_ann(s_t["pi"])[s_t["s"] == 0], bins=60, alpha=0.45, label="Taylor normal", color="tab:blue")
-    ax[0, 0].hist(_ann(s_t["pi"])[s_t["s"] == 1], bins=60, alpha=0.45, label="Taylor bad", color="tab:orange")
-    ax[0, 0].hist(_ann(s_m["pi"])[s_m["s"] == 0], bins=60, alpha=0.45, label="Mod Taylor normal", color="tab:green")
-    ax[0, 0].hist(_ann(s_m["pi"])[s_m["s"] == 1], bins=60, alpha=0.45, label="Mod Taylor bad", color="tab:red")
+    regimes_tm = sorted(
+        set(np.unique(np.asarray(s_t["s"], dtype=np.int64)).tolist())
+        | set(np.unique(np.asarray(s_m["s"], dtype=np.int64)).tolist())
+    )
+    cols_t = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
+    cols_m = ["tab:green", "tab:red", "tab:olive", "tab:pink", "tab:cyan"]
+    for j, reg in enumerate(regimes_tm):
+        mt = np.asarray(s_t["s"], dtype=np.int64) == int(reg)
+        mm = np.asarray(s_m["s"], dtype=np.int64) == int(reg)
+        if np.any(mt):
+            ax[0, 0].hist(
+                _ann(s_t["pi"])[mt],
+                bins=60,
+                alpha=0.45,
+                label=f"Taylor {_regime_name(int(reg))}",
+                color=cols_t[j % len(cols_t)],
+            )
+            ax[0, 1].hist(100.0 * s_t["x"][mt], bins=60, alpha=0.45, color=cols_t[j % len(cols_t)])
+            ax[1, 0].hist(_ann(s_t["i"])[mt], bins=60, alpha=0.45, color=cols_t[j % len(cols_t)])
+        if np.any(mm):
+            ax[0, 0].hist(
+                _ann(s_m["pi"])[mm],
+                bins=60,
+                alpha=0.45,
+                label=f"Mod Taylor {_regime_name(int(reg))}",
+                color=cols_m[j % len(cols_m)],
+            )
+            ax[0, 1].hist(100.0 * s_m["x"][mm], bins=60, alpha=0.45, color=cols_m[j % len(cols_m)])
+            ax[1, 0].hist(_ann(s_m["i"])[mm], bins=60, alpha=0.45, color=cols_m[j % len(cols_m)])
+    regimes_tm_r = sorted(
+        set(np.unique(np.asarray(s_t["s_r"], dtype=np.int64)).tolist())
+        | set(np.unique(np.asarray(s_m["s_r"], dtype=np.int64)).tolist())
+    )
+    for j, reg in enumerate(regimes_tm_r):
+        mt = np.asarray(s_t["s_r"], dtype=np.int64) == int(reg)
+        mm = np.asarray(s_m["s_r"], dtype=np.int64) == int(reg)
+        if np.any(mt):
+            ax[1, 1].hist(_ann(s_t["r"])[mt], bins=60, alpha=0.45, color=cols_t[j % len(cols_t)])
+        if np.any(mm):
+            ax[1, 1].hist(_ann(s_m["r"])[mm], bins=60, alpha=0.45, color=cols_m[j % len(cols_m)])
     ax[0, 0].set_title("(a) Inflation")
     ax[0, 0].set_xlabel("Ann. perc.")
     ax[0, 0].legend(fontsize=8)
-    ax[0, 1].hist(100.0 * s_t["x"][s_t["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[0, 1].hist(100.0 * s_t["x"][s_t["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[0, 1].hist(100.0 * s_m["x"][s_m["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[0, 1].hist(100.0 * s_m["x"][s_m["s"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[0, 1].set_title("(b) Output gap")
     ax[0, 1].set_xlabel("Perc. of log")
-    ax[1, 0].hist(_ann(s_t["i"])[s_t["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 0].hist(_ann(s_t["i"])[s_t["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 0].hist(_ann(s_m["i"])[s_m["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 0].hist(_ann(s_m["i"])[s_m["s"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[1, 0].set_title("(c) Nominal interest rate")
     ax[1, 0].set_xlabel("Ann. perc.")
-    ax[1, 1].hist(_ann(s_t["r"])[s_t["s_r"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 1].hist(_ann(s_t["r"])[s_t["s_r"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 1].hist(_ann(s_m["r"])[s_m["s_r"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 1].hist(_ann(s_m["r"])[s_m["s_r"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[1, 1].set_title("(d) Real interest rate")
     ax[1, 1].set_xlabel("Ann. perc.")
     fig.suptitle("Figure 2: Ergodic distribution", y=1.02)
@@ -523,31 +558,35 @@ def build_figures(
     params0 = p_t
     grid_p21 = np.linspace(0.02, 0.98, 40)
     dur_bad = 1.0 / grid_p21
+    bad_reg = int(params0.bad_state) if int(params0.n_regimes) > 1 else 0
+    bad_lbl = _regime_name(bad_reg)
     pi_normal, r_normal, pi_bad_cf, r_bad_cf = [], [], [], []
     for p21 in grid_p21:
         pb = _clone_params(params0, p12=float(params0.p12), p21=float(p21))
         flex_b = solve_flexprice_sss(pb)
         tay_b = solve_taylor_sss(pb, flex_b)
-        pi_normal.append(float(tay_b.by_regime[0]["pi"]))
-        r_normal.append(float(tay_b.by_regime[0]["r"]))
+        n_key = 0 if 0 in tay_b.by_regime else sorted(tay_b.by_regime.keys())[0]
+        pi_normal.append(float(tay_b.by_regime[n_key]["pi"]))
+        r_normal.append(float(tay_b.by_regime[n_key]["r"]))
         pc = _clone_params(params0, p12=1.0, p21=float(p21))
         flex_c = solve_flexprice_sss(pc)
         tay_c = solve_taylor_sss(pc, flex_c)
-        pi_bad_cf.append(float(tay_c.by_regime[1]["pi"]))
-        r_bad_cf.append(float(tay_c.by_regime[1]["r"]))
+        b_key = bad_reg if bad_reg in tay_c.by_regime else sorted(tay_c.by_regime.keys())[-1]
+        pi_bad_cf.append(float(tay_c.by_regime[b_key]["pi"]))
+        r_bad_cf.append(float(tay_c.by_regime[b_key]["r"]))
     x = dur_bad
     idx = np.argsort(x)
     eff = solve_efficient_sss(params0)
     fig, ax = plt.subplots(1, 2, figsize=(11, 4))
     ax[0].plot(x[idx], _ann(np.array(pi_normal)[idx]), label="Baseline (normal SSS)")
-    ax[0].plot(x[idx], _ann(np.array(pi_bad_cf)[idx]), "--", label="Counterfactual p12->1 (bad SSS)")
+    ax[0].plot(x[idx], _ann(np.array(pi_bad_cf)[idx]), "--", label=f"Counterfactual p12->1 ({bad_lbl} SSS)")
     ax[0].axhline(0.0, color="gray", ls=":")
     ax[0].set_title("(a) Inflation")
     ax[0].set_xlabel("Average bad-times duration (quarters)")
     ax[0].set_ylabel("Ann. perc.")
     ax[0].legend()
     ax[1].plot(x[idx], _ann(np.array(r_normal)[idx]), label="Baseline (normal SSS)")
-    ax[1].plot(x[idx], _ann(np.array(r_bad_cf)[idx]), "--", label="Counterfactual p12->1 (bad SSS)")
+    ax[1].plot(x[idx], _ann(np.array(r_bad_cf)[idx]), "--", label=f"Counterfactual p12->1 ({bad_lbl} SSS)")
     ax[1].axhline(_ann(np.array([float(eff["r_hat"])]))[0], color="gray", ls=":")
     ax[1].set_title("(b) Real interest rate")
     ax[1].set_xlabel("Average bad-times duration (quarters)")
@@ -559,18 +598,24 @@ def build_figures(
     plt.close(fig)
 
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].hist(_ann(s_d["pi"])[s_d["s"] == 0], bins=60, alpha=0.6, label="normal (s=0)")
-    ax[0, 0].hist(_ann(s_d["pi"])[s_d["s"] == 1], bins=60, alpha=0.6, label="bad (s=1)")
+    regimes_d = sorted(np.unique(np.asarray(s_d["s"], dtype=np.int64)).tolist())
+    cols_d = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
+    for j, reg in enumerate(regimes_d):
+        md = np.asarray(s_d["s"], dtype=np.int64) == int(reg)
+        if not np.any(md):
+            continue
+        ax[0, 0].hist(_ann(s_d["pi"])[md], bins=60, alpha=0.6, label=f"{_regime_name(int(reg))} (s={int(reg)})", color=cols_d[j % len(cols_d)])
+        ax[0, 1].hist(100.0 * s_d["x"][md], bins=60, alpha=0.6, color=cols_d[j % len(cols_d)])
+        ax[1, 1].hist(s_d["Delta"][md], bins=60, alpha=0.6, color=cols_d[j % len(cols_d)])
+    regimes_dr = sorted(np.unique(np.asarray(s_d["s_r"], dtype=np.int64)).tolist())
+    for j, reg in enumerate(regimes_dr):
+        mr = np.asarray(s_d["s_r"], dtype=np.int64) == int(reg)
+        if np.any(mr):
+            ax[1, 0].hist(_ann(s_d["r"])[mr], bins=60, alpha=0.6, color=cols_d[j % len(cols_d)])
     ax[0, 0].set_title("(a) Inflation")
     ax[0, 0].legend()
-    ax[0, 1].hist(100.0 * s_d["x"][s_d["s"] == 0], bins=60, alpha=0.6)
-    ax[0, 1].hist(100.0 * s_d["x"][s_d["s"] == 1], bins=60, alpha=0.6)
     ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].hist(_ann(s_d["r"])[s_d["s_r"] == 0], bins=60, alpha=0.6)
-    ax[1, 0].hist(_ann(s_d["r"])[s_d["s_r"] == 1], bins=60, alpha=0.6)
     ax[1, 0].set_title("(c) Real interest rate")
-    ax[1, 1].hist(s_d["Delta"][s_d["s"] == 0], bins=60, alpha=0.6)
-    ax[1, 1].hist(s_d["Delta"][s_d["s"] == 1], bins=60, alpha=0.6)
     ax[1, 1].set_title("(d) Price dispersion")
     for a in ax.ravel():
         a.set_xlabel("model units")
@@ -580,18 +625,24 @@ def build_figures(
     plt.close(fig)
 
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].hist(_ann(s_c["pi"])[s_c["s"] == 0], bins=60, alpha=0.6, label="normal (s=0)")
-    ax[0, 0].hist(_ann(s_c["pi"])[s_c["s"] == 1], bins=60, alpha=0.6, label="bad (s=1)")
+    regimes_c = sorted(np.unique(np.asarray(s_c["s"], dtype=np.int64)).tolist())
+    cols_c = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
+    for j, reg in enumerate(regimes_c):
+        mc = np.asarray(s_c["s"], dtype=np.int64) == int(reg)
+        if not np.any(mc):
+            continue
+        ax[0, 0].hist(_ann(s_c["pi"])[mc], bins=60, alpha=0.6, label=f"{_regime_name(int(reg))} (s={int(reg)})", color=cols_c[j % len(cols_c)])
+        ax[0, 1].hist(100.0 * s_c["x"][mc], bins=60, alpha=0.6, color=cols_c[j % len(cols_c)])
+        ax[1, 1].hist(s_c["Delta"][mc], bins=60, alpha=0.6, color=cols_c[j % len(cols_c)])
+    regimes_cr = sorted(np.unique(np.asarray(s_c["s_r"], dtype=np.int64)).tolist())
+    for j, reg in enumerate(regimes_cr):
+        mr = np.asarray(s_c["s_r"], dtype=np.int64) == int(reg)
+        if np.any(mr):
+            ax[1, 0].hist(_ann(s_c["r"])[mr], bins=60, alpha=0.6, color=cols_c[j % len(cols_c)])
     ax[0, 0].set_title("(a) Inflation")
     ax[0, 0].legend()
-    ax[0, 1].hist(100.0 * s_c["x"][s_c["s"] == 0], bins=60, alpha=0.6)
-    ax[0, 1].hist(100.0 * s_c["x"][s_c["s"] == 1], bins=60, alpha=0.6)
     ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].hist(_ann(s_c["r"])[s_c["s_r"] == 0], bins=60, alpha=0.6)
-    ax[1, 0].hist(_ann(s_c["r"])[s_c["s_r"] == 1], bins=60, alpha=0.6)
     ax[1, 0].set_title("(c) Real interest rate")
-    ax[1, 1].hist(s_c["Delta"][s_c["s"] == 0], bins=60, alpha=0.6)
-    ax[1, 1].hist(s_c["Delta"][s_c["s"] == 1], bins=60, alpha=0.6)
     ax[1, 1].set_title("(d) Price dispersion")
     for a in ax.ravel():
         a.set_xlabel("model units")
@@ -682,26 +733,50 @@ def build_figures(
     plt.close(fig)
 
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].hist(_ann(s_tz["pi"])[s_tz["s"] == 0], bins=60, alpha=0.45, color="tab:blue", label="Taylor ZLB normal")
-    ax[0, 0].hist(_ann(s_tz["pi"])[s_tz["s"] == 1], bins=60, alpha=0.45, color="tab:orange", label="Taylor ZLB bad")
-    ax[0, 0].hist(_ann(s_mz["pi"])[s_mz["s"] == 0], bins=60, alpha=0.45, color="tab:green", label="Mod Taylor ZLB normal")
-    ax[0, 0].hist(_ann(s_mz["pi"])[s_mz["s"] == 1], bins=60, alpha=0.45, color="tab:red", label="Mod Taylor ZLB bad")
+    regimes_tmz = sorted(
+        set(np.unique(np.asarray(s_tz["s"], dtype=np.int64)).tolist())
+        | set(np.unique(np.asarray(s_mz["s"], dtype=np.int64)).tolist())
+    )
+    cols_tz = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
+    cols_mz = ["tab:green", "tab:red", "tab:olive", "tab:pink", "tab:cyan"]
+    for j, reg in enumerate(regimes_tmz):
+        mt = np.asarray(s_tz["s"], dtype=np.int64) == int(reg)
+        mm = np.asarray(s_mz["s"], dtype=np.int64) == int(reg)
+        if np.any(mt):
+            ax[0, 0].hist(
+                _ann(s_tz["pi"])[mt],
+                bins=60,
+                alpha=0.45,
+                color=cols_tz[j % len(cols_tz)],
+                label=f"Taylor ZLB {_regime_name(int(reg))}",
+            )
+            ax[0, 1].hist(100.0 * s_tz["x"][mt], bins=60, alpha=0.45, color=cols_tz[j % len(cols_tz)])
+            ax[1, 0].hist(_ann(s_tz["i"])[mt], bins=60, alpha=0.45, color=cols_tz[j % len(cols_tz)])
+        if np.any(mm):
+            ax[0, 0].hist(
+                _ann(s_mz["pi"])[mm],
+                bins=60,
+                alpha=0.45,
+                color=cols_mz[j % len(cols_mz)],
+                label=f"Mod Taylor ZLB {_regime_name(int(reg))}",
+            )
+            ax[0, 1].hist(100.0 * s_mz["x"][mm], bins=60, alpha=0.45, color=cols_mz[j % len(cols_mz)])
+            ax[1, 0].hist(_ann(s_mz["i"])[mm], bins=60, alpha=0.45, color=cols_mz[j % len(cols_mz)])
+    regimes_tmz_r = sorted(
+        set(np.unique(np.asarray(s_tz["s_r"], dtype=np.int64)).tolist())
+        | set(np.unique(np.asarray(s_mz["s_r"], dtype=np.int64)).tolist())
+    )
+    for j, reg in enumerate(regimes_tmz_r):
+        mt = np.asarray(s_tz["s_r"], dtype=np.int64) == int(reg)
+        mm = np.asarray(s_mz["s_r"], dtype=np.int64) == int(reg)
+        if np.any(mt):
+            ax[1, 1].hist(_ann(s_tz["r"])[mt], bins=60, alpha=0.45, color=cols_tz[j % len(cols_tz)])
+        if np.any(mm):
+            ax[1, 1].hist(_ann(s_mz["r"])[mm], bins=60, alpha=0.45, color=cols_mz[j % len(cols_mz)])
     ax[0, 0].set_title("(a) Inflation")
     ax[0, 0].legend(fontsize=8)
-    ax[0, 1].hist(100.0 * s_tz["x"][s_tz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[0, 1].hist(100.0 * s_tz["x"][s_tz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[0, 1].hist(100.0 * s_mz["x"][s_mz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[0, 1].hist(100.0 * s_mz["x"][s_mz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].hist(_ann(s_tz["i"])[s_tz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 0].hist(_ann(s_tz["i"])[s_tz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 0].hist(_ann(s_mz["i"])[s_mz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 0].hist(_ann(s_mz["i"])[s_mz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[1, 0].set_title("(c) Nominal interest rate")
-    ax[1, 1].hist(_ann(s_tz["r"])[s_tz["s_r"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 1].hist(_ann(s_tz["r"])[s_tz["s_r"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 1].hist(_ann(s_mz["r"])[s_mz["s_r"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 1].hist(_ann(s_mz["r"])[s_mz["s_r"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[1, 1].set_title("(d) Real interest rate")
     for a in ax.ravel():
         a.set_xlabel("model units")
@@ -779,27 +854,51 @@ def build_figures(
 
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
     # Paper note for Fig. 14 color mapping:
-    # commitment -> blue/orange, discretion -> green/red.
-    ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue", label="Commitment ZLB normal")
-    ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange", label="Commitment ZLB bad")
-    ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green", label="Discretion ZLB normal")
-    ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red", label="Discretion ZLB bad")
+    # commitment -> blue/orange/(severe ...), discretion -> green/red/(severe ...).
+    regimes_cdz = sorted(
+        set(np.unique(np.asarray(s_cz["s"], dtype=np.int64)).tolist())
+        | set(np.unique(np.asarray(s_dz["s"], dtype=np.int64)).tolist())
+    )
+    cols_cz = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
+    cols_dz = ["tab:green", "tab:red", "tab:olive", "tab:pink", "tab:cyan"]
+    for j, reg in enumerate(regimes_cdz):
+        mc = np.asarray(s_cz["s"], dtype=np.int64) == int(reg)
+        md = np.asarray(s_dz["s"], dtype=np.int64) == int(reg)
+        if np.any(mc):
+            ax[0, 0].hist(
+                _ann(s_cz["pi"])[mc],
+                bins=60,
+                alpha=0.45,
+                color=cols_cz[j % len(cols_cz)],
+                label=f"Commitment ZLB {_regime_name(int(reg))}",
+            )
+            ax[0, 1].hist(100.0 * s_cz["x"][mc], bins=60, alpha=0.45, color=cols_cz[j % len(cols_cz)])
+            ax[1, 0].hist(_ann(s_cz["i"])[mc], bins=60, alpha=0.45, color=cols_cz[j % len(cols_cz)])
+        if np.any(md):
+            ax[0, 0].hist(
+                _ann(s_dz["pi"])[md],
+                bins=60,
+                alpha=0.45,
+                color=cols_dz[j % len(cols_dz)],
+                label=f"Discretion ZLB {_regime_name(int(reg))}",
+            )
+            ax[0, 1].hist(100.0 * s_dz["x"][md], bins=60, alpha=0.45, color=cols_dz[j % len(cols_dz)])
+            ax[1, 0].hist(_ann(s_dz["i"])[md], bins=60, alpha=0.45, color=cols_dz[j % len(cols_dz)])
+    regimes_cdz_r = sorted(
+        set(np.unique(np.asarray(s_cz["s_r"], dtype=np.int64)).tolist())
+        | set(np.unique(np.asarray(s_dz["s_r"], dtype=np.int64)).tolist())
+    )
+    for j, reg in enumerate(regimes_cdz_r):
+        mc = np.asarray(s_cz["s_r"], dtype=np.int64) == int(reg)
+        md = np.asarray(s_dz["s_r"], dtype=np.int64) == int(reg)
+        if np.any(mc):
+            ax[1, 1].hist(_ann(s_cz["r"])[mc], bins=60, alpha=0.45, color=cols_cz[j % len(cols_cz)])
+        if np.any(md):
+            ax[1, 1].hist(_ann(s_dz["r"])[md], bins=60, alpha=0.45, color=cols_dz[j % len(cols_dz)])
     ax[0, 0].set_title("(a) Inflation")
     ax[0, 0].legend(fontsize=8)
-    ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[1, 0].set_title("(c) Nominal interest rate")
-    ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 1], bins=60, alpha=0.45, color="tab:red")
     ax[1, 1].set_title("(d) Real interest rate")
     for a in ax.ravel():
         a.set_xlabel("model units")
