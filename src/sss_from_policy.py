@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import time
 from typing import Dict, Optional
 
 import torch
@@ -102,6 +103,8 @@ def switching_policy_sss_by_regime_from_policy(
     tol: float = 1e-12,
     damping: float = 0.5,
     floors: Optional[Dict[str, float]] = None,
+    show_progress: bool = False,
+    progress_every: int = 200,
 ) -> PolicySSS:
     """Switching-consistent SSS-by-regime as a fixed point of the trained policy.
 
@@ -195,7 +198,13 @@ def switching_policy_sss_by_regime_from_policy(
             rows.append(probs_r)
         return torch.stack(rows, dim=0)
 
-    for _ in range(int(max_iter)):
+    t0 = time.time()
+    best_diff = float("inf")
+    converged = False
+    progress_step = max(1, int(progress_every))
+
+    it = -1
+    for it in range(int(max_iter)):
         P_eff = _effective_P_matrix(x_by_regime)
         pi_stat = _stationary_dist(P_eff)
         out_by_regime: Dict[int, Dict[str, torch.Tensor]] = {r: _decode(x_by_regime[r]) for r in range(R)}
@@ -271,7 +280,15 @@ def switching_policy_sss_by_regime_from_policy(
 
         for r in range(R):
             x_by_regime[r] = (1.0 - damping) * x_by_regime[r] + damping * x_next_by_regime[r]
+        best_diff = min(best_diff, float(max_diff))
+        if bool(show_progress) and ((it == 0) or ((it + 1) % progress_step == 0) or (max_diff < tol)):
+            elapsed = time.time() - t0
+            print(
+                f"[sss:{policy}] iter={it+1}/{int(max_iter)} "
+                f"max_diff={float(max_diff):.3e} best={float(best_diff):.3e} elapsed={elapsed:.1f}s"
+            )
         if max_diff < tol:
+            converged = True
             break
 
     # report
@@ -319,5 +336,13 @@ def switching_policy_sss_by_regime_from_policy(
             base["i_old"] = float(x[0, 5].item())
             base["p21"] = float(x[0, 6].item())
         return base
+
+    if bool(show_progress):
+        elapsed = time.time() - t0
+        status = "converged" if converged else "max_iter reached"
+        print(
+            f"[sss:{policy}] {status}; iterations={it+1}, "
+            f"best_max_diff={float(best_diff):.3e}, elapsed={elapsed:.1f}s"
+        )
 
     return PolicySSS(by_regime={r: _pack_out(x_by_regime[r], out_by_regime[r]) for r in range(R)})

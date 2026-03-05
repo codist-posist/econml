@@ -202,6 +202,7 @@ def fixed_point_check(
     sss_by_regime: Dict[int, Dict[str, float]],
     rbar_by_regime: Optional[torch.Tensor] = None,
     floors: Optional[Dict[str, float]] = None,
+    show_progress: bool = False,
 ) -> Dict[int, FixedPointCheckResult]:
     if floors is None:
         floors = {"c": 1e-8, "Delta": 1e-10, "pstar": 1e-10}
@@ -210,8 +211,11 @@ def fixed_point_check(
     commit_dim = _infer_policy_input_dim(net) if policy == "commitment" else None
 
     out_by_regime: Dict[int, FixedPointCheckResult] = {}
-    for r, sss in sss_by_regime.items():
+    total = int(len(sss_by_regime))
+    for idx, (r, sss) in enumerate(sss_by_regime.items(), start=1):
         rr = int(r)
+        if bool(show_progress):
+            print(f"[sanity:{policy}] fixed_point regime={rr} ({idx}/{total})")
         x = _state_from_policy_sss(params, policy, sss, rr, commitment_state_dim=commit_dim)
         st = unpack_state(x, policy)
         out = decode_outputs(
@@ -237,6 +241,7 @@ def residuals_check_switching_consistent(
     sss_by_regime: Dict[int, Dict[str, float]],
     rbar_by_regime: Optional[torch.Tensor] = None,
     floors: Optional[Dict[str, float]] = None,
+    show_progress: bool = False,
 ) -> Dict[int, ResidualCheckResult]:
     if floors is None:
         floors = {"c": 1e-8, "Delta": 1e-10, "pstar": 1e-10}
@@ -248,8 +253,11 @@ def residuals_check_switching_consistent(
     trainer = Trainer(params=params, cfg=cfg_sim, policy=policy, net=net, rbar_by_regime=rbar_by_regime)
 
     results: Dict[int, ResidualCheckResult] = {}
-    for r, sss in sss_by_regime.items():
+    total = int(len(sss_by_regime))
+    for idx, (r, sss) in enumerate(sss_by_regime.items(), start=1):
         rr = int(r)
+        if bool(show_progress):
+            print(f"[sanity:{policy}] residuals regime={rr} ({idx}/{total})")
         x = _state_from_policy_sss(params, policy, sss, rr, commitment_state_dim=commit_dim)
         ctx = torch.enable_grad() if policy in ("discretion", "discretion_zlb") else torch.inference_mode()
         with ctx:
@@ -271,6 +279,7 @@ def residuals_check(
     sss_by_regime: Dict[int, Dict[str, float]],
     rbar_by_regime: Optional[torch.Tensor] = None,
     floors: Optional[Dict[str, float]] = None,
+    show_progress: bool = False,
 ) -> Dict[int, ResidualCheckResult]:
     return residuals_check_switching_consistent(
         params,
@@ -279,6 +288,7 @@ def residuals_check(
         sss_by_regime=sss_by_regime,
         rbar_by_regime=rbar_by_regime,
         floors=floors,
+        show_progress=show_progress,
     )
 
 

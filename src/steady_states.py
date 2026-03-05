@@ -537,6 +537,8 @@ def solve_commitment_sss_from_policy(
     tol: float = 1e-12,
     damping: float = 0.5,
     floors: Dict[str, float] | None = None,
+    show_progress: bool = False,
+    progress_every: int = 200,
 ) -> PolicySSS:
     """Switching-consistent (Table-2) commitment SSS computed as a fixed point of the trained policy.
 
@@ -549,6 +551,8 @@ def solve_commitment_sss_from_policy(
         tol=tol,
         damping=damping,
         floors=floors,
+        show_progress=show_progress,
+        progress_every=progress_every,
     )
 
 
@@ -560,6 +564,8 @@ def solve_discretion_sss_from_policy(
     tol: float = 1e-12,
     damping: float = 0.5,
     floors: Dict[str, float] | None = None,
+    show_progress: bool = False,
+    progress_every: int = 200,
 ) -> PolicySSS:
     """Switching-consistent (Table-2) discretion SSS computed as a fixed point of the trained policy.
 
@@ -572,6 +578,8 @@ def solve_discretion_sss_from_policy(
         tol=tol,
         damping=damping,
         floors=floors,
+        show_progress=show_progress,
+        progress_every=progress_every,
     )
 
 
@@ -583,6 +591,8 @@ def solve_commitment_sss_from_policy_switching(
     tol: float = 1e-12,
     damping: float = 0.5,
     floors: Dict[str, float] | None = None,
+    show_progress: bool = False,
+    progress_every: int = 200,
 ) -> PolicySSS:
     """Switching-consistent (Table-2) commitment SSS computed as a fixed point of the trained policy."""
     from .sss_from_policy import switching_policy_sss_by_regime_from_policy
@@ -594,6 +604,8 @@ def solve_commitment_sss_from_policy_switching(
         tol=tol,
         damping=damping,
         floors=floors,
+        show_progress=show_progress,
+        progress_every=progress_every,
     )
 
 
@@ -605,6 +617,8 @@ def solve_discretion_sss_from_policy_switching(
     tol: float = 1e-12,
     damping: float = 0.5,
     floors: Dict[str, float] | None = None,
+    show_progress: bool = False,
+    progress_every: int = 200,
 ) -> PolicySSS:
     """Switching-consistent (Table-2) discretion SSS computed as a fixed point of the trained policy."""
     from .sss_from_policy import switching_policy_sss_by_regime_from_policy
@@ -616,6 +630,8 @@ def solve_discretion_sss_from_policy_switching(
         tol=tol,
         damping=damping,
         floors=floors,
+        show_progress=show_progress,
+        progress_every=progress_every,
     )
 
 @dataclass
