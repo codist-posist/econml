@@ -529,12 +529,22 @@ def _build_bad_uncertainty(
 
         pi_b_base = _ann(sim_base["pi"])[burn_in:, :][sim_base["s"][burn_in:, :] == 1]
         pi_b_hi = _ann(sim_hi["pi"])[burn_in:, :][sim_hi["s"][burn_in:, :] == 1]
+        pi_b_base = np.asarray(pi_b_base, dtype=np.float64).reshape(-1)
+        pi_b_hi = np.asarray(pi_b_hi, dtype=np.float64).reshape(-1)
+        pi_b_base = pi_b_base[np.isfinite(pi_b_base)]
+        pi_b_hi = pi_b_hi[np.isfinite(pi_b_hi)]
         fig, ax = plt.subplots(1, 2, figsize=(12, 4))
-        ax[0].hist(pi_b_base, bins=60, alpha=0.55, label="baseline")
-        ax[0].hist(pi_b_hi, bins=60, alpha=0.55, label=f"bad uncertainty x{bad_sigma_mult:g}")
+        if pi_b_base.size:
+            ax[0].hist(pi_b_base, bins=60, alpha=0.55, label="baseline")
+        if pi_b_hi.size:
+            ax[0].hist(pi_b_hi, bins=60, alpha=0.55, label=f"bad uncertainty x{bad_sigma_mult:g}")
+        if (not pi_b_base.size) and (not pi_b_hi.size):
+            ax[0].text(0.5, 0.5, "No finite bad-regime observations", ha="center", va="center", transform=ax[0].transAxes)
         ax[0].set_title("(a) Bad-regime inflation distribution")
         ax[0].set_xlabel("annualized inflation, %")
-        ax[0].legend()
+        h0, l0 = ax[0].get_legend_handles_labels()
+        if l0:
+            ax[0].legend()
         ax[1].bar(
             ["baseline", f"x{bad_sigma_mult:g}"],
             [
