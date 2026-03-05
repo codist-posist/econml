@@ -332,9 +332,10 @@ def _simulate_custom(
         epst = torch.full((B,), float(epst_path[t]), device=params.device, dtype=params.dtype)
 
         if float(noise_scale) != 0.0:
+            stress_threshold = int(_bad_regime(params))
             z = torch.randn((B,), device=params.device, dtype=params.dtype)
             mult = torch.where(
-                st.s.to(torch.long) >= 1,
+                st.s.to(torch.long) >= stress_threshold,
                 torch.full((B,), float(bad_sigma_mult), device=params.device, dtype=params.dtype),
                 torch.ones((B,), device=params.device, dtype=params.dtype),
             )
