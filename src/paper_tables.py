@@ -62,8 +62,23 @@ def _paper_moments_wide_table(
         ("Nominal interest rates (Mean)", "i_mean_pct"),
         ("Nominal interest rates (Std)", "i_std_pct"),
         ("Nominal interest rates (Skew)", "i_skew"),
+        # Strategy diagnostics: state-dependent transitions + regime-dependent uncertainty.
+        ("Eff. transition p12 (Mean)", "p12_eff_mean"),
+        ("Eff. transition p12 (Std)", "p12_eff_std"),
+        ("Eff. transition p21 (Mean)", "p21_eff_mean"),
+        ("Eff. transition p21 (Std)", "p21_eff_std"),
+        ("Regime sigma_tau (Mean)", "sigma_tau_mean"),
+        ("Regime sigma_tau (Std)", "sigma_tau_std"),
     ]
     regimes = [("normal", "normal times"), ("bad", "persistent supply shock")]
+
+    def _value_or_nan(sub: pd.DataFrame, col: str) -> float:
+        if len(sub) == 0 or (col not in sub.columns):
+            return float("nan")
+        try:
+            return float(sub.iloc[0][col])
+        except Exception:
+            return float("nan")
 
     rows: List[Dict[str, object]] = []
     for metric_name, col in metrics:
@@ -74,7 +89,7 @@ def _paper_moments_wide_table(
             }
             for pkey, plabel in policies:
                 sub = df[(df["policy"] == pkey) & (df["regime"] == reg_key)]
-                row[plabel] = float(sub.iloc[0][col]) if len(sub) else float("nan")
+                row[plabel] = _value_or_nan(sub, col)
             rows.append(row)
     return pd.DataFrame(rows)
 

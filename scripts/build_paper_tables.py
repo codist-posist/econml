@@ -16,7 +16,7 @@ from src.paper_tables import (
     build_paper_tables_2_4,
     build_taylor_para_robustness_table,
 )
-from src.config import ModelParams
+from src.table2_builder import _resolve_reference_params
 
 
 def main() -> int:
@@ -66,7 +66,25 @@ def main() -> int:
 
     os.makedirs(args.artifacts_root, exist_ok=True)
 
-    p = ModelParams(device=args.device, dtype=torch.float64).to_torch()
+    # Keep Table 1 consistent with the actual policy runs used for the paper tables.
+    p = _resolve_reference_params(
+        args.artifacts_root,
+        device=args.device,
+        dtype=torch.float64,
+        use_selected=bool(args.use_selected),
+        strict_selected=bool(args.strict_selected),
+        candidate_policies=[
+            "commitment",
+            "discretion",
+            "taylor",
+            "mod_taylor",
+            "taylor_zlb",
+            "mod_taylor_zlb",
+            "discretion_zlb",
+            "commitment_zlb",
+            "taylor_para",
+        ],
+    )
     table1 = build_table1_calibration(p)
     table1_path = os.path.join(args.artifacts_root, "table1_calibration.csv")
     table1.to_csv(table1_path, index=False)
