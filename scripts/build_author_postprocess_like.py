@@ -20,7 +20,7 @@ from src.table2_builder import _load_net_from_run, _load_run_dir
 from src.deqn import Trainer, implied_nominal_rate_from_euler
 from src.config import TrainConfig
 from src.model_common import unpack_state, identities
-from src.metrics import flex_c_series_from_A_g_tau
+from src.metrics import flex_c_series_from_A_g_tau, efficient_c_hat_series_from_A_g
 from src.io_utils import load_json, load_torch
 from src.steady_states import solve_flexprice_sss, export_rbar_tensor
 
@@ -269,9 +269,12 @@ def _to_author_defs(
 
     if mode == "author":
         cons_flex = _cons_flex_author(params, A)
+        out_gap = np.log(np.clip(c, 1e-12, None) / np.clip(cons_flex, 1e-12, None))
     else:
+        # Paper mode: output gap uses efficient allocation c_hat(A,g), not flex with taxes.
         cons_flex = _cons_flex_paper(params, A, g, tau)
-    out_gap = np.log(np.clip(c, 1e-12, None) / np.clip(cons_flex, 1e-12, None))
+        c_hat_eff = efficient_c_hat_series_from_A_g(params, A=A, g=g)
+        out_gap = np.log(np.clip(c, 1e-12, None) / np.clip(c_hat_eff, 1e-12, None))
 
     if mode == "author":
         i_flex = _i_flex_author_like(
