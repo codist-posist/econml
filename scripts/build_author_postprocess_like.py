@@ -77,34 +77,16 @@ def _transition_probs_to_next_regime(
     params: ModelParams,
     s: np.ndarray,
     p21_state: np.ndarray | None = None,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     s_i = np.asarray(s, dtype=np.int64).reshape(-1)
-    P = params.P.detach().cpu().numpy().astype(np.float64)
-    R = int(P.shape[0])
-    bad_reg = int(getattr(params, "bad_state", 1))
-    if bad_reg < 0 or bad_reg >= R:
-        bad_reg = 1 if R > 1 else 0
-    if R <= 0:
-        raise ValueError("Invalid transition matrix with zero regimes.")
-    s_clip = np.clip(s_i, 0, R - 1)
-    probs = P[s_clip, :].copy()
-    if p21_state is not None and R >= 2:
-        p21v = np.clip(np.asarray(p21_state, dtype=np.float64).reshape(-1), 1e-8, 1.0 - 1e-8)
-        bad = (s_clip == int(bad_reg))
+    p0 = np.where(s_i == 0, 1.0 - float(params.p12), float(params.p21)).astype(np.float64)
+    if p21_state is not None:
+        p21v = np.clip(np.asarray(p21_state, dtype=np.float64).reshape(-1), 0.0, 1.0)
+        bad = (s_i == 1)
         if np.any(bad):
-            if R == 2:
-                probs[bad, 0] = p21v[bad]
-                probs[bad, 1] = 1.0 - p21v[bad]
-            else:
-                p12_bad = float(params.p23)
-                p10 = np.clip(p21v[bad], 1e-8, 1.0 - p12_bad - 1e-8)
-                p11 = 1.0 - p10 - p12_bad
-                probs[bad, 0] = p10
-                probs[bad, 1] = p11
-                probs[bad, 2] = p12_bad
-    probs = np.clip(probs, 0.0, 1.0)
-    row_sum = np.clip(np.sum(probs, axis=1, keepdims=True), 1e-12, None)
-    return probs / row_sum
+            p0[bad] = p21v[bad]
+    p1 = 1.0 - p0
+    return p0, p1
 
 
 def _i_flex_author_like(
@@ -200,7 +182,8 @@ def _i_flex_paper_like(
     rho_tau = float(params.rho_tau)
     sigma_tau = float(params.sigma_tau)
     tau_bar = float(params.tau_bar)
-    eta_vec = np.asarray(params.eta_by_regime, dtype=np.float64).reshape(-1)
+    eta_bar = float(params.eta_bar)
+    bad_state = int(params.bad_state)
     gamma = float(params.gamma)
 
     driftA = (1.0 - rho_A) * (-(sigma_A**2) / 2.0)
@@ -217,10 +200,9 @@ def _i_flex_paper_like(
     logg_next = driftg + rho_g * logg[:, None] + sigma_g * nodes[None, :]
     xi_next = drift_xi + rho_tau * xi[:, None] + sigma_tau * nodes[None, :]
 
-    p_next = _transition_probs_to_next_regime(params, s, p21_state=p21_state)  # (B,R)
-    R = int(p_next.shape[1])
-    if eta_vec.size < R:
-        raise ValueError(f"eta_by_regime has size {eta_vec.size}, but transition matrix has {R} regimes.")
+    p0, p1 = _transition_probs_to_next_regime(params, s, p21_state=p21_state)
+    eta0 = eta_bar if bad_state == 0 else 0.0
+    eta1 = eta_bar if bad_state == 1 else 0.0
 
     E_lam_next = np.zeros_like(lam_t)
     for ia in range(int(n_quad_pts)):
@@ -232,20 +214,28 @@ def _i_flex_paper_like(
             for it in range(int(n_quad_pts)):
                 w_all = wAG * weights[it]
                 xi_n = xi_next[:, it]
-                weighted_lam = np.zeros_like(lam_t)
-                for rp in range(R):
-                    one_plus_tau_r = (1.0 - tau_bar) + xi_n + float(eta_vec[rp])
-                    c_next_r = flex_c_series_from_A_g_tau(
-                        params,
-                        A=A_n,
-                        g=g_n,
-                        one_plus_tau=one_plus_tau_r,
-                        max_iter=80,
-                        tol=1e-12,
-                    )
-                    lam_next_r = np.clip(c_next_r, 1e-12, None) ** (-gamma)
-                    weighted_lam += p_next[:, rp] * lam_next_r
-                E_lam_next += w_all * weighted_lam
+
+                one_plus_tau_0 = (1.0 - tau_bar) + xi_n + eta0
+                one_plus_tau_1 = (1.0 - tau_bar) + xi_n + eta1
+                c_next_0 = flex_c_series_from_A_g_tau(
+                    params,
+                    A=A_n,
+                    g=g_n,
+                    one_plus_tau=one_plus_tau_0,
+                    max_iter=80,
+                    tol=1e-12,
+                )
+                c_next_1 = flex_c_series_from_A_g_tau(
+                    params,
+                    A=A_n,
+                    g=g_n,
+                    one_plus_tau=one_plus_tau_1,
+                    max_iter=80,
+                    tol=1e-12,
+                )
+                lam_next_0 = np.clip(c_next_0, 1e-12, None) ** (-gamma)
+                lam_next_1 = np.clip(c_next_1, 1e-12, None) ** (-gamma)
+                E_lam_next += w_all * (p0 * lam_next_0 + p1 * lam_next_1)
 
     return lam_t / np.clip(beta * E_lam_next, 1e-12, None) - 1.0
 
@@ -371,23 +361,14 @@ def _export_for_policy(
             "Use an author-compatible run (or retrain this policy), then re-run this script."
         ) from e
 
-    names = ["full", "NT", "SS", "SV", "ss_only", "xi_only"]
-    n_reg = int(params.n_regimes)
-    normal_reg = 0
-    bad_reg = 1 if n_reg > 1 else 0
-    severe_reg = 2 if n_reg > 2 else bad_reg
-    idx_nt = names.index("NT")
-    idx_ss = names.index("SS")
-    idx_sv = names.index("SV")
-    idx_ss_only = names.index("ss_only")
-    idx_xi_only = names.index("xi_only")
+    names = ["full", "NT", "SS", "ss_only", "xi_only"]
     explicit_i = {"taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb"}
     keys = ["c", "pi", "pstar", "Delta", "y", "h", "g", "A", "tau", "s", "i", "xi", "p21"]
     sims: Dict[str, Dict[str, np.ndarray]] = {
         nm: {k: np.zeros((int(T), 1), dtype=np.float64) for k in keys} for nm in names
     }
 
-    x = x0.repeat(len(names), 1)
+    x = x0.repeat(5, 1)
     for t in range(int(T)):
         out = trainer._policy_outputs(x)
         st = unpack_state(x, policy)
@@ -416,23 +397,22 @@ def _export_for_policy(
             else:
                 sims[nm]["p21"][t, 0] = float(params.p21)
 
-        # One shared episode step, then branch transformations.
+        # One shared episode step, then branch transformations as in author post_process.py
         x = trainer._step_state(x)
-        # regime_x: [full, normal, bad, severe, keep, bad]
-        x[idx_nt, 4] = float(normal_reg)
-        x[idx_ss, 4] = float(bad_reg)
-        x[idx_sv, 4] = float(severe_reg)
-        x[idx_xi_only, 4] = float(bad_reg)
+        # regime_x: [full, 0, 1, keep, 1]
+        x[1, 4] = 0.0
+        x[2, 4] = 1.0
+        x[4, 4] = 1.0
         # log_a_x for ss_only/xi_only -> 0
-        x[idx_ss_only, 1] = 0.0
-        x[idx_xi_only, 1] = 0.0
+        x[3, 1] = 0.0
+        x[4, 1] = 0.0
         # log_xi_x: ss_only -> 0, xi_only <- previous ss_only xi
-        xi_ss_only_prev = x[idx_ss_only, 3].clone()
-        x[idx_ss_only, 3] = 0.0
-        x[idx_xi_only, 3] = xi_ss_only_prev
+        xi_ss_only_prev = x[3, 3].clone()
+        x[3, 3] = 0.0
+        x[4, 3] = xi_ss_only_prev
         # log_g_x for ss_only/xi_only -> 0
-        x[idx_ss_only, 2] = 0.0
-        x[idx_xi_only, 2] = 0.0
+        x[3, 2] = 0.0
+        x[4, 2] = 0.0
 
     out_dir = os.path.join(run_dir, "author_postprocess")
     os.makedirs(out_dir, exist_ok=True)
@@ -449,10 +429,6 @@ def _export_for_policy(
         **_to_author_defs(sims["SS"], params, cons_mode=mode),
     )
     np.savez_compressed(
-        os.path.join(out_dir, "simulated_definitions_SEV.npz"),
-        **_to_author_defs(sims["SV"], params, cons_mode=mode),
-    )
-    np.savez_compressed(
         os.path.join(out_dir, "simulated_definitions_ss_only.npz"),
         **_to_author_defs(sims["ss_only"], params, cons_mode=mode),
     )
@@ -466,7 +442,7 @@ def _export_for_policy(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Build author-like post-process definition files (NT/SS/SEV/full) for selected runs.")
+    ap = argparse.ArgumentParser(description="Build author-like post-process definition files (NT/SS/full) for selected runs.")
     ap.add_argument("--artifacts_root", default=os.path.join(ROOT, "artifacts"))
     ap.add_argument(
         "--policies",

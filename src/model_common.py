@@ -25,7 +25,7 @@ class State:
     For policy: "commitment_zlb"
         x = [Delta_prev, logA, loggtilde, xi, s, vartheta_prev, varrho_prev, c_prev, i_nom_prev, varphi_prev] (dim=10)
 
-    Convention: s in {0,1,2}, with 0=normal, 1=bad, 2=severe.
+    Convention: s in {0,1}, with s=0 normal, s=1 bad (params.bad_state=1 by default).
     """
     Delta_prev: torch.Tensor
     logA: torch.Tensor
@@ -107,10 +107,10 @@ def identities(params: ModelParams, st: State, out: Dict[str, torch.Tensor]) -> 
     gtilde = torch.exp(st.loggtilde)
     g = params.g_bar * gtilde
 
-    # Level cost-push shock by regime.
-    eta_vec = params.eta_by_regime_tensor()
-    s_idx = torch.clamp(st.s.to(torch.long), min=0, max=int(eta_vec.numel()) - 1)
-    eta = eta_vec[s_idx]
+    # Level cost-push shock (Markov-switching): active only in the "bad" regime.
+    # Use params.bad_state to avoid silent regime-label inversions.
+    bad = (st.s == int(params.bad_state))
+    eta = torch.where(bad, torch.full_like(st.xi, params.eta_bar), torch.zeros_like(st.xi))
 
     # (1 + tau_t) = 1 - tau_bar + xi_t + eta_t
     one_plus_tau = 1.0 - params.tau_bar + st.xi + eta

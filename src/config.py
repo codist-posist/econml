@@ -48,27 +48,12 @@ class ModelParams:
 
     # Levels / regimes
     g_bar: float = 0.20
-    # Legacy alias for regime-1 cost-push level (kept for compatibility).
-    eta_bar: float = 1.0 / 7.0
-    # Regime-specific level cost-push shifters:
-    #   s=0 normal, s=1 bad, s=2 severe.
-    # If eta1/eta2 are None, they are derived from eta_bar.
-    eta0: float = 0.0
-    eta1: float | None = None
-    eta2: float | None = None
-    # Legacy label used by old two-regime paths.
-    bad_state: int = 1
+    eta_bar: float = 1.0 / 7.0  # = 1/eps
+    bad_state: int = 1  # s=0 normal, s=1 bad
 
-    # Markov transition probabilities (escalation chain):
-    #   0 -> 1 with p12 (normal -> bad)
-    #   1 -> 0 with p21 (bad -> normal)
-    #   1 -> 2 with p23 (bad -> severe)
-    #   2 -> 1 with p32 (severe -> bad)
-    # Direct 0 <-> 2 jumps are fixed to zero in the baseline.
+    # Markov transition probabilities (normal->bad, bad->normal)
     p12: float = 1.0 / 48.0
     p21: float = 1.0 / 24.0
-    p23: float = 1.0 / 96.0
-    p32: float = 1.0 / 12.0
     # Author taylor_para uses per-path p21 sampled in [p21_l, p21_u].
     p21_l: float = 1.0 / 60.0
     p21_u: float = 1.0
@@ -132,49 +117,16 @@ class ModelParams:
         return self.eps / (self.eps - 1.0)
 
     @property
-    def n_regimes(self) -> int:
-        return 3
-
-    @property
-    def eta_by_regime(self) -> Tuple[float, float, float]:
-        eta1 = float(self.eta_bar) if self.eta1 is None else float(self.eta1)
-        eta2 = float(2.0 * eta1) if self.eta2 is None else float(self.eta2)
-        return (float(self.eta0), eta1, eta2)
-
-    def eta_by_regime_tensor(self) -> torch.Tensor:
-        return torch.tensor(
-            self.eta_by_regime,
-            device=self.device,
-            dtype=self.dtype,
-        )
-
-    @property
     def P(self) -> torch.Tensor:
         # IMPORTANT: P[s_current, s_next] (row-stochastic, as in paper Appendix A.1)
-        # Escalation chain:
-        #   0(normal) -> {0,1}
-        #   1(bad)    -> {0,1,2}
-        #   2(severe) -> {1,2}
-        p00 = 1.0 - self.p12
-        p11 = 1.0 - self.p21 - self.p23
-        p22 = 1.0 - self.p32
-        if p00 < 0.0 or p11 < 0.0 or p22 < 0.0:
-            raise ValueError(
-                "Invalid Markov probabilities: ensure p12<=1, p21+p23<=1, p32<=1."
-            )
-        P = torch.tensor(
-            [
-                [p00, self.p12, 0.0],
-                [self.p21, p11, self.p23],
-                [0.0, self.p32, p22],
-            ],
+        p11 = 1.0 - self.p12
+        p22 = 1.0 - self.p21
+        return torch.tensor(
+            [[p11, self.p12],
+             [self.p21, p22]],
             device=self.device,
             dtype=self.dtype,
         )
-        row_sums = P.sum(dim=1)
-        if not torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-7, rtol=1e-7):
-            raise ValueError("Transition matrix rows must sum to 1.")
-        return P
 
 
 @dataclass(frozen=True)

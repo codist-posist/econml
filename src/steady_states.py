@@ -106,7 +106,7 @@ def solve_flexprice_sss(params: ModelParams, max_iter: int = 20000, tol: float =
         (c + g_bar)^omega - 1 / ((1+tau_s) * M * c^gamma) = 0
     where:
         (1+tau_s) = 1 - tau_bar + eta_s
-        eta_s = regime-specific cost-push level eta_s
+        eta_s = 0 in normal (s=0), eta_bar in bad (s=1)
         M = eps/(eps-1)
 
     IMPORTANT: The second term is the reciprocal, exactly as written in the paper.
@@ -117,10 +117,8 @@ def solve_flexprice_sss(params: ModelParams, max_iter: int = 20000, tol: float =
     omega = float(params.omega)
 
     out: Dict[int, Dict[str, float]] = {}
-    eta_levels = params.eta_by_regime
-    n_regimes = int(params.n_regimes)
-    for s in range(n_regimes):
-        eta_s = float(eta_levels[s])
+    for s in [0, 1]:
+        eta_s = 0.0 if s == 0 else float(params.eta_bar)
         one_plus_tau = (1.0 - float(params.tau_bar)) + eta_s  # xi=0 in SSS
 
         def f(c: float) -> float:
@@ -161,23 +159,21 @@ def solve_flexprice_sss(params: ModelParams, max_iter: int = 20000, tol: float =
             "pstar": 1.0,
         }
 
-    # Natural rate in each regime (flex-price SSS):
-    # r*_s = 1/(beta * E_s[m_{t+1}]) - 1, where
-    # m_{t+1} = (c_{t+1}/c_t)^(-gamma) and expectation is over s_{t+1}.
+# Natural rate in each regime (flex-price SSS): r*_s = 1/(beta * E_s[m_{t+1}]) - 1,
+    # where m_{t+1} = (c_{t+1}/c_t)^(-gamma) and expectation is over s_{t+1} only (Markov).
     P = params.P.detach().cpu().numpy()
-    c_by_regime = {k: out[k]["c"] for k in out.keys()}
+    c0, c1 = out[0]["c"], out[1]["c"]
 
     def r_star(s: int) -> float:
-        c_s = float(c_by_regime[s])
-        E_m = 0.0
-        for sp in range(n_regimes):
-            p_sp = float(P[s, sp])
-            c_sp = float(c_by_regime[sp])
-            E_m += p_sp * ((c_sp / c_s) ** (-gamma))
+        c_s = c0 if s == 0 else c1
+        pi0 = float(P[s, 0])
+        pi1 = float(P[s, 1])
+        # E[(c_{t+1}/c_t)^(-gamma)] over next regime only
+        E_m = pi0 * ((c0 / c_s) ** (-gamma)) + pi1 * ((c1 / c_s) ** (-gamma))
         return 1.0 / (float(params.beta) * E_m) - 1.0
 
-    for s in range(n_regimes):
-        out[s]["r_star"] = float(r_star(s))
+    out[0]["r_star"] = float(r_star(0))
+    out[1]["r_star"] = float(r_star(1))
     return FlexSSS(by_regime=out)
 
 
@@ -204,7 +200,7 @@ def solve_taylor_sss(params: ModelParams, flex: FlexSSS) -> TaylorSSS:
     rbar = (1.0 / float(params.beta)) - 1.0
 
     out: Dict[int, Dict[str, float]] = {}
-    for s in range(int(params.n_regimes)):
+    for s in [0, 1]:
         r_ss = float(flex.by_regime[s]["r_star"])
         pi_ss = float(params.pi_bar + (r_ss - rbar) / (psi - 1.0))
 
@@ -240,7 +236,7 @@ def solve_taylor_sss(params: ModelParams, flex: FlexSSS) -> TaylorSSS:
 
 def export_rbar_tensor(params: ModelParams, flex: FlexSSS) -> torch.Tensor:
     return torch.tensor(
-        [flex.by_regime[s]["r_star"] for s in range(int(params.n_regimes))],
+        [flex.by_regime[0]["r_star"], flex.by_regime[1]["r_star"]],
         device=params.device,
         dtype=params.dtype,
     )
@@ -273,14 +269,13 @@ def commitment_local_ss(params: ModelParams, regime: int) -> Dict[str, float]:
     Local (no-regime-switching) steady state for commitment (Appendix A.3 equations),
     used ONLY for principled initialization of lagged co-states (vartheta_prev, varrho_prev).
 
-    Regime enters only through eta_s, hence (1+tau).
+    Regime enters only through eta (0 or eta_bar), hence (1+tau).
     """
-    if int(regime) < 0 or int(regime) >= int(params.n_regimes):
-        raise ValueError(f"regime must be in [0, {int(params.n_regimes)-1}], got {regime!r}")
+    assert regime in (0, 1)
     dev, dt = params.device, params.dtype
 
     g = torch.tensor(params.g_bar, device=dev, dtype=dt)
-    eta = torch.tensor(float(params.eta_by_regime[int(regime)]), device=dev, dtype=dt)
+    eta = torch.tensor(0.0 if regime == 0 else params.eta_bar, device=dev, dtype=dt)
     one_plus_tau = torch.tensor(1.0 - params.tau_bar, device=dev, dtype=dt) + eta  # xi=0 in local SS
     A = torch.tensor(1.0, device=dev, dtype=dt)
 
@@ -428,8 +423,8 @@ def commitment_local_ss(params: ModelParams, regime: int) -> Dict[str, float]:
 
 
 def commitment_init_by_regime(params: ModelParams) -> Dict[int, Dict[str, float]]:
-    """Return principled (no-heuristic) commitment init multipliers for all regimes."""
-    return {s: commitment_local_ss(params, s) for s in range(int(params.n_regimes))}
+    """Return principled (no-heuristic) commitment init multipliers for both regimes."""
+    return {0: commitment_local_ss(params, 0), 1: commitment_local_ss(params, 1)}
 
 
 @dataclass
@@ -454,16 +449,15 @@ def commitment_author_like_sss(
         vartheta_prev = vartheta_old * c_old^gamma
         varrho_prev   = varrho_old   * c_old^gamma
 
-    We assign the same warm-start values to all regimes, matching the author setup
-    and extending it to multi-regime runs.
+    We assign the same warm-start values to both regimes, matching the author setup.
     """
     scale = float(c_old) ** float(params.gamma)
     vp = float(vartheta_old) * scale
     rp = float(varrho_old) * scale
     d = float(delta_prev)
     by = {
-        s: {"Delta_prev": d, "vartheta_prev": vp, "varrho_prev": rp}
-        for s in range(int(params.n_regimes))
+        0: {"Delta_prev": d, "vartheta_prev": vp, "varrho_prev": rp},
+        1: {"Delta_prev": d, "vartheta_prev": vp, "varrho_prev": rp},
     }
     return CommitmentSSS(by_regime=by)
 
@@ -484,12 +478,6 @@ def solve_commitment_sss_switching(params: ModelParams, max_iter: int = 200, tol
 
     where net is the trained commitment policy network.
     """
-    if int(params.n_regimes) < 2 or int(params.n_regimes) > 2:
-        # Multi-regime fallback for legacy callers: return local per-regime SS guesses.
-        # For paper-consistent switching SSS use solve_commitment_sss_from_policy(...).
-        by = {s: commitment_local_ss(params, s) for s in range(int(params.n_regimes))}
-        return CommitmentSSS(by_regime=by)
-
     dev, dt = params.device, params.dtype
     beta, gamma, omega, eps, theta, M = params.beta, params.gamma, params.omega, params.eps, params.theta, params.M
 
@@ -799,268 +787,406 @@ class DiscretionSSS:
 
 def solve_discretion_sss_switching(
     params: ModelParams,
-    max_iter: int = 80,
+    max_iter: int = 60,
     tol: float = 1e-10,
     damping: float = 1.0,
 ) -> DiscretionSSS:
     """
-    Legacy discretion switching-SSS solver for the author-style A.2 residual stack.
-    This routine is intentionally lightweight and regime-generic (R >= 1):
-      - solves 5 equations per regime (A.2 residuals used in training),
-      - unknowns per regime are [c, XiN, XiD, p_star_aux, eta],
-      - handles Markov switching via the full transition matrix P,
-      - computes Delta_prev with backward (Bayes) weights from stationary P.
-    As a legacy diagnostic helper, derivative terms Et[dF/dDelta], Et[dG/dDelta]
-    are held at zero (same convention as stage-1 warm starts).
+    Stochastic steady state (SSS) under discretion with regime switching.
+
+    **Strictly follows the paper's final system**: 11 equations per regime (22 total).
+    We do NOT treat derivatives as additional unknowns or impose extra "consistency residuals".
+    Instead, the derivative terms needed inside the Delta FOC are computed as *derived objects*
+    using a (small) fixed-point iteration on the implied-derivative mapping.
+
+    A practical staged solve is used to keep runtime reasonable while still converging tightly:
+      - Stage 1: solve core-22 with frozen derivatives (set to 0).
+      - Stage 2: compute exact implied derivatives at the stage-1 solution.
+      - Stage 3: a few Newton steps on core-22 while recomputing derivatives each step.
+
+    Unknowns per regime (11):
+      [c, pi, pstar, lam, w, XiN, XiD, Delta, mu, rho, zeta]
     """
     from .model_common import State
     from .residuals_a2 import residuals_a2
+
     dev = params.device
     dt = torch.float64
-    R = int(params.n_regimes)
-    if R <= 0:
-        raise ValueError("params.n_regimes must be >= 1")
+
     import dataclasses as _dc
     _d = _dc.asdict(params)
     _d["dtype"] = dt
     params64 = ModelParams(**_d).to_torch()
-    logA0 = torch.tensor(0.0, device=dev, dtype=dt)
-    logg0 = torch.tensor(0.0, device=dev, dtype=dt)
-    xi0 = torch.tensor(0.0, device=dev, dtype=dt)
-    P = params64.P.to(device=dev, dtype=dt)
-    theta_f = float(params64.theta)
-    beta_f = float(params64.beta)
-    eps_f = float(params64.eps)
-    gamma_f = float(params64.gamma)
-    omega_f = float(params64.omega)
-    M_f = float(params64.M)
-    gbar = torch.tensor(float(params64.g_bar), device=dev, dtype=dt)
-    eta_levels = torch.tensor(params64.eta_by_regime, device=dev, dtype=dt)
-    def _stationary_dist(Pm: torch.Tensor) -> torch.Tensor:
-        I = torch.eye(R, device=dev, dtype=dt)
-        A = torch.cat([I - Pm.T, torch.ones((1, R), device=dev, dtype=dt)], dim=0)
-        b = torch.cat([torch.zeros((R,), device=dev, dtype=dt), torch.ones((1,), device=dev, dtype=dt)], dim=0)
-        pi = torch.linalg.lstsq(A, b).solution
-        pi = torch.clamp(pi, min=1e-16)
-        return pi / torch.clamp(pi.sum(), min=1e-16)
-    pi_stat = _stationary_dist(P)
-    # B[s_current, s_prev] = Pr(s_{t-1}=s_prev | s_t=s_current)
-    B = torch.zeros((R, R), device=dev, dtype=dt)
-    for s in range(R):
-        numer = pi_stat * P[:, s]
-        denom = torch.clamp(torch.sum(numer), min=1e-16)
-        B[s, :] = numer / denom
-    def _decode(Z: torch.Tensor) -> Dict[str, torch.Tensor]:
-        U = Z.view(R, 5)
-        c = torch.exp(torch.clamp(U[:, 0], min=-40.0, max=40.0)) + 1e-12
-        XiN = torch.exp(torch.clamp(U[:, 1], min=-40.0, max=40.0)) + 1e-14
-        XiD = torch.exp(torch.clamp(U[:, 2], min=-40.0, max=40.0)) + 1e-14
-        p_star_aux = torch.exp(torch.clamp(U[:, 3], min=-40.0, max=40.0)) + 1e-12
-        eta = U[:, 4]
-        a = torch.clamp(p_star_aux, min=1e-12).pow((eps_f - 1.0) / eps_f)
-        inside = (1.0 - (1.0 - theta_f) * a) / theta_f
-        inside = torch.clamp(inside, min=1e-12)
-        pi_aux = inside.pow(eps_f / (eps_f - 1.0))
-        one_plus_pi = torch.clamp(pi_aux, min=1e-12).pow(1.0 / eps_f)
-        pi = one_plus_pi - 1.0
-        A_delta = torch.eye(R, device=dev, dtype=dt) - theta_f * (torch.diag(pi_aux) @ B)
-        rhs_delta = (1.0 - theta_f) * p_star_aux
-        Delta = _robust_solve(A_delta, rhs_delta)
-        Delta = torch.clamp(Delta, min=1e-12)
-        Delta_prev = B @ Delta
-        lam = c.pow(-gamma_f)
-        y = c + gbar
-        h = y * Delta
-        w = h.pow(omega_f) / torch.clamp(lam, min=1e-12)
-        pstar = M_f * XiN / torch.clamp(XiD, min=1e-12)
-        zeta = -(eta * (eps_f - 1.0)) / (eps_f * torch.clamp(one_plus_pi * Delta_prev, min=1e-12))
-        F = theta_f * beta_f * c.pow(-gamma_f) * one_plus_pi.pow(eps_f - 1.0) * XiD
-        G = theta_f * beta_f * c.pow(-gamma_f) * one_plus_pi.pow(eps_f) * XiN
-        TH = theta_f * one_plus_pi.pow(eps_f) * zeta
-        ratio_next_over_cur = lam.view(1, R) / torch.clamp(lam.view(R, 1), min=1e-12)
-        termN = theta_f * beta_f * one_plus_pi.pow(eps_f) * XiN
-        termD = theta_f * beta_f * one_plus_pi.pow(eps_f - 1.0) * XiD
-        Et_XiN = torch.sum(P * ratio_next_over_cur * termN.view(1, R), dim=1)
-        Et_XiD = torch.sum(P * ratio_next_over_cur * termD.view(1, R), dim=1)
-        Et_F = P @ F
-        Et_G = P @ G
-        Et_TH = P @ TH
-        Et_dF = torch.zeros((R,), device=dev, dtype=dt)
-        Et_dG = torch.zeros((R,), device=dev, dtype=dt)
-        mu_num = (
-            eta * (1.0 - theta_f) * (1.0 - eps_f) * p_star_aux
-            - zeta * (1.0 - theta_f) * eps_f * p_star_aux.pow((eps_f + 1.0) / eps_f)
+
+    logA = torch.tensor(0.0, device=dev, dtype=dt)
+    logg = torch.tensor(0.0, device=dev, dtype=dt)
+    xi = torch.tensor(0.0, device=dev, dtype=dt)
+
+    P = params.P.to(device=dev, dtype=dt)
+    theta = torch.tensor(params.theta, device=dev, dtype=dt)
+    beta = torch.tensor(params.beta, device=dev, dtype=dt)
+    eps = torch.tensor(params.eps, device=dev, dtype=dt)
+
+    # --- helpers -------------------------------------------------------------
+    def pack(u: Dict[str, float]) -> torch.Tensor:
+        return torch.tensor(
+            [u["c"], u["pi"], u["pstar"], u["lam"], u["w"], u["XiN"], u["XiD"],
+             u["Delta"], u["mu"], u["rho"], u["zeta"]],
+            device=dev, dtype=dt,
         )
-        mu_den = y + c.pow(gamma_f) * Et_F
-        mu = -mu_num / torch.clamp(mu_den, min=1e-12)
+
+    def unpack(u: torch.Tensor):
+        return u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10]
+
+    def encode_u(u: torch.Tensor) -> torch.Tensor:
+        # positivity constraints
+        c, pi, pstar, lam, w, XiN, XiD, D, mu, rho, zeta = unpack(u)
+        return torch.stack([
+            torch.log(c),
+            pi,
+            torch.log(pstar),
+            torch.log(lam),
+            w,
+            XiN,
+            XiD,
+            torch.log(D),
+            mu,
+            rho,
+            zeta,
+        ])
+
+    def decode_u(z: torch.Tensor) -> torch.Tensor:
+        return torch.stack([
+            torch.exp(z[0]),
+            z[1],
+            torch.exp(z[2]),
+            torch.exp(z[3]),
+            z[4],
+            z[5],
+            z[6],
+            torch.exp(z[7]),
+            z[8],
+            z[9],
+            z[10],
+        ])
+
+    def decode_Z22(Z: torch.Tensor):
+        z0 = Z[:11]
+        z1 = Z[11:]
+        return decode_u(z0), decode_u(z1)
+
+    # stationary distribution and backward weights for Delta_prev
+    def stationary_dist(Pm: torch.Tensor) -> torch.Tensor:
+        # Solve (I - P.T) * pi = 0 with sum(pi)=1. Here P is 2x2 row-stochastic: P[current,next].
+        I = torch.eye(2, device=dev, dtype=dt)
+        A = (I - Pm.T)  # 2x2
+        A = torch.vstack([A, torch.ones((1, 2), device=dev, dtype=dt)])  # 3x2
+        b = torch.tensor([[0.0], [0.0], [1.0]], device=dev, dtype=dt)    # 3x1
+        pi = torch.linalg.lstsq(A, b).solution.squeeze(-1)               # 2,
+        return pi
+
+    pi_stat = stationary_dist(P)
+
+    def backward_weights(curr_s: int) -> torch.Tensor:
+        # w_prev[j] = Pr(s_{t-1}=j | s_t=curr_s) ∝ pi_stat[j] * P[j, curr_s]
+        w = torch.stack([pi_stat[0] * P[0, curr_s], pi_stat[1] * P[1, curr_s]])
+        return w / torch.sum(w)
+
+    bw0 = backward_weights(0)
+    bw1 = backward_weights(1)
+
+    def compute_Delta_prev(u0: torch.Tensor, u1: torch.Tensor):
+        D0 = unpack(u0)[7]
+        D1 = unpack(u1)[7]
+        DP0 = bw0[0] * D0 + bw0[1] * D1
+        DP1 = bw1[0] * D0 + bw1[1] * D1
+        return DP0, DP1
+
+    # expectations needed by residuals_a2
+    def F_val(c, pi, XiD):
+        return theta * beta * c.pow(-params.gamma) * (1.0 + pi).pow(eps - 1.0) * XiD
+
+    def G_val(c, pi, XiN):
+        return theta * beta * c.pow(-params.gamma) * (1.0 + pi).pow(eps) * XiN
+
+    def expectations(u0: torch.Tensor, u1: torch.Tensor):
+        c0, pi0, pstar0, lam0, w0, XiN0, XiD0, D0, mu0, rho0, zeta0 = unpack(u0)
+        c1, pi1, pstar1, lam1, w1, XiN1, XiD1, D1, mu1, rho1, zeta1 = unpack(u1)
+
+        F0 = F_val(c0, pi0, XiD0); F1 = F_val(c1, pi1, XiD1)
+        G0 = G_val(c0, pi0, XiN0); G1 = G_val(c1, pi1, XiN1)
+
+        TH0 = theta * (1.0 + pi0).pow(eps) * zeta0
+        TH1 = theta * (1.0 + pi1).pow(eps) * zeta1
+
+        # Et Xi expectations in paper (see your existing implementation)
+        Et_XiN_0 = P[0, 0] * (theta * (beta * lam0 / lam0) * (1.0 + pi0).pow(eps) * XiN0) + \
+                  P[0, 1] * (theta * (beta * lam1 / lam0) * (1.0 + pi1).pow(eps) * XiN1)
+        Et_XiD_0 = P[0, 0] * (theta * (beta * lam0 / lam0) * (1.0 + pi0).pow(eps - 1.0) * XiD0) + \
+                  P[0, 1] * (theta * (beta * lam1 / lam0) * (1.0 + pi1).pow(eps - 1.0) * XiD1)
+
+        Et_XiN_1 = P[1, 0] * (theta * (beta * lam0 / lam1) * (1.0 + pi0).pow(eps) * XiN0) + \
+                  P[1, 1] * (theta * (beta * lam1 / lam1) * (1.0 + pi1).pow(eps) * XiN1)
+        Et_XiD_1 = P[1, 0] * (theta * (beta * lam0 / lam1) * (1.0 + pi0).pow(eps - 1.0) * XiD0) + \
+                  P[1, 1] * (theta * (beta * lam1 / lam1) * (1.0 + pi1).pow(eps - 1.0) * XiD1)
+
+        Et_F_0 = P[0, 0] * F0 + P[0, 1] * F1
+        Et_G_0 = P[0, 0] * G0 + P[0, 1] * G1
+        Et_TH_0 = P[0, 0] * TH0 + P[0, 1] * TH1
+
+        Et_F_1 = P[1, 0] * F0 + P[1, 1] * F1
+        Et_G_1 = P[1, 0] * G0 + P[1, 1] * G1
+        Et_TH_1 = P[1, 0] * TH0 + P[1, 1] * TH1
+
         return {
-            "c": c,
-            "XiN": XiN,
-            "XiD": XiD,
-            "p_star_aux": p_star_aux,
-            "eta": eta,
-            "pi_aux": pi_aux,
-            "one_plus_pi": one_plus_pi,
-            "pi": pi,
-            "Delta": Delta,
-            "Delta_prev": Delta_prev,
-            "lam": lam,
-            "w": w,
-            "pstar": pstar,
-            "zeta": zeta,
-            "mu": mu,
-            "rho": torch.zeros_like(mu),
-            "Et_F": Et_F,
-            "Et_G": Et_G,
-            "Et_TH": Et_TH,
-            "Et_XiN": Et_XiN,
-            "Et_XiD": Et_XiD,
-            "Et_dF": Et_dF,
-            "Et_dG": Et_dG,
+            0: {"Et_F": Et_F_0, "Et_G": Et_G_0, "Et_TH": Et_TH_0, "Et_XiN": Et_XiN_0, "Et_XiD": Et_XiD_0},
+            1: {"Et_F": Et_F_1, "Et_G": Et_G_1, "Et_TH": Et_TH_1, "Et_XiN": Et_XiN_1, "Et_XiD": Et_XiD_1},
         }
-    def _residuals(Z: torch.Tensor) -> torch.Tensor:
-        d = _decode(Z)
-        parts = []
-        for s in range(R):
-            out_s = {
-                "c": d["c"][s],
-                "XiN": d["XiN"][s],
-                "XiD": d["XiD"][s],
-                "p_star_aux": d["p_star_aux"][s],
-                "pstar": d["pstar"][s],
-                "Delta": d["Delta"][s],
-                "w": d["w"][s],
-                "zeta": d["zeta"][s],
-                "eta": d["eta"][s],
-            }
-            st = State(
-                Delta_prev=d["Delta_prev"][s],
-                logA=logA0,
-                loggtilde=logg0,
-                xi=xi0,
-                s=torch.tensor(int(s), device=dev, dtype=torch.long),
+
+    def Et_from_regime_values(x0: torch.Tensor, x1: torch.Tensor):
+        return P[0, 0] * x0 + P[0, 1] * x1, P[1, 0] * x0 + P[1, 1] * x1
+
+    def implied_dF_dG_given_derivative_expectations(
+        s: int,
+        us: torch.Tensor,
+        DP: torch.Tensor,
+        *,
+        exps: Dict[int, Dict[str, torch.Tensor]],
+        Et_dF: torch.Tensor,
+        Et_dG: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # compute implied dF/dDP and dG/dDP using IFT via jacobian of residuals_a2
+        us = us.clone().detach().to(device=dev, dtype=dt).requires_grad_(True)
+        DP = DP.clone().detach().to(device=dev, dtype=dt).requires_grad_(True)
+
+        c, pi, pstar, lam, w, XiN, XiD, Delta, mu, rho, zeta = unpack(us)
+        out = {"c": c, "pi": pi, "pstar": pstar, "lam": lam, "w": w,
+               "XiN": XiN, "XiD": XiD, "Delta": Delta, "mu": mu, "rho": rho, "zeta": zeta}
+
+        st = State(Delta_prev=DP, logA=logA, loggtilde=logg, xi=xi, s=torch.tensor(s, device=dev, dtype=torch.long))
+
+        res = residuals_a2(
+            params=params64,
+            st=st,
+            out=out,
+            Et_F_next=exps[s]["Et_F"],
+            Et_G_next=exps[s]["Et_G"],
+            Et_dF_dDelta_next=Et_dF,
+            Et_dG_dDelta_next=Et_dG,
+            Et_theta_zeta_pi_next=exps[s]["Et_TH"],
+            Et_XiN_next=exps[s]["Et_XiN"],
+            Et_XiD_next=exps[s]["Et_XiD"],
+        )
+
+        keys = ["res_c_foc", "res_pi_foc", "res_pstar_foc", "res_Delta_foc",
+                "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
+                "res_pstar_def", "res_calvo", "res_Delta_law"]
+
+        def f(u_vec: torch.Tensor, dp: torch.Tensor):
+            c, pi, pstar, lam, w, XiN, XiD, Delta, mu, rho, zeta = unpack(u_vec)
+            out2 = {"c": c, "pi": pi, "pstar": pstar, "lam": lam, "w": w,
+                    "XiN": XiN, "XiD": XiD, "Delta": Delta, "mu": mu, "rho": rho, "zeta": zeta}
+            st2 = State(Delta_prev=dp, logA=logA, loggtilde=logg, xi=xi, s=torch.tensor(s, device=dev, dtype=torch.long))
+            r = residuals_a2(
+                params=params64,
+                st=st2,
+                out=out2,
+                Et_F_next=exps[s]["Et_F"],
+                Et_G_next=exps[s]["Et_G"],
+                Et_dF_dDelta_next=Et_dF,
+                Et_dG_dDelta_next=Et_dG,
+                Et_theta_zeta_pi_next=exps[s]["Et_TH"],
+                Et_XiN_next=exps[s]["Et_XiN"],
+                Et_XiD_next=exps[s]["Et_XiD"],
             )
+            return torch.stack([r[k] for k in keys])
+
+        Ju = torch.autograd.functional.jacobian(lambda uu: f(uu, DP), us, create_graph=False)
+        Jdp = torch.autograd.functional.jacobian(lambda dd: f(us, dd), DP, create_graph=False).reshape(-1, 1)
+
+        # d u / d DP from IFT: Ju * du + Jdp = 0
+        du = -torch.linalg.solve(Ju, Jdp).reshape(-1)  # (11,)
+        # implied dF/dDP and dG/dDP = (d/dDP) Et_F_next, Et_G_next? Here we want the objects used in training:
+        # We follow your existing convention: treat implied derivatives as derivative of Et_F_next/Et_G_next wrt current Delta_prev.
+        # Since Et_F_next depends on (u0,u1) only, we approximate by derivative of F_s wrt DP via du chain rule.
+        # Compute dF = dF_val/du * du, similarly for G with XiD/XiN components.
+        # Simpler: use your stored dF/dG as IFT target for Et_F and Et_G in residuals_a2 by differentiating their definitions:
+        c, pi, pstar, lam, w, XiN, XiD, Delta, mu, rho, zeta = unpack(us)
+        # partials for F and G wrt u:
+        # F = theta*beta*c^{-gamma}*(1+pi)^{eps-1}*XiD
+        dF = (theta*beta) * (
+            (-params.gamma) * c.pow(-params.gamma - 1.0) * (1.0 + pi).pow(eps - 1.0) * XiD * du[0]
+            + c.pow(-params.gamma) * (eps - 1.0) * (1.0 + pi).pow(eps - 2.0) * XiD * du[1]
+            + c.pow(-params.gamma) * (1.0 + pi).pow(eps - 1.0) * du[6]
+        )
+        # G = theta*beta*c^{-gamma}*(1+pi)^{eps}*XiN
+        dG = (theta*beta) * (
+            (-params.gamma) * c.pow(-params.gamma - 1.0) * (1.0 + pi).pow(eps) * XiN * du[0]
+            + c.pow(-params.gamma) * eps * (1.0 + pi).pow(eps - 1.0) * XiN * du[1]
+            + c.pow(-params.gamma) * (1.0 + pi).pow(eps) * du[5]
+        )
+        return dF.detach(), dG.detach()
+
+    def implied_derivs_fixed_point(u0: torch.Tensor, u1: torch.Tensor, dF0, dF1, dG0, dG1, max_fp_iter: int, fp_tol: float):
+        for _ in range(max_fp_iter):
+            exps = expectations(u0, u1)
+            DP0, DP1 = compute_Delta_prev(u0, u1)
+            Et_dF_0, Et_dF_1 = Et_from_regime_values(dF0, dF1)
+            Et_dG_0, Et_dG_1 = Et_from_regime_values(dG0, dG1)
+
+            ndF0, ndG0 = implied_dF_dG_given_derivative_expectations(0, u0, DP0, exps=exps, Et_dF=Et_dF_0, Et_dG=Et_dG_0)
+            ndF1, ndG1 = implied_dF_dG_given_derivative_expectations(1, u1, DP1, exps=exps, Et_dF=Et_dF_1, Et_dG=Et_dG_1)
+
+            diff = torch.max(torch.stack([torch.abs(ndF0-dF0), torch.abs(ndF1-dF1), torch.abs(ndG0-dG0), torch.abs(ndG1-dG1)]))
+            dF0, dF1, dG0, dG1 = ndF0, ndF1, ndG0, ndG1
+            if diff.item() < fp_tol:
+                break
+        return dF0, dF1, dG0, dG1
+
+    # core residuals (22)
+    def residuals_core(Z22: torch.Tensor, dF0, dF1, dG0, dG1) -> torch.Tensor:
+        u0, u1 = decode_Z22(Z22)
+        exps = expectations(u0, u1)
+        DP0, DP1 = compute_Delta_prev(u0, u1)
+        Et_dF_0, Et_dF_1 = Et_from_regime_values(dF0, dF1)
+        Et_dG_0, Et_dG_1 = Et_from_regime_values(dG0, dG1)
+
+        def res_regime(s: int, u: torch.Tensor, DP: torch.Tensor, Et_dF: torch.Tensor, Et_dG: torch.Tensor):
+            c, pi, pstar, lam, w, XiN, XiD, Delta, mu, rho, zeta = unpack(u)
+            out = {"c": c, "pi": pi, "pstar": pstar, "lam": lam, "w": w,
+                   "XiN": XiN, "XiD": XiD, "Delta": Delta, "mu": mu, "rho": rho, "zeta": zeta}
+            st = State(Delta_prev=DP, logA=logA, loggtilde=logg, xi=xi, s=torch.tensor(s, device=dev, dtype=torch.long))
             res = residuals_a2(
                 params=params64,
                 st=st,
-                out=out_s,
-                Et_F_next=d["Et_F"][s],
-                Et_G_next=d["Et_G"][s],
-                Et_dF_dDelta_next=d["Et_dF"][s],
-                Et_dG_dDelta_next=d["Et_dG"][s],
-                Et_theta_zeta_pi_next=d["Et_TH"][s],
-                Et_XiN_next=d["Et_XiN"][s],
-                Et_XiD_next=d["Et_XiD"][s],
+                out=out,
+                Et_F_next=exps[s]["Et_F"],
+                Et_G_next=exps[s]["Et_G"],
+                Et_dF_dDelta_next=Et_dF,
+                Et_dG_dDelta_next=Et_dG,
+                Et_theta_zeta_pi_next=exps[s]["Et_TH"],
+                Et_XiN_next=exps[s]["Et_XiN"],
+                Et_XiD_next=exps[s]["Et_XiD"],
             )
-            parts.append(
-                torch.stack(
-                    [
-                        res["res_c_foc"],
-                        res["res_Delta_foc"],
-                        res["res_XiN_rec"],
-                        res["res_XiD_rec"],
-                        res["res_pstar_def"],
-                    ]
-                )
-            )
-        return torch.cat(parts, dim=0)
-    def _initial_guess() -> torch.Tensor:
-        flex = solve_flexprice_sss(params64)
-        c0 = torch.tensor([float(flex.by_regime[s]["c"]) for s in range(R)], device=dev, dtype=dt)
-        lam0 = c0.pow(-gamma_f)
-        paux0 = torch.ones((R,), device=dev, dtype=dt)
-        pi_aux0 = torch.ones((R,), device=dev, dtype=dt)
-        A_delta0 = torch.eye(R, device=dev, dtype=dt) - theta_f * (torch.diag(pi_aux0) @ B)
-        Delta0 = _robust_solve(A_delta0, (1.0 - theta_f) * paux0)
-        Delta0 = torch.clamp(Delta0, min=1e-12)
-        y0 = c0 + gbar
-        w0 = (y0 * Delta0).pow(omega_f) / torch.clamp(lam0, min=1e-12)
-        ratio_next_over_cur = lam0.view(1, R) / torch.clamp(lam0.view(R, 1), min=1e-12)
-        A_xid = torch.eye(R, device=dev, dtype=dt) - (P * ratio_next_over_cur * (theta_f * beta_f))
-        XiD0 = _robust_solve(A_xid, y0)
-        XiD0 = torch.clamp(XiD0, min=1e-10)
-        one_plus_tau0 = 1.0 - float(params64.tau_bar) + eta_levels
-        XiN0 = _robust_solve(A_xid, y0 * w0 * one_plus_tau0)
-        XiN0 = torch.clamp(XiN0, min=1e-10)
-        Delta_prev0 = B @ Delta0
-        k = (eps_f - 1.0) / (eps_f * torch.clamp(Delta_prev0, min=1e-12))
-        a = theta_f * (eps_f - 1.0) / (eps_f * torch.clamp(Delta_prev0, min=1e-12))
-        A_eta = torch.diag(k) - beta_f * (P @ torch.diag(a))
-        rhs_eta = (y0 * Delta0).pow(1.0 + omega_f) / torch.clamp(Delta0, min=1e-12)
-        eta0 = _robust_solve(A_eta, rhs_eta)
-        z0 = torch.zeros((R, 5), device=dev, dtype=dt)
-        z0[:, 0] = torch.log(torch.clamp(c0, min=1e-12))
-        z0[:, 1] = torch.log(torch.clamp(XiN0, min=1e-12))
-        z0[:, 2] = torch.log(torch.clamp(XiD0, min=1e-12))
-        z0[:, 3] = 0.0
-        z0[:, 4] = eta0
-        return z0.reshape(-1)
-    Z = _initial_guess()
-    best_Z = Z.detach().clone()
-    best_score = float("inf")
-    for _ in range(int(max_iter)):
-        Z_req = Z.detach().requires_grad_(True)
-        r = _residuals(Z_req)
-        score = float(torch.max(torch.abs(r)).detach().cpu())
-        if score < best_score:
-            best_score = score
-            best_Z = Z_req.detach().clone()
-        if score < float(tol):
-            break
-        J = torch.autograd.functional.jacobian(_residuals, Z_req, create_graph=False)
-        step = _robust_solve(J, -r.detach())
-        alpha = float(max(1e-6, min(1.0, damping)))
-        improved = False
-        for _ in range(12):
-            Z_try = (Z + alpha * step).detach()
-            r_try = _residuals(Z_try)
-            score_try = float(torch.max(torch.abs(r_try)).detach().cpu())
-            if np.isfinite(score_try) and score_try < score:
-                Z = Z_try
-                improved = True
+            keys = ["res_c_foc", "res_pi_foc", "res_pstar_foc", "res_Delta_foc",
+                    "res_c_lam", "res_labor", "res_XiN_rec", "res_XiD_rec",
+                    "res_pstar_def", "res_calvo", "res_Delta_law"]
+            return torch.stack([res[k] for k in keys])
+
+        r0 = res_regime(0, u0, DP0, Et_dF_0, Et_dG_0)
+        r1 = res_regime(1, u1, DP1, Et_dF_1, Et_dG_1)
+        return torch.cat([r0, r1], dim=0)
+
+    def newton_core(Z_init: torch.Tensor, dF0, dF1, dG0, dG1, max_it: int, tol_core: float, damping_local: float):
+        Z = Z_init.clone().detach().to(device=dev, dtype=dt)
+        for _ in range(max_it):
+            r = residuals_core(Z, dF0, dF1, dG0, dG1)
+            m = torch.max(torch.abs(r)).item()
+            if m < tol_core:
+                return Z, m
+            J = torch.autograd.functional.jacobian(lambda zz: residuals_core(zz, dF0, dF1, dG0, dG1), Z, create_graph=False)
+            step = torch.linalg.solve(J, r)
+            Z = Z - damping_local * step
+            if not torch.isfinite(Z).all():
                 break
-            alpha *= 0.5
-        if not improved:
-            Z = (Z + 0.1 * alpha * step).detach()
-    final = _decode(best_Z)
-    res_final = _residuals(best_Z).reshape(R, 5)
-    by_regime: Dict[int, Dict[str, float]] = {}
-    for s in range(R):
-        by_regime[s] = {
-            "c": float(final["c"][s].item()),
-            "pi": float(final["pi"][s].item()),
-            "pstar": float(final["pstar"][s].item()),
-            "p_star_aux": float(final["p_star_aux"][s].item()),
-            "lam": float(final["lam"][s].item()),
-            "w": float(final["w"][s].item()),
-            "XiN": float(final["XiN"][s].item()),
-            "XiD": float(final["XiD"][s].item()),
-            "Delta": float(final["Delta"][s].item()),
-            "Delta_prev": float(final["Delta_prev"][s].item()),
-            "eta": float(final["eta"][s].item()),
-            "mu": float(final["mu"][s].item()),
-            "rho": float(final["rho"][s].item()),
-            "zeta": float(final["zeta"][s].item()),
-            "dF_dDeltaPrev": 0.0,
-            "dG_dDeltaPrev": 0.0,
-            "core_max_residual": float(torch.max(torch.abs(res_final[s])).item()),
+        r = residuals_core(Z, dF0, dF1, dG0, dG1)
+        return Z, torch.max(torch.abs(r)).item()
+
+    # --- initialization (reuse your existing seeds) --------------------------
+    init_pairs = [
+        (0.0, 0.0),
+        (0.0, 0.003),
+        (0.0, 0.006),
+        (0.0, 0.009),
+        (0.0, 0.012),
+        (0.0, 0.018),
+        (0.0, 0.024),
+        (0.0, 0.030),
+        (0.0, -0.003),
+        (0.0, -0.006),
+    ]
+
+    best = None  # (score, Z, u0, u1, dF0,dF1,dG0,dG1)
+    for pi0_init, pi1_init in init_pairs:
+        # start from your previous near-flex guess
+        # (use existing helper in file if present; otherwise simple)
+        u0 = pack({"c": 0.94, "pi": pi0_init, "pstar": 1.0, "lam": 1.0, "w": 1.0,
+                   "XiN": 4.0, "XiD": 4.0, "Delta": 1.0, "mu": 0.0, "rho": 4.0, "zeta": -3.0})
+        u1 = pack({"c": 0.90, "pi": pi1_init, "pstar": 1.0, "lam": 1.0, "w": 1.0,
+                   "XiN": 4.0, "XiD": 4.0, "Delta": 1.0, "mu": 0.0, "rho": 4.0, "zeta": -3.0})
+
+        Z0 = torch.cat([encode_u(u0), encode_u(u1)], dim=0)
+
+        # Stage 1: freeze derivatives to zero
+        Z1, s1 = newton_core(Z0, torch.zeros((),device=dev,dtype=dt), torch.zeros((),device=dev,dtype=dt),
+                             torch.zeros((),device=dev,dtype=dt), torch.zeros((),device=dev,dtype=dt),
+                             max_it=max_iter, tol_core=1e-6, damping_local=damping)
+        if not torch.isfinite(Z1).all():
+            continue
+
+        u0_1, u1_1 = decode_Z22(Z1)
+
+        # Stage 2: compute implied derivatives at stage1 point
+        dF0 = torch.zeros((), device=dev, dtype=dt); dF1 = torch.zeros((), device=dev, dtype=dt)
+        dG0 = torch.zeros((), device=dev, dtype=dt); dG1 = torch.zeros((), device=dev, dtype=dt)
+        dF0, dF1, dG0, dG1 = implied_derivs_fixed_point(u0_1, u1_1, dF0, dF1, dG0, dG1, max_fp_iter=15, fp_tol=1e-8)
+
+        # Stage 3: a few Newton steps with refreshed derivatives
+        Z = Z1
+        for _ in range(8):
+            u0c, u1c = decode_Z22(Z)
+            dF0, dF1, dG0, dG1 = implied_derivs_fixed_point(u0c, u1c, dF0, dF1, dG0, dG1, max_fp_iter=6, fp_tol=1e-10)
+            Z, score = newton_core(Z, dF0, dF1, dG0, dG1, max_it=1, tol_core=tol, damping_local=damping)
+            if score < tol:
+                break
+
+        u0f, u1f = decode_Z22(Z)
+        final_r = residuals_core(Z, dF0, dF1, dG0, dG1)
+        final_score = torch.max(torch.abs(final_r)).item()
+
+        if (best is None) or (final_score < best[0]):
+            best = (final_score, u0f, u1f, dF0, dF1, dG0, dG1)
+
+    if best is None:
+        raise RuntimeError("Discretion SSS: no candidate converged to a finite solution.")
+
+    score, u0f, u1f, dF0, dF1, dG0, dG1 = best
+
+    # build output dicts
+    def to_dict(u: torch.Tensor, dF: torch.Tensor, dG: torch.Tensor):
+        c, pi, pstar, lam, w, XiN, XiD, Delta, mu, rho, zeta = unpack(u)
+        return {
+            "c": float(c.item()),
+            "pi": float(pi.item()),
+            "pstar": float(pstar.item()),
+            "lam": float(lam.item()),
+            "w": float(w.item()),
+            "XiN": float(XiN.item()),
+            "XiD": float(XiD.item()),
+            "Delta": float(Delta.item()),
+            "mu": float(mu.item()),
+            "rho": float(rho.item()),
+            "zeta": float(zeta.item()),
+            "dF_dDeltaPrev": float(dF.item()),
+            "dG_dDeltaPrev": float(dG.item()),
+            "core_max_residual": float(score),
         }
+
+    by_regime = {
+        0: to_dict(u0f, dF0, dG0),
+        1: to_dict(u1f, dF1, dG1),
+    }
     return DiscretionSSS(by_regime=by_regime)
-
-
 def commitment_init_from_sss(params: ModelParams) -> Dict[int, Dict[str, float]]:
     """
     Return regime-specific initial lagged co-states for commitment.
-    Keys correspond to the current regime s_t used in the state vector.
+    Keys 0 and 1 correspond to the current regime s_t used in the state vector.
     Each value contains:
-        vartheta_prev:  vartheta_{t-1} * c_{t-1}^gamma  (scaled lag co-state)
-        varrho_prev:    varrho_{t-1} * c_{t-1}^gamma    (scaled lag co-state)
+        vartheta_prev:  ϑ_{t-1} * c_{t-1}^γ  (scaled lag co-state)
+        varrho_prev:    ϱ_{t-1} * c_{t-1}^γ  (scaled lag co-state)
     """
     sss = solve_commitment_sss_switching(params).by_regime
-    out: Dict[int, Dict[str, float]] = {}
-    for s in sorted(int(k) for k in sss.keys()):
-        out[s] = {
-            "vartheta_prev": float(sss[s].get("vartheta_prev", 0.0)),
-            "varrho_prev": float(sss[s].get("varrho_prev", 0.0)),
-        }
-    return out
+    return {
+        0: {"vartheta_prev": sss[0]["vartheta_prev"], "varrho_prev": sss[0]["varrho_prev"]},
+        1: {"vartheta_prev": sss[1]["vartheta_prev"], "varrho_prev": sss[1]["varrho_prev"]},
+    }

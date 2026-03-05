@@ -38,13 +38,10 @@ def summarize_series(series: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float
     return {k: moments(v) for k, v in series.items()}
 
 
-def split_by_regime(arr: np.ndarray, s: np.ndarray) -> Dict[int, np.ndarray]:
+def split_by_regime(arr: np.ndarray, s: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     s = np.asarray(s).astype(int)
     a = np.asarray(arr)
-    out: Dict[int, np.ndarray] = {}
-    for reg in sorted({int(v) for v in np.unique(s)}):
-        out[reg] = a[s == reg]
-    return out
+    return a[s == 0], a[s == 1]
 
 
 def ergodic_moments(sim_paths: Dict[str, np.ndarray], *, by_regime: bool = True) -> Dict[str, Any]:
@@ -55,9 +52,9 @@ def ergodic_moments(sim_paths: Dict[str, np.ndarray], *, by_regime: bool = True)
             continue
         out[k] = moments(v)
         if by_regime and s is not None and v.shape == s.shape:
-            by_reg = split_by_regime(v, s)
-            for reg, vals in by_reg.items():
-                out[f"{k}_s{int(reg)}"] = moments(vals)
+            v0, v1 = split_by_regime(v, s)
+            out[k + "_s0"] = moments(v0)
+            out[k + "_s1"] = moments(v1)
     return out
 
 
@@ -282,8 +279,8 @@ def table2_dataframe(sss_by_policy: Dict[str, Dict[str, Any]]):
     """Build a robust Table-2-like DataFrame from arbitrary SSS dicts.
 
     Expects each policy dict to have either:
-      - {"by_regime": {s:{...}}} (preferred), or
-      - {s:{...}} directly.
+      - {"by_regime": {0:{...}, 1:{...}}} (preferred), or
+      - {0:{...}, 1:{...}} directly.
     Produces a tidy DataFrame with rows (policy, regime) and columns = union of keys.
     """
     if pd is None:
@@ -291,13 +288,7 @@ def table2_dataframe(sss_by_policy: Dict[str, Dict[str, Any]]):
     rows = []
     for pol, obj in sss_by_policy.items():
         by_reg = obj.get("by_regime", obj)
-        keys = set()
-        for k in by_reg.keys():
-            try:
-                keys.add(int(k))
-            except Exception:
-                continue
-        for s in sorted(keys):
+        for s in [0, 1]:
             d = dict(by_reg.get(str(s), by_reg.get(s, {})))
             d["policy"] = pol
             d["regime"] = s

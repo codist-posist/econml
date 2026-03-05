@@ -73,7 +73,7 @@ def main():
         "--strict_author_table2",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Require author by-regime simulation files (NT/SS/SEV/...) for sim_conditional mode (no fallback).",
+        help="Require author NT/SS simulation files for sim_conditional mode (no fallback).",
     )
     # Backward compatibility with previous CLI.
     ap.add_argument("--no_selected", action="store_true", help=argparse.SUPPRESS)

@@ -20,7 +20,7 @@ def check_table2(
     df: pd.DataFrame,
     *,
     policies: Tuple[str, ...] = ("flex", "commitment", "discretion"),
-    regimes: Tuple[str, ...] | None = None,
+    regimes: Tuple[str, ...] = ("normal", "bad"),
     tol_abs: float = 0.15,
     # separate tolerance for skew (often noisier)
     tol_abs_skew: float = 0.5,
@@ -44,18 +44,8 @@ def check_table2(
     # normalize
     df2["policy"] = df2["policy"].astype(str)
     df2["regime"] = df2["regime"].astype(str)
-    if regimes is None:
-        reg_set = {
-            str(reg)
-            for pol, reg in TABLE2_TARGETS.keys()
-            if str(pol) in set(str(p) for p in policies)
-        }
-        pref = ["normal", "bad", "severe"]
-        reg_order = [r for r in pref if r in reg_set]
-        for r in sorted(reg_set):
-            if r not in reg_order:
-                reg_order.append(r)
-        regimes = tuple(reg_order)
+
+    key_cols = [c for c in df2.columns if c not in ("policy", "regime")]
 
     for pol in policies:
         for reg in regimes:

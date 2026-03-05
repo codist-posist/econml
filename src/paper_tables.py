@@ -10,32 +10,9 @@ from .config import ModelParams
 from .table2_builder import build_table0
 
 
-_REGIME_LABELS: Dict[str, str] = {
-    "normal": "normal times",
-    "bad": "persistent supply shock",
-    "severe": "severe supply shock",
-}
-
-
-def _ordered_regimes_from_df(df: pd.DataFrame) -> List[str]:
-    vals = [str(v) for v in pd.unique(df["regime"].astype(str))]
-    pref = ["normal", "bad", "severe"]
-    out: List[str] = [r for r in pref if r in vals]
-    for r in vals:
-        if r not in out:
-            out.append(r)
-    return out
-
-
-def _regime_paper_label(regime: str) -> str:
-    k = str(regime).strip().lower()
-    return _REGIME_LABELS.get(k, k)
-
-
 def build_table1_calibration(params: ModelParams | None = None) -> pd.DataFrame:
     """Build a compact calibration table (paper-style Table 1 helper)."""
     p = params if params is not None else ModelParams().to_torch()
-    eta0, eta1, eta2 = p.eta_by_regime
     rows = [
         ("Discount factor", "beta", float(p.beta)),
         ("Risk aversion", "gamma", float(p.gamma)),
@@ -44,10 +21,7 @@ def build_table1_calibration(params: ModelParams | None = None) -> pd.DataFrame:
         ("Elasticity of substitution", "eps", float(p.eps)),
         ("Tax wedge level", "tau_bar", float(p.tau_bar)),
         ("Government purchases level", "g_bar", float(p.g_bar)),
-        ("Persistent supply-shock level (legacy)", "eta_bar", float(p.eta_bar)),
-        ("Supply-shock level: normal", "eta0", float(eta0)),
-        ("Supply-shock level: bad", "eta1", float(eta1)),
-        ("Supply-shock level: severe", "eta2", float(eta2)),
+        ("Persistent supply-shock level", "eta_bar", float(p.eta_bar)),
         ("TFP AR(1)", "rho_A", float(p.rho_A)),
         ("Cost-push AR(1)", "rho_tau", float(p.rho_tau)),
         ("Gov. spending AR(1)", "rho_g", float(p.rho_g)),
@@ -56,8 +30,6 @@ def build_table1_calibration(params: ModelParams | None = None) -> pd.DataFrame:
         ("Gov. spending shock st.dev", "sigma_g", float(p.sigma_g)),
         ("Transition prob. normal->bad", "p12", float(p.p12)),
         ("Transition prob. bad->normal", "p21", float(p.p21)),
-        ("Transition prob. bad->severe", "p23", float(p.p23)),
-        ("Transition prob. severe->bad", "p32", float(p.p32)),
         ("Inflation target (quarterly net)", "pi_bar", float(p.pi_bar)),
         ("Taylor inflation response", "psi", float(p.psi)),
     ]
@@ -87,14 +59,14 @@ def _paper_moments_wide_table(
         ("Nominal interest rates (Std)", "i_std_pct"),
         ("Nominal interest rates (Skew)", "i_skew"),
     ]
-    regimes = _ordered_regimes_from_df(df)
+    regimes = [("normal", "normal times"), ("bad", "persistent supply shock")]
 
     rows: List[Dict[str, object]] = []
     for metric_name, col in metrics:
-        for reg_key in regimes:
+        for reg_key, reg_label in regimes:
             row: Dict[str, object] = {
                 "Variable": metric_name,
-                "Regime": _regime_paper_label(reg_key),
+                "Regime": reg_label,
             }
             for pkey, plabel in policies:
                 sub = df[(df["policy"] == pkey) & (df["regime"] == reg_key)]
@@ -158,9 +130,8 @@ def build_paper_tables_2_4(
         )
         cols = list(df.columns)
         extras = []
-        regime_ids = _ordered_regimes_from_df(df)
         for pol in ("taylor_zlb", "mod_taylor_zlb", "discretion_zlb", "commitment_zlb"):
-            for reg in regime_ids:
+            for reg in ("normal", "bad"):
                 row = {c: np.nan for c in cols}
                 row["policy"] = pol
                 row["regime"] = reg
@@ -240,6 +211,5 @@ def build_taylor_para_robustness_table(
     keep = ["taylor", "taylor_para", "mod_taylor"]
     out = df[df["policy"].isin(keep)].copy()
     out["policy"] = pd.Categorical(out["policy"], categories=keep, ordered=True)
-    regime_order = _ordered_regimes_from_df(out)
-    out["regime"] = pd.Categorical(out["regime"], categories=regime_order, ordered=True)
+    out["regime"] = pd.Categorical(out["regime"], categories=["normal", "bad"], ordered=True)
     return out.sort_values(["policy", "regime"]).reset_index(drop=True)
