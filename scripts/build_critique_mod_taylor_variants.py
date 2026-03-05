@@ -112,6 +112,7 @@ class VariantBundle:
     net: torch.nn.Module
     rbar_by_regime: torch.Tensor
     x0: torch.Tensor
+    x0_by_regime: Dict[int, torch.Tensor]
     robust_rule: RobustModTaylorRuleConfig | None = None
 
 
@@ -178,7 +179,17 @@ def _load_variant_bundle(
         policy="mod_taylor",
         rbar_by_regime=rbar,
     ).by_regime
-    x0 = _state_from_policy_sss(params, "mod_taylor", sss[0], regime=0, commitment_state_dim=None)
+    x0_by_regime: Dict[int, torch.Tensor] = {}
+    for r in range(int(params.n_regimes)):
+        base = sss.get(r, sss[0])
+        x0_by_regime[r] = _state_from_policy_sss(
+            params,
+            "mod_taylor",
+            base,
+            regime=r,
+            commitment_state_dim=None,
+        )
+    x0 = x0_by_regime.get(0, x0_by_regime[min(x0_by_regime.keys())])
     return VariantBundle(
         label=str(label),
         run_dir=str(run_dir),
@@ -186,6 +197,7 @@ def _load_variant_bundle(
         net=net,
         rbar_by_regime=rbar,
         x0=x0,
+        x0_by_regime=x0_by_regime,
         robust_rule=robust_rule,
     )
 
@@ -224,6 +236,7 @@ def _simulate_custom(
     bundle: VariantBundle,
     *,
     T: int,
+    x0: torch.Tensor | None = None,
     regime_path: Sequence[int] | None = None,
     epsA_path: np.ndarray | None = None,
     epsg_path: np.ndarray | None = None,
@@ -257,7 +270,8 @@ def _simulate_custom(
 
     tr = _make_trainer(bundle, gh_n=int(gh_n))
 
-    x = bundle.x0.to(device=params.device, dtype=params.dtype)
+    x_base = bundle.x0 if x0 is None else x0
+    x = x_base.to(device=params.device, dtype=params.dtype)
     B = int(x.shape[0])
     store: Dict[str, np.ndarray] = {
         "c": np.zeros((T + 1, B), dtype=np.float64),
@@ -380,71 +394,78 @@ def _build_shock_train(
             train_epst[int(k)] = float(shock_size)
 
     rows: List[Dict[str, float | str]] = []
+    rows_all: List[Dict[str, float | str]] = []
     for v in variants:
-        regime_path = [0] + [int(_bad_regime(v.params))] * int(T)
-        sim_base = _simulate_custom(
-            v,
-            T=T,
-            regime_path=regime_path,
-            epst_path=base_epst,
-            noise_scale=0.0,
-            seed=123,
-        )
-        sim_train = _simulate_custom(
-            v,
-            T=T,
-            regime_path=regime_path,
-            epst_path=train_epst,
-            noise_scale=0.0,
-            seed=123,
-        )
-        sim_base = _add_output_gap(sim_base, v.params)
-        sim_train = _add_output_gap(sim_train, v.params)
+        normal_reg = 0 if 0 in v.x0_by_regime else min(v.x0_by_regime.keys())
+        for start_reg in sorted(v.x0_by_regime.keys()):
+            start_label = _regime_label(start_reg)
+            regime_path = [int(start_reg)] + [int(_bad_regime(v.params))] * int(T)
+            sim_base = _simulate_custom(
+                v,
+                T=T,
+                x0=v.x0_by_regime[start_reg],
+                regime_path=regime_path,
+                epst_path=base_epst,
+                noise_scale=0.0,
+                seed=123,
+            )
+            sim_train = _simulate_custom(
+                v,
+                T=T,
+                x0=v.x0_by_regime[start_reg],
+                regime_path=regime_path,
+                epst_path=train_epst,
+                noise_scale=0.0,
+                seed=123,
+            )
+            sim_base = _add_output_gap(sim_base, v.params)
+            sim_train = _add_output_gap(sim_train, v.params)
 
-        t = np.arange(T + 1)
-        pi_b = _ann(sim_base["pi"][:, 0])
-        pi_t = _ann(sim_train["pi"][:, 0])
-        i_b = _ann(sim_base["i"][:, 0])
-        i_t = _ann(sim_train["i"][:, 0])
-        x_b = 100.0 * sim_base["x"][:, 0]
-        x_t = 100.0 * sim_train["x"][:, 0]
+            t = np.arange(T + 1)
+            pi_b = _ann(sim_base["pi"][:, 0])
+            pi_t = _ann(sim_train["pi"][:, 0])
+            i_b = _ann(sim_base["i"][:, 0])
+            i_t = _ann(sim_train["i"][:, 0])
+            x_b = 100.0 * sim_base["x"][:, 0]
+            x_t = 100.0 * sim_train["x"][:, 0]
 
-        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-        ax[0, 0].plot(t, pi_b, label="baseline")
-        ax[0, 0].plot(t, pi_t, "--", label="shock train")
-        ax[0, 0].set_title("(a) Inflation")
-        ax[0, 0].set_ylabel("ann. %")
-        ax[0, 0].legend()
+            fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+            ax[0, 0].plot(t, pi_b, label="baseline")
+            ax[0, 0].plot(t, pi_t, "--", label="shock train")
+            ax[0, 0].set_title("(a) Inflation")
+            ax[0, 0].set_ylabel("ann. %")
+            ax[0, 0].legend()
 
-        ax[0, 1].plot(t, i_b, label="baseline")
-        ax[0, 1].plot(t, i_t, "--", label="shock train")
-        ax[0, 1].set_title("(b) Nominal interest rate")
-        ax[0, 1].set_ylabel("ann. %")
-        ax[0, 1].legend()
+            ax[0, 1].plot(t, i_b, label="baseline")
+            ax[0, 1].plot(t, i_t, "--", label="shock train")
+            ax[0, 1].set_title("(b) Nominal interest rate")
+            ax[0, 1].set_ylabel("ann. %")
+            ax[0, 1].legend()
 
-        ax[1, 0].plot(t, x_b, label="baseline")
-        ax[1, 0].plot(t, x_t, "--", label="shock train")
-        ax[1, 0].set_title("(c) Output gap")
-        ax[1, 0].set_ylabel("%")
-        ax[1, 0].set_xlabel("quarter")
-        ax[1, 0].legend()
+            ax[1, 0].plot(t, x_b, label="baseline")
+            ax[1, 0].plot(t, x_t, "--", label="shock train")
+            ax[1, 0].set_title("(c) Output gap")
+            ax[1, 0].set_ylabel("%")
+            ax[1, 0].set_xlabel("quarter")
+            ax[1, 0].legend()
 
-        p_b = np.cumprod(1.0 + sim_base["pi"][:, 0])
-        p_t = np.cumprod(1.0 + sim_train["pi"][:, 0])
-        ax[1, 1].plot(t, p_b, label="baseline")
-        ax[1, 1].plot(t, p_t, "--", label="shock train")
-        ax[1, 1].set_title("(d) Price level index")
-        ax[1, 1].set_xlabel("quarter")
-        ax[1, 1].legend()
+            p_b = np.cumprod(1.0 + sim_base["pi"][:, 0])
+            p_t = np.cumprod(1.0 + sim_train["pi"][:, 0])
+            ax[1, 1].plot(t, p_b, label="baseline")
+            ax[1, 1].plot(t, p_t, "--", label="shock train")
+            ax[1, 1].set_title("(d) Price level index")
+            ax[1, 1].set_xlabel("quarter")
+            ax[1, 1].legend()
 
-        fig.suptitle(f"Critique Shock Train: {v.label}", y=1.02)
-        plt.tight_layout()
-        _savefig(fig_dir, f"critique_shock_train_{_slug(v.label)}.png")
-        plt.close(fig)
+            fig.suptitle(f"Critique Shock Train: {v.label} (start={start_label})", y=1.02)
+            plt.tight_layout()
+            _savefig(fig_dir, f"critique_shock_train_{_slug(v.label)}_start_{start_label}.png")
+            plt.close(fig)
 
-        rows.append(
-            {
+            row = {
                 "variant": v.label,
+                "start_regime": start_label,
+                "start_regime_id": int(start_reg),
                 "peak_pi_baseline_ann_pct": float(np.max(pi_b[1:])),
                 "peak_pi_shock_train_ann_pct": float(np.max(pi_t[1:])),
                 "avg_i_baseline_ann_pct": float(np.mean(i_b[1:])),
@@ -452,11 +473,18 @@ def _build_shock_train(
                 "avg_x_baseline_pct": float(np.mean(x_b[1:])),
                 "avg_x_shock_train_pct": float(np.mean(x_t[1:])),
             }
-        )
+            rows_all.append(row)
+            if int(start_reg) == int(normal_reg):
+                rows.append(row)
 
     summary = pd.DataFrame(rows)
     summary.to_csv(os.path.join(fig_dir, "critique_shock_train_summary.csv"), index=False)
     print("[saved]", os.path.join(fig_dir, "critique_shock_train_summary.csv"))
+    pd.DataFrame(rows_all).to_csv(
+        os.path.join(fig_dir, "critique_shock_train_summary_by_start.csv"),
+        index=False,
+    )
+    print("[saved]", os.path.join(fig_dir, "critique_shock_train_summary_by_start.csv"))
 
     delta = summary.copy()
     delta["d_peak_pi_ann_pct"] = delta["peak_pi_shock_train_ann_pct"] - delta["peak_pi_baseline_ann_pct"]
@@ -464,6 +492,15 @@ def _build_shock_train(
     delta["d_avg_x_pct"] = delta["avg_x_shock_train_pct"] - delta["avg_x_baseline_pct"]
     delta.to_csv(os.path.join(fig_dir, "critique_shock_train_delta.csv"), index=False)
     print("[saved]", os.path.join(fig_dir, "critique_shock_train_delta.csv"))
+
+    delta_all = pd.DataFrame(rows_all)
+    if not delta_all.empty:
+        delta_all = delta_all.copy()
+        delta_all["d_peak_pi_ann_pct"] = delta_all["peak_pi_shock_train_ann_pct"] - delta_all["peak_pi_baseline_ann_pct"]
+        delta_all["d_avg_i_ann_pct"] = delta_all["avg_i_shock_train_ann_pct"] - delta_all["avg_i_baseline_ann_pct"]
+        delta_all["d_avg_x_pct"] = delta_all["avg_x_shock_train_pct"] - delta_all["avg_x_baseline_pct"]
+    delta_all.to_csv(os.path.join(fig_dir, "critique_shock_train_delta_by_start.csv"), index=False)
+    print("[saved]", os.path.join(fig_dir, "critique_shock_train_delta_by_start.csv"))
 
     _save_compare_vs_baseline(
         delta,
@@ -492,6 +529,7 @@ def _build_bad_uncertainty(
         sim_base = _simulate_custom(
             v,
             T=T,
+            x0=x0,
             regime_path=None,
             epst_path=np.zeros(T, dtype=np.float64),
             noise_scale=float(noise_scale),
@@ -501,6 +539,7 @@ def _build_bad_uncertainty(
         sim_hi = _simulate_custom(
             v,
             T=T,
+            x0=x0,
             regime_path=None,
             epst_path=np.zeros(T, dtype=np.float64),
             noise_scale=float(noise_scale),
@@ -624,76 +663,98 @@ def _build_combined(
             comb_epst[int(k)] = float(shock_size)
 
     rows: List[Dict[str, str | float]] = []
+    rows_all: List[Dict[str, str | float]] = []
     for v in variants:
-        regime_path = [0] + [int(_bad_regime(v.params))] * int(T)
-        x0 = v.x0.repeat(int(B), 1)
-        sim_base = _simulate_custom(
-            v,
-            T=T,
-            regime_path=regime_path,
-            epst_path=base_epst,
-            noise_scale=float(noise_scale),
-            bad_sigma_mult=1.0,
-            seed=123,
-        )
-        sim_comb = _simulate_custom(
-            v,
-            T=T,
-            regime_path=regime_path,
-            epst_path=comb_epst,
-            noise_scale=float(noise_scale),
-            bad_sigma_mult=float(bad_sigma_mult),
-            seed=123,
-        )
-        sim_base = _add_output_gap(sim_base, v.params)
-        sim_comb = _add_output_gap(sim_comb, v.params)
+        normal_reg = 0 if 0 in v.x0_by_regime else min(v.x0_by_regime.keys())
+        for start_reg in sorted(v.x0_by_regime.keys()):
+            start_label = _regime_label(start_reg)
+            regime_path = [int(start_reg)] + [int(_bad_regime(v.params))] * int(T)
+            x0 = v.x0_by_regime[start_reg].repeat(int(B), 1)
+            sim_base = _simulate_custom(
+                v,
+                T=T,
+                x0=x0,
+                regime_path=regime_path,
+                epst_path=base_epst,
+                noise_scale=float(noise_scale),
+                bad_sigma_mult=1.0,
+                seed=123,
+            )
+            sim_comb = _simulate_custom(
+                v,
+                T=T,
+                x0=x0,
+                regime_path=regime_path,
+                epst_path=comb_epst,
+                noise_scale=float(noise_scale),
+                bad_sigma_mult=float(bad_sigma_mult),
+                seed=123,
+            )
+            sim_base = _add_output_gap(sim_base, v.params)
+            sim_comb = _add_output_gap(sim_comb, v.params)
 
-        t = np.arange(T + 1)
-        pi_b_q10, pi_b_q50, pi_b_q90 = _qband(_ann(sim_base["pi"]))
-        pi_c_q10, pi_c_q50, pi_c_q90 = _qband(_ann(sim_comb["pi"]))
-        x_b_q10, x_b_q50, x_b_q90 = _qband(100.0 * sim_base["x"])
-        x_c_q10, x_c_q50, x_c_q90 = _qband(100.0 * sim_comb["x"])
+            t = np.arange(T + 1)
+            pi_b_q10, pi_b_q50, pi_b_q90 = _qband(_ann(sim_base["pi"]))
+            pi_c_q10, pi_c_q50, pi_c_q90 = _qband(_ann(sim_comb["pi"]))
+            x_b_q10, x_b_q50, x_b_q90 = _qband(100.0 * sim_base["x"])
+            x_c_q10, x_c_q50, x_c_q90 = _qband(100.0 * sim_comb["x"])
 
-        fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
-        ax[0].plot(t, pi_b_q50, color="tab:blue", label="baseline median")
-        ax[0].fill_between(t, pi_b_q10, pi_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
-        ax[0].plot(t, pi_c_q50, color="tab:red", label="combined median")
-        ax[0].fill_between(t, pi_c_q10, pi_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
-        ax[0].set_title("(a) Inflation (ann. %)")
-        ax[0].legend(ncol=2)
+            fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
+            ax[0].plot(t, pi_b_q50, color="tab:blue", label="baseline median")
+            ax[0].fill_between(t, pi_b_q10, pi_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
+            ax[0].plot(t, pi_c_q50, color="tab:red", label="combined median")
+            ax[0].fill_between(t, pi_c_q10, pi_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
+            ax[0].set_title("(a) Inflation (ann. %)")
+            ax[0].legend(ncol=2)
 
-        ax[1].plot(t, x_b_q50, color="tab:blue", label="baseline median")
-        ax[1].fill_between(t, x_b_q10, x_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
-        ax[1].plot(t, x_c_q50, color="tab:red", label="combined median")
-        ax[1].fill_between(t, x_c_q10, x_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
-        ax[1].set_title("(b) Output gap (%)")
-        ax[1].set_xlabel("quarter")
-        ax[1].legend(ncol=2)
+            ax[1].plot(t, x_b_q50, color="tab:blue", label="baseline median")
+            ax[1].fill_between(t, x_b_q10, x_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
+            ax[1].plot(t, x_c_q50, color="tab:red", label="combined median")
+            ax[1].fill_between(t, x_c_q10, x_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
+            ax[1].set_title("(b) Output gap (%)")
+            ax[1].set_xlabel("quarter")
+            ax[1].legend(ncol=2)
 
-        fig.suptitle(f"Critique Combined Scenario: {v.label}", y=1.02)
-        plt.tight_layout()
-        _savefig(fig_dir, f"critique_combined_{_slug(v.label)}.png")
-        plt.close(fig)
+            fig.suptitle(f"Critique Combined Scenario: {v.label} (start={start_label})", y=1.02)
+            plt.tight_layout()
+            _savefig(fig_dir, f"critique_combined_{_slug(v.label)}_start_{start_label}.png")
+            plt.close(fig)
 
-        rows.append(
-            {
+            row = {
                 "variant": v.label,
+                "start_regime": start_label,
+                "start_regime_id": int(start_reg),
                 "median_peak_pi_base_ann_pct": float(np.max(pi_b_q50[1:])),
                 "median_peak_pi_comb_ann_pct": float(np.max(pi_c_q50[1:])),
                 "median_min_x_base_pct": float(np.min(x_b_q50[1:])),
                 "median_min_x_comb_pct": float(np.min(x_c_q50[1:])),
             }
-        )
+            rows_all.append(row)
+            if int(start_reg) == int(normal_reg):
+                rows.append(row)
 
     summary = pd.DataFrame(rows)
     summary.to_csv(os.path.join(fig_dir, "critique_combined_summary.csv"), index=False)
     print("[saved]", os.path.join(fig_dir, "critique_combined_summary.csv"))
+    pd.DataFrame(rows_all).to_csv(
+        os.path.join(fig_dir, "critique_combined_summary_by_start.csv"),
+        index=False,
+    )
+    print("[saved]", os.path.join(fig_dir, "critique_combined_summary_by_start.csv"))
 
     delta = summary.copy()
     delta["d_peak_pi_ann_pct"] = delta["median_peak_pi_comb_ann_pct"] - delta["median_peak_pi_base_ann_pct"]
     delta["d_min_x_pct"] = delta["median_min_x_comb_pct"] - delta["median_min_x_base_pct"]
     delta.to_csv(os.path.join(fig_dir, "critique_combined_delta.csv"), index=False)
     print("[saved]", os.path.join(fig_dir, "critique_combined_delta.csv"))
+
+    delta_all = pd.DataFrame(rows_all)
+    if not delta_all.empty:
+        delta_all = delta_all.copy()
+        delta_all["d_peak_pi_ann_pct"] = delta_all["median_peak_pi_comb_ann_pct"] - delta_all["median_peak_pi_base_ann_pct"]
+        delta_all["d_min_x_pct"] = delta_all["median_min_x_comb_pct"] - delta_all["median_min_x_base_pct"]
+    delta_all.to_csv(os.path.join(fig_dir, "critique_combined_delta_by_start.csv"), index=False)
+    print("[saved]", os.path.join(fig_dir, "critique_combined_delta_by_start.csv"))
 
     _save_compare_vs_baseline(
         delta,

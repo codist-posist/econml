@@ -86,6 +86,7 @@ class PolicyBundle:
     net: torch.nn.Module
     rbar_by_regime: torch.Tensor | None
     x0: torch.Tensor
+    x0_by_regime: Dict[int, torch.Tensor]
 
 
 def _load_policy_bundle(
@@ -140,9 +141,17 @@ def _load_policy_bundle(
             commit_dim = int(net.net[0].in_features)  # type: ignore[attr-defined]
         except Exception:
             commit_dim = 8
-    x0 = _state_from_policy_sss(
-        params, policy, sss[0], regime=0, commitment_state_dim=commit_dim
-    )
+    x0_by_regime: Dict[int, torch.Tensor] = {}
+    for r in range(int(params.n_regimes)):
+        base = sss.get(r, sss[0])
+        x0_by_regime[r] = _state_from_policy_sss(
+            params,
+            policy,
+            base,
+            regime=r,
+            commitment_state_dim=commit_dim,
+        )
+    x0 = x0_by_regime.get(0, x0_by_regime[min(x0_by_regime.keys())])
     return PolicyBundle(
         policy=policy,
         run_dir=run_dir,
@@ -150,6 +159,7 @@ def _load_policy_bundle(
         net=net,
         rbar_by_regime=rbar,
         x0=x0,
+        x0_by_regime=x0_by_regime,
     )
 
 
@@ -368,74 +378,80 @@ def _build_shock_train(
             train_epst[int(k)] = float(shock_size)
 
     rows: List[Dict[str, float | str]] = []
+    rows_all: List[Dict[str, float | str]] = []
     for policy, b in bundles.items():
-        regime_path = [0] + [int(_bad_regime(b.params))] * int(T)
-        sim_base = _simulate_custom(
-            b.params,
-            policy,
-            b.net,
-            b.x0,
-            T=T,
-            regime_path=regime_path,
-            epst_path=base_epst,
-            noise_scale=0.0,
-            seed=123,
-            rbar_by_regime=b.rbar_by_regime,
-        )
-        sim_train = _simulate_custom(
-            b.params,
-            policy,
-            b.net,
-            b.x0,
-            T=T,
-            regime_path=regime_path,
-            epst_path=train_epst,
-            noise_scale=0.0,
-            seed=123,
-            rbar_by_regime=b.rbar_by_regime,
-        )
-        sim_base = _add_output_gap(sim_base, b.params)
-        sim_train = _add_output_gap(sim_train, b.params)
-        t = np.arange(T + 1)
-        pi_b = _ann(sim_base["pi"][:, 0])
-        pi_t = _ann(sim_train["pi"][:, 0])
-        i_b = _ann(sim_base["i"][:, 0])
-        i_t = _ann(sim_train["i"][:, 0])
-        x_b = 100.0 * sim_base["x"][:, 0]
-        x_t = 100.0 * sim_train["x"][:, 0]
-        p_b = np.cumprod(1.0 + sim_base["pi"][:, 0])
-        p_t = np.cumprod(1.0 + sim_train["pi"][:, 0])
+        normal_reg = 0 if 0 in b.x0_by_regime else min(b.x0_by_regime.keys())
+        for start_reg in sorted(b.x0_by_regime.keys()):
+            start_label = _regime_label(start_reg)
+            regime_path = [int(start_reg)] + [int(_bad_regime(b.params))] * int(T)
+            x0 = b.x0_by_regime[start_reg]
+            sim_base = _simulate_custom(
+                b.params,
+                policy,
+                b.net,
+                x0,
+                T=T,
+                regime_path=regime_path,
+                epst_path=base_epst,
+                noise_scale=0.0,
+                seed=123,
+                rbar_by_regime=b.rbar_by_regime,
+            )
+            sim_train = _simulate_custom(
+                b.params,
+                policy,
+                b.net,
+                x0,
+                T=T,
+                regime_path=regime_path,
+                epst_path=train_epst,
+                noise_scale=0.0,
+                seed=123,
+                rbar_by_regime=b.rbar_by_regime,
+            )
+            sim_base = _add_output_gap(sim_base, b.params)
+            sim_train = _add_output_gap(sim_train, b.params)
+            t = np.arange(T + 1)
+            pi_b = _ann(sim_base["pi"][:, 0])
+            pi_t = _ann(sim_train["pi"][:, 0])
+            i_b = _ann(sim_base["i"][:, 0])
+            i_t = _ann(sim_train["i"][:, 0])
+            x_b = 100.0 * sim_base["x"][:, 0]
+            x_t = 100.0 * sim_train["x"][:, 0]
+            p_b = np.cumprod(1.0 + sim_base["pi"][:, 0])
+            p_t = np.cumprod(1.0 + sim_train["pi"][:, 0])
 
-        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-        ax[0, 0].plot(t, pi_b, label="baseline")
-        ax[0, 0].plot(t, pi_t, "--", label="shock train")
-        ax[0, 0].set_title("(a) Inflation")
-        ax[0, 0].set_ylabel("ann. %")
-        ax[0, 0].legend()
-        ax[0, 1].plot(t, i_b, label="baseline")
-        ax[0, 1].plot(t, i_t, "--", label="shock train")
-        ax[0, 1].set_title("(b) Nominal interest rate")
-        ax[0, 1].set_ylabel("ann. %")
-        ax[0, 1].legend()
-        ax[1, 0].plot(t, x_b, label="baseline")
-        ax[1, 0].plot(t, x_t, "--", label="shock train")
-        ax[1, 0].set_title("(c) Output gap")
-        ax[1, 0].set_ylabel("%")
-        ax[1, 0].set_xlabel("quarter")
-        ax[1, 0].legend()
-        ax[1, 1].plot(t, p_b, label="baseline")
-        ax[1, 1].plot(t, p_t, "--", label="shock train")
-        ax[1, 1].set_title("(d) Price level index")
-        ax[1, 1].set_xlabel("quarter")
-        ax[1, 1].legend()
-        fig.suptitle(f"Critique Shock Train: {policy}", y=1.02)
-        plt.tight_layout()
-        _savefig(fig_dir, f"critique_shock_train_{policy}.png")
-        plt.close(fig)
+            fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+            ax[0, 0].plot(t, pi_b, label="baseline")
+            ax[0, 0].plot(t, pi_t, "--", label="shock train")
+            ax[0, 0].set_title("(a) Inflation")
+            ax[0, 0].set_ylabel("ann. %")
+            ax[0, 0].legend()
+            ax[0, 1].plot(t, i_b, label="baseline")
+            ax[0, 1].plot(t, i_t, "--", label="shock train")
+            ax[0, 1].set_title("(b) Nominal interest rate")
+            ax[0, 1].set_ylabel("ann. %")
+            ax[0, 1].legend()
+            ax[1, 0].plot(t, x_b, label="baseline")
+            ax[1, 0].plot(t, x_t, "--", label="shock train")
+            ax[1, 0].set_title("(c) Output gap")
+            ax[1, 0].set_ylabel("%")
+            ax[1, 0].set_xlabel("quarter")
+            ax[1, 0].legend()
+            ax[1, 1].plot(t, p_b, label="baseline")
+            ax[1, 1].plot(t, p_t, "--", label="shock train")
+            ax[1, 1].set_title("(d) Price level index")
+            ax[1, 1].set_xlabel("quarter")
+            ax[1, 1].legend()
+            fig.suptitle(f"Critique Shock Train: {policy} (start={start_label})", y=1.02)
+            plt.tight_layout()
+            _savefig(fig_dir, f"critique_shock_train_{policy}_start_{start_label}.png")
+            plt.close(fig)
 
-        rows.append(
-            {
+            row = {
                 "policy": policy,
+                "start_regime": start_label,
+                "start_regime_id": int(start_reg),
                 "peak_pi_baseline_ann_pct": float(np.max(pi_b[1:])),
                 "peak_pi_shock_train_ann_pct": float(np.max(pi_t[1:])),
                 "avg_i_baseline_ann_pct": float(np.mean(i_b[1:])),
@@ -443,10 +459,16 @@ def _build_shock_train(
                 "avg_x_baseline_pct": float(np.mean(x_b[1:])),
                 "avg_x_shock_train_pct": float(np.mean(x_t[1:])),
             }
-        )
+            rows_all.append(row)
+            if int(start_reg) == int(normal_reg):
+                rows.append(row)
 
     summary = pd.DataFrame(rows)
     summary.to_csv(os.path.join(fig_dir, "critique_shock_train_summary.csv"), index=False)
+    pd.DataFrame(rows_all).to_csv(
+        os.path.join(fig_dir, "critique_shock_train_summary_by_start.csv"),
+        index=False,
+    )
     delta = summary.copy()
     delta["d_peak_pi_ann_pct"] = (
         delta["peak_pi_shock_train_ann_pct"] - delta["peak_pi_baseline_ann_pct"]
@@ -457,6 +479,7 @@ def _build_shock_train(
     delta["d_avg_x_pct"] = delta["avg_x_shock_train_pct"] - delta["avg_x_baseline_pct"]
     delta.to_csv(os.path.join(fig_dir, "critique_shock_train_delta.csv"), index=False)
     print("[saved]", os.path.join(fig_dir, "critique_shock_train_summary.csv"))
+    print("[saved]", os.path.join(fig_dir, "critique_shock_train_summary_by_start.csv"))
     print("[saved]", os.path.join(fig_dir, "critique_shock_train_delta.csv"))
 
 
@@ -612,75 +635,86 @@ def _build_combined(
             comb_epst[int(k)] = float(shock_size)
 
     rows: List[Dict[str, str | float]] = []
+    rows_all: List[Dict[str, str | float]] = []
     for policy, b in bundles.items():
-        regime_path = [0] + [int(_bad_regime(b.params))] * int(T)
-        x0 = b.x0.repeat(int(B), 1)
-        sim_base = _simulate_custom(
-            b.params,
-            policy,
-            b.net,
-            x0,
-            T=T,
-            regime_path=regime_path,
-            epst_path=base_epst,
-            noise_scale=float(noise_scale),
-            bad_sigma_mult=1.0,
-            seed=123,
-            rbar_by_regime=b.rbar_by_regime,
-        )
-        sim_comb = _simulate_custom(
-            b.params,
-            policy,
-            b.net,
-            x0,
-            T=T,
-            regime_path=regime_path,
-            epst_path=comb_epst,
-            noise_scale=float(noise_scale),
-            bad_sigma_mult=float(bad_sigma_mult),
-            seed=123,
-            rbar_by_regime=b.rbar_by_regime,
-        )
-        sim_base = _add_output_gap(sim_base, b.params)
-        sim_comb = _add_output_gap(sim_comb, b.params)
+        normal_reg = 0 if 0 in b.x0_by_regime else min(b.x0_by_regime.keys())
+        for start_reg in sorted(b.x0_by_regime.keys()):
+            start_label = _regime_label(start_reg)
+            regime_path = [int(start_reg)] + [int(_bad_regime(b.params))] * int(T)
+            x0 = b.x0_by_regime[start_reg].repeat(int(B), 1)
+            sim_base = _simulate_custom(
+                b.params,
+                policy,
+                b.net,
+                x0,
+                T=T,
+                regime_path=regime_path,
+                epst_path=base_epst,
+                noise_scale=float(noise_scale),
+                bad_sigma_mult=1.0,
+                seed=123,
+                rbar_by_regime=b.rbar_by_regime,
+            )
+            sim_comb = _simulate_custom(
+                b.params,
+                policy,
+                b.net,
+                x0,
+                T=T,
+                regime_path=regime_path,
+                epst_path=comb_epst,
+                noise_scale=float(noise_scale),
+                bad_sigma_mult=float(bad_sigma_mult),
+                seed=123,
+                rbar_by_regime=b.rbar_by_regime,
+            )
+            sim_base = _add_output_gap(sim_base, b.params)
+            sim_comb = _add_output_gap(sim_comb, b.params)
 
-        t = np.arange(T + 1)
-        pi_b_q10, pi_b_q50, pi_b_q90 = _qband(_ann(sim_base["pi"]))
-        pi_c_q10, pi_c_q50, pi_c_q90 = _qband(_ann(sim_comb["pi"]))
-        x_b_q10, x_b_q50, x_b_q90 = _qband(100.0 * sim_base["x"])
-        x_c_q10, x_c_q50, x_c_q90 = _qband(100.0 * sim_comb["x"])
+            t = np.arange(T + 1)
+            pi_b_q10, pi_b_q50, pi_b_q90 = _qband(_ann(sim_base["pi"]))
+            pi_c_q10, pi_c_q50, pi_c_q90 = _qband(_ann(sim_comb["pi"]))
+            x_b_q10, x_b_q50, x_b_q90 = _qband(100.0 * sim_base["x"])
+            x_c_q10, x_c_q50, x_c_q90 = _qband(100.0 * sim_comb["x"])
 
-        fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
-        ax[0].plot(t, pi_b_q50, color="tab:blue", label="baseline median")
-        ax[0].fill_between(t, pi_b_q10, pi_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
-        ax[0].plot(t, pi_c_q50, color="tab:red", label="combined median")
-        ax[0].fill_between(t, pi_c_q10, pi_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
-        ax[0].set_title("(a) Inflation (ann. %)")
-        ax[0].legend(ncol=2)
-        ax[1].plot(t, x_b_q50, color="tab:blue", label="baseline median")
-        ax[1].fill_between(t, x_b_q10, x_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
-        ax[1].plot(t, x_c_q50, color="tab:red", label="combined median")
-        ax[1].fill_between(t, x_c_q10, x_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
-        ax[1].set_title("(b) Output gap (%)")
-        ax[1].set_xlabel("quarter")
-        ax[1].legend(ncol=2)
-        fig.suptitle(f"Critique Combined Scenario: {policy}", y=1.02)
-        plt.tight_layout()
-        _savefig(fig_dir, f"critique_combined_{policy}.png")
-        plt.close(fig)
+            fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
+            ax[0].plot(t, pi_b_q50, color="tab:blue", label="baseline median")
+            ax[0].fill_between(t, pi_b_q10, pi_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
+            ax[0].plot(t, pi_c_q50, color="tab:red", label="combined median")
+            ax[0].fill_between(t, pi_c_q10, pi_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
+            ax[0].set_title("(a) Inflation (ann. %)")
+            ax[0].legend(ncol=2)
+            ax[1].plot(t, x_b_q50, color="tab:blue", label="baseline median")
+            ax[1].fill_between(t, x_b_q10, x_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
+            ax[1].plot(t, x_c_q50, color="tab:red", label="combined median")
+            ax[1].fill_between(t, x_c_q10, x_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
+            ax[1].set_title("(b) Output gap (%)")
+            ax[1].set_xlabel("quarter")
+            ax[1].legend(ncol=2)
+            fig.suptitle(f"Critique Combined Scenario: {policy} (start={start_label})", y=1.02)
+            plt.tight_layout()
+            _savefig(fig_dir, f"critique_combined_{policy}_start_{start_label}.png")
+            plt.close(fig)
 
-        rows.append(
-            {
+            row = {
                 "policy": policy,
+                "start_regime": start_label,
+                "start_regime_id": int(start_reg),
                 "median_peak_pi_base_ann_pct": float(np.max(pi_b_q50[1:])),
                 "median_peak_pi_comb_ann_pct": float(np.max(pi_c_q50[1:])),
                 "median_min_x_base_pct": float(np.min(x_b_q50[1:])),
                 "median_min_x_comb_pct": float(np.min(x_c_q50[1:])),
             }
-        )
+            rows_all.append(row)
+            if int(start_reg) == int(normal_reg):
+                rows.append(row)
 
     summary = pd.DataFrame(rows)
     summary.to_csv(os.path.join(fig_dir, "critique_combined_summary.csv"), index=False)
+    pd.DataFrame(rows_all).to_csv(
+        os.path.join(fig_dir, "critique_combined_summary_by_start.csv"),
+        index=False,
+    )
     delta = summary.copy()
     delta["d_peak_pi_ann_pct"] = (
         delta["median_peak_pi_comb_ann_pct"] - delta["median_peak_pi_base_ann_pct"]
@@ -688,6 +722,7 @@ def _build_combined(
     delta["d_min_x_pct"] = delta["median_min_x_comb_pct"] - delta["median_min_x_base_pct"]
     delta.to_csv(os.path.join(fig_dir, "critique_combined_delta.csv"), index=False)
     print("[saved]", os.path.join(fig_dir, "critique_combined_summary.csv"))
+    print("[saved]", os.path.join(fig_dir, "critique_combined_summary_by_start.csv"))
     print("[saved]", os.path.join(fig_dir, "critique_combined_delta.csv"))
 
 
