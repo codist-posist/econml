@@ -150,12 +150,13 @@ def _simulate_flex_prices_for_table2(
 
     # start near SSS in normal regime
     flex = solve_flexprice_sss(params)
-    h0 = torch.tensor(flex.by_regime[0]["h"], device=dev, dtype=dt)
+    normal_reg = 0 if 0 in flex.by_regime else min(int(k) for k in flex.by_regime.keys())
+    h0 = torch.tensor(flex.by_regime[int(normal_reg)]["h"], device=dev, dtype=dt)
 
     logA = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_A)), device=dev, dtype=dt)
     logg = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_g)), device=dev, dtype=dt)
     xi = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_tau)), device=dev, dtype=dt)
-    s = torch.zeros((B,), device=dev, dtype=torch.long)  # start normal
+    s = torch.full((B,), int(normal_reg), device=dev, dtype=torch.long)  # start normal
     h_guess = h0.expand(B)
 
     # drift corrections (same as in model_common)
@@ -857,14 +858,14 @@ def build_table0(
       - Ergodic moments from saved sim_paths.npz in each run directory.
       - Source controlled by `sss_source`:
           * "sim_conditional" (paper/author default): regime-conditional
-            long-simulation moments (prefer author `simulated_definitions_NT/SS.npz`,
+            long-simulation moments (prefer author `simulated_definitions_{NT,SS,SEV,...}.npz`,
             fallback to conditional moments from `sim_paths.npz`).
             SSS levels are taken from switching-consistent policy fixed points.
           * "fixed_point": regime-conditional policy fixed points (diagnostic mode).
           * "deterministic_no_innovation": deterministic/no-innovation
             regime-conditional path moments (diagnostic no-shock object).
       - If `strict_author_table2=True` and `sss_source='sim_conditional'`,
-        require author NT/SS files for trained policies (no silent fallback).
+        require author by-regime files for trained policies (no silent fallback).
       - Weights source controlled by `weights_source`:
           * "auto" (default): infer best/last policy from run config (fallback canonical),
           * "canonical": always load weights.pt,
@@ -954,8 +955,8 @@ def build_table0(
         if sss_source_norm == "sim_conditional":
             if (policy_key == "flex") and (run_dir is not None):
                 am_flex = _load_author_flex_regime_moments(run_dir, regime, params=params, c_hat=c_hat)
-                if strict_author_table2 and int(regime) in (0, 1) and am_flex is None:
-                    fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
+                if strict_author_table2 and am_flex is None:
+                    fname = _author_regime_filename(int(regime))
                     raise FileNotFoundError(
                         f"strict_author_table2=True requires '{fname}' with cons_flex_y/i_flex_y for flex row "
                         f"(source run_dir={run_dir}). Generate author post-process files first."
@@ -967,8 +968,8 @@ def build_table0(
                     r_m = am_flex["r"]
             elif run_dir is not None:
                 am = _load_author_regime_moments(run_dir, regime)
-                if strict_author_table2 and int(regime) in (0, 1) and am is None:
-                    fname = "simulated_definitions_NT.npz" if int(regime) == 0 else "simulated_definitions_SS.npz"
+                if strict_author_table2 and am is None:
+                    fname = _author_regime_filename(int(regime))
                     raise FileNotFoundError(
                         f"strict_author_table2=True requires '{fname}' for policy='{policy_key}' in run_dir={run_dir}. "
                         "Generate author post-process files first (scripts/build_author_postprocess_like.py)."
@@ -1126,7 +1127,7 @@ def build_table0(
                 rbar_by_regime=rbar_by_regime,
             )
 
-    # Pick a source run for author flex moments (cons_flex_y/i_flex_y in NT/SS files).
+    # Pick a source run for author flex moments (cons_flex_y/i_flex_y in by-regime files).
     flex_author_run_dir: str | None = None
     for cand in (
         "taylor",
@@ -1142,21 +1143,25 @@ def build_table0(
         rd = run_dirs.get(cand)
         if not rd:
             continue
-        p_nt = _find_author_defs_file(rd, "simulated_definitions_NT.npz")
-        p_ss = _find_author_defs_file(rd, "simulated_definitions_SS.npz")
-        if (p_nt is None) or (p_ss is None):
+        p_reg = [_find_author_defs_file(rd, _author_regime_filename(s)) for s in regime_ids]
+        if any(p is None for p in p_reg):
             continue
         try:
-            d0 = np.load(p_nt)
-            d1 = np.load(p_ss)
-            if ("cons_flex_y" in d0.files) and ("i_flex_y" in d0.files) and ("cons_flex_y" in d1.files) and ("i_flex_y" in d1.files):
+            ok_all = True
+            for fp in p_reg:
+                assert fp is not None
+                with np.load(fp) as d:
+                    if ("cons_flex_y" not in d.files) or ("i_flex_y" not in d.files):
+                        ok_all = False
+                        break
+            if ok_all:
                 flex_author_run_dir = rd
                 break
         except Exception:
             continue
     if strict_author_table2 and sss_source_norm == "sim_conditional" and flex_author_run_dir is None:
         raise FileNotFoundError(
-            "strict_author_table2=True requires author NT/SS files containing cons_flex_y and i_flex_y "
+            "strict_author_table2=True requires author by-regime files containing cons_flex_y and i_flex_y "
             "for at least one trained policy run."
         )
 

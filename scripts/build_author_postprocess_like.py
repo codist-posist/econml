@@ -81,13 +81,16 @@ def _transition_probs_to_next_regime(
     s_i = np.asarray(s, dtype=np.int64).reshape(-1)
     P = params.P.detach().cpu().numpy().astype(np.float64)
     R = int(P.shape[0])
+    bad_reg = int(getattr(params, "bad_state", 1))
+    if bad_reg < 0 or bad_reg >= R:
+        bad_reg = 1 if R > 1 else 0
     if R <= 0:
         raise ValueError("Invalid transition matrix with zero regimes.")
     s_clip = np.clip(s_i, 0, R - 1)
     probs = P[s_clip, :].copy()
     if p21_state is not None and R >= 2:
         p21v = np.clip(np.asarray(p21_state, dtype=np.float64).reshape(-1), 1e-8, 1.0 - 1e-8)
-        bad = (s_clip == 1)
+        bad = (s_clip == int(bad_reg))
         if np.any(bad):
             if R == 2:
                 probs[bad, 0] = p21v[bad]
@@ -463,7 +466,7 @@ def _export_for_policy(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Build author-like post-process definition files (NT/SS/full) for selected runs.")
+    ap = argparse.ArgumentParser(description="Build author-like post-process definition files (NT/SS/SEV/full) for selected runs.")
     ap.add_argument("--artifacts_root", default=os.path.join(ROOT, "artifacts"))
     ap.add_argument(
         "--policies",

@@ -57,6 +57,27 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]+", "_", str(s)).strip("_") or "variant"
 
 
+def _regime_label(reg: int) -> str:
+    r = int(reg)
+    if r == 0:
+        return "normal"
+    if r == 1:
+        return "bad"
+    if r == 2:
+        return "severe"
+    return f"regime_{r}"
+
+
+def _bad_regime(params: ModelParams) -> int:
+    n_reg = max(1, int(params.n_regimes))
+    if n_reg <= 1:
+        return 0
+    br = int(params.bad_state)
+    if br < 1 or br >= n_reg:
+        return min(1, n_reg - 1)
+    return br
+
+
 def _load_params_from_run(run_dir: str, *, device: str, dtype: torch.dtype) -> ModelParams:
     p = ModelParams(device=device, dtype=dtype)
     cfg_path = os.path.join(run_dir, "config.json")
@@ -276,7 +297,7 @@ def _simulate_custom(
         if float(noise_scale) != 0.0:
             z = torch.randn((B,), device=params.device, dtype=params.dtype)
             mult = torch.where(
-                st.s == int(params.bad_state),
+                st.s.to(torch.long) >= int(_bad_regime(params)),
                 torch.full((B,), float(bad_sigma_mult), device=params.device, dtype=params.dtype),
                 torch.ones((B,), device=params.device, dtype=params.dtype),
             )
@@ -310,12 +331,12 @@ def _regime_moments(
     key: str,
     *,
     burn_in: int,
-    bad_state: int,
 ) -> Dict[str, Dict[str, float]]:
     a = np.asarray(sim[key], dtype=np.float64)[burn_in:, :].reshape(-1)
     s = np.asarray(sim["s"], dtype=np.int64)[burn_in:, :].reshape(-1)
     out: Dict[str, Dict[str, float]] = {}
-    for reg, label in ((0, "normal"), (int(bad_state), "bad")):
+    for reg in sorted({int(v) for v in np.unique(s)}):
+        label = _regime_label(reg)
         v = a[s == int(reg)]
         if v.size == 0:
             out[label] = {"mean": float("nan"), "std": float("nan")}
@@ -352,7 +373,6 @@ def _build_shock_train(
     shock_times: Sequence[int],
     shock_size: float,
 ) -> None:
-    regime_path = [0] + [1] * int(T)
     base_epst = np.zeros(T, dtype=np.float64)
     train_epst = np.zeros(T, dtype=np.float64)
     for k in shock_times:
@@ -361,6 +381,7 @@ def _build_shock_train(
 
     rows: List[Dict[str, float | str]] = []
     for v in variants:
+        regime_path = [0] + [int(_bad_regime(v.params))] * int(T)
         sim_base = _simulate_custom(
             v,
             T=T,
@@ -464,8 +485,10 @@ def _build_bad_uncertainty(
     noise_scale: float,
 ) -> None:
     rows: List[Dict[str, str | float]] = []
+    stress_rows: List[Dict[str, str | float]] = []
     for v in variants:
         x0 = v.x0.repeat(int(B), 1)
+        bad_reg = int(_bad_regime(v.params))
         sim_base = _simulate_custom(
             v,
             T=T,
@@ -491,16 +514,14 @@ def _build_bad_uncertainty(
             {"pi": _ann(sim_base["pi"]), "s": sim_base["s"]},
             "pi",
             burn_in=int(burn_in),
-            bad_state=int(v.params.bad_state),
         )
         m_hi_pi = _regime_moments(
             {"pi": _ann(sim_hi["pi"]), "s": sim_hi["s"]},
             "pi",
             burn_in=int(burn_in),
-            bad_state=int(v.params.bad_state),
         )
 
-        for reg in ("normal", "bad"):
+        for reg in sorted(set(m_base_pi.keys()) | set(m_hi_pi.keys())):
             rows.append(
                 {
                     "variant": v.label,
@@ -520,13 +541,35 @@ def _build_bad_uncertainty(
                 }
             )
 
-        pi_b_base = _ann(sim_base["pi"])[burn_in:, :][sim_base["s"][burn_in:, :] == int(v.params.bad_state)]
-        pi_b_hi = _ann(sim_hi["pi"])[burn_in:, :][sim_hi["s"][burn_in:, :] == int(v.params.bad_state)]
+        s_base = np.asarray(sim_base["s"][burn_in:, :], dtype=np.int64)
+        s_hi = np.asarray(sim_hi["s"][burn_in:, :], dtype=np.int64)
+        m_stress_base = s_base >= int(bad_reg)
+        m_stress_hi = s_hi >= int(bad_reg)
+        pi_b_base = _ann(sim_base["pi"])[burn_in:, :][m_stress_base]
+        pi_b_hi = _ann(sim_hi["pi"])[burn_in:, :][m_stress_hi]
+        stress_rows.append(
+            {
+                "variant": v.label,
+                "scenario": "baseline_uncertainty",
+                "regime": "stress",
+                "pi_mean_ann_pct": float(np.nanmean(pi_b_base)) if pi_b_base.size else float("nan"),
+                "pi_std_ann_pct": float(np.nanstd(pi_b_base)) if pi_b_base.size else float("nan"),
+            }
+        )
+        stress_rows.append(
+            {
+                "variant": v.label,
+                "scenario": f"bad_uncertainty_x{bad_sigma_mult:g}",
+                "regime": "stress",
+                "pi_mean_ann_pct": float(np.nanmean(pi_b_hi)) if pi_b_hi.size else float("nan"),
+                "pi_std_ann_pct": float(np.nanstd(pi_b_hi)) if pi_b_hi.size else float("nan"),
+            }
+        )
 
         fig, ax = plt.subplots(1, 2, figsize=(12, 4))
         ax[0].hist(pi_b_base, bins=60, alpha=0.55, label="baseline")
         ax[0].hist(pi_b_hi, bins=60, alpha=0.55, label=f"bad uncertainty x{bad_sigma_mult:g}")
-        ax[0].set_title("(a) Bad-regime inflation distribution")
+        ax[0].set_title("(a) Stress-regime inflation distribution")
         ax[0].set_xlabel("annualized inflation, %")
         ax[0].legend()
 
@@ -537,14 +580,14 @@ def _build_bad_uncertainty(
                 float(np.nanstd(pi_b_hi)) if pi_b_hi.size else float("nan"),
             ],
         )
-        ax[1].set_title("(b) std(inflation | bad)")
+        ax[1].set_title("(b) std(inflation | stress)")
         ax[1].set_ylabel("annualized pp")
         fig.suptitle(f"Critique Bad-Uncertainty: {v.label}", y=1.03)
         plt.tight_layout()
         _savefig(fig_dir, f"critique_bad_uncertainty_{_slug(v.label)}.png")
         plt.close(fig)
 
-    moments = pd.DataFrame(rows)
+    moments = pd.DataFrame(rows + stress_rows)
     moments.to_csv(os.path.join(fig_dir, "critique_bad_uncertainty_moments.csv"), index=False)
     print("[saved]", os.path.join(fig_dir, "critique_bad_uncertainty_moments.csv"))
 
@@ -553,11 +596,11 @@ def _build_bad_uncertainty(
     print("[saved]", os.path.join(fig_dir, "critique_bad_uncertainty_pivot.csv"))
 
     hi_key = f"bad_uncertainty_x{bad_sigma_mult:g}"
-    bad_hi = moments[(moments["scenario"] == hi_key) & (moments["regime"] == "bad")].copy()
+    bad_hi = moments[(moments["scenario"] == hi_key) & (moments["regime"] == "stress")].copy()
     _save_compare_vs_baseline(
         bad_hi,
         baseline_label=baseline_label,
-        out_csv=os.path.join(fig_dir, "compare_bad_uncertainty_bad_regime_vs_baseline.csv"),
+        out_csv=os.path.join(fig_dir, "compare_bad_uncertainty_stress_regime_vs_baseline.csv"),
         cols=["pi_mean_ann_pct", "pi_std_ann_pct"],
     )
 
@@ -574,7 +617,6 @@ def _build_combined(
     bad_sigma_mult: float,
     noise_scale: float,
 ) -> None:
-    regime_path = [0] + [1] * int(T)
     base_epst = np.zeros(T, dtype=np.float64)
     comb_epst = np.zeros(T, dtype=np.float64)
     for k in shock_times:
@@ -583,6 +625,7 @@ def _build_combined(
 
     rows: List[Dict[str, str | float]] = []
     for v in variants:
+        regime_path = [0] + [int(_bad_regime(v.params))] * int(T)
         x0 = v.x0.repeat(int(B), 1)
         sim_base = _simulate_custom(
             v,
@@ -810,7 +853,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--robust-uncert-ref", type=float, default=0.0)
     ap.add_argument("--robust-max-premium", type=float, default=0.03)
     ap.add_argument("--robust-bad-only", type=str, default="true")
-    ap.add_argument("--robust-bad-state", type=int, default=1)
+    ap.add_argument(
+        "--robust-bad-state",
+        type=int,
+        default=1,
+        help="Stress-state threshold for robust premium (applies to regimes s >= this index).",
+    )
 
     ap.add_argument("--shock-train-T", type=int, default=64)
     ap.add_argument("--shock-train-times", type=str, default="0,4,8,12")

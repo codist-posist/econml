@@ -454,15 +454,16 @@ def commitment_author_like_sss(
         vartheta_prev = vartheta_old * c_old^gamma
         varrho_prev   = varrho_old   * c_old^gamma
 
-    We assign the same warm-start values to both regimes, matching the author setup.
+    We assign the same warm-start values to all regimes, matching the author setup
+    and extending it to multi-regime runs.
     """
     scale = float(c_old) ** float(params.gamma)
     vp = float(vartheta_old) * scale
     rp = float(varrho_old) * scale
     d = float(delta_prev)
     by = {
-        0: {"Delta_prev": d, "vartheta_prev": vp, "varrho_prev": rp},
-        1: {"Delta_prev": d, "vartheta_prev": vp, "varrho_prev": rp},
+        s: {"Delta_prev": d, "vartheta_prev": vp, "varrho_prev": rp}
+        for s in range(int(params.n_regimes))
     }
     return CommitmentSSS(by_regime=by)
 
@@ -483,11 +484,11 @@ def solve_commitment_sss_switching(params: ModelParams, max_iter: int = 200, tol
 
     where net is the trained commitment policy network.
     """
-    if int(params.n_regimes) != 2:
-        raise NotImplementedError(
-            "solve_commitment_sss_switching currently supports only 2 regimes. "
-            "Use solve_commitment_sss_from_policy(...) for 3-regime runs."
-        )
+    if int(params.n_regimes) < 2 or int(params.n_regimes) > 2:
+        # Multi-regime fallback for legacy callers: return local per-regime SS guesses.
+        # For paper-consistent switching SSS use solve_commitment_sss_from_policy(...).
+        by = {s: commitment_local_ss(params, s) for s in range(int(params.n_regimes))}
+        return CommitmentSSS(by_regime=by)
 
     dev, dt = params.device, params.dtype
     beta, gamma, omega, eps, theta, M = params.beta, params.gamma, params.omega, params.eps, params.theta, params.M

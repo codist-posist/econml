@@ -153,6 +153,7 @@ def _ensure_author_postprocess(
         os.path.join(out_dir, "simulated_definitions.npz"),
         os.path.join(out_dir, "simulated_definitions_NT.npz"),
         os.path.join(out_dir, "simulated_definitions_SS.npz"),
+        os.path.join(out_dir, "simulated_definitions_SEV.npz"),
         os.path.join(out_dir, "simulated_definitions_ss_only.npz"),
         os.path.join(out_dir, "simulated_definitions_xi_only.npz"),
     ]

@@ -174,13 +174,23 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--curr-shock-times", type=str, default="0,4,8,12")
     ap.add_argument("--curr-shock-size", type=float, default=1.25)
     ap.add_argument("--curr-bad-sigma-mult", type=float, default=2.0)
-    ap.add_argument("--curr-bad-state", type=int, default=1)
+    ap.add_argument(
+        "--curr-bad-state",
+        type=int,
+        default=1,
+        help="Stress-state threshold for curriculum noise scaling (applies to regimes s >= this index).",
+    )
 
     ap.add_argument("--robust-kappa", type=float, default=0.02)
     ap.add_argument("--robust-uncert-ref", type=float, default=0.0)
     ap.add_argument("--robust-max-premium", type=float, default=0.03)
     ap.add_argument("--robust-bad-only", type=str, default="true")
-    ap.add_argument("--robust-bad-state", type=int, default=1)
+    ap.add_argument(
+        "--robust-bad-state",
+        type=int,
+        default=1,
+        help="Stress-state threshold for robust premium (applies to regimes s >= this index).",
+    )
 
     ap.add_argument(
         "--save-runs-json",

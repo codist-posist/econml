@@ -182,6 +182,10 @@ def _transition_probs_to_next(params: ModelParams, st) -> torch.Tensor:
     # Author dsge_taylor_para keeps p21 as a state component (path-specific bad->normal prob).
     p21_state = getattr(st, "p21", None)
     if p21_state is not None and R >= 2:
+        normal_reg = 0
+        bad_reg = int(getattr(params, "bad_state", 1))
+        if bad_reg < 0 or bad_reg >= R:
+            bad_reg = 1 if R > 1 else 0
         p21_clamped = torch.clamp(
             p21_state.to(device=probs.device, dtype=probs.dtype),
             min=1e-8,
@@ -190,17 +194,18 @@ def _transition_probs_to_next(params: ModelParams, st) -> torch.Tensor:
         if R == 2:
             p0_bad = p21_clamped
             p0_good = torch.full_like(p0_bad, 1.0 - float(params.p12))
-            p0 = torch.where(st.s == 0, p0_good, p0_bad)
+            p0 = torch.where(st.s == int(normal_reg), p0_good, p0_bad)
             p1 = 1.0 - p0
             probs = torch.stack([p0, p1], dim=-1)
         else:
-            # Regime-1 override:
+            # Bad-regime override:
             # keep bad->severe fixed at p23, adapt bad->normal by path-state p21.
             p12_bad = torch.full_like(p21_clamped, float(params.p23))
-            p10_bad = torch.clamp(p21_clamped, min=1e-8, max=1.0 - p12_bad - 1e-8)
+            p10_bad = torch.clamp(p21_clamped, min=1e-8)
+            p10_bad = torch.minimum(p10_bad, 1.0 - p12_bad - 1e-8)
             p11_bad = 1.0 - p10_bad - p12_bad
             row_bad = torch.stack([p10_bad, p11_bad, p12_bad], dim=-1)
-            mask_bad = (st.s == 1).view(-1, 1)
+            mask_bad = (st.s == int(bad_reg)).view(-1, 1)
             probs = torch.where(mask_bad, row_bad, probs)
     return probs
 
@@ -2419,7 +2424,7 @@ def simulate_paths(
         if force_regime is None:
             x = trainer._step_state(x)
         else:
-            # Author-like fixed-regime branches used in post-processing (NT/SS).
+            # Author-like fixed-regime branches used in post-processing (NT/SS/SEV/...).
             Bcur = x.shape[0]
             epsA = torch.randn(Bcur, device=dev, dtype=dt)
             epsg = torch.randn(Bcur, device=dev, dtype=dt)

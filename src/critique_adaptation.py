@@ -14,6 +14,8 @@ class CritiqueCurriculumConfig:
     """Training-time curriculum/domain-randomization for critique stressors."""
 
     enabled: bool = False
+    # Threshold regime index for stress handling in curriculum shocks:
+    # all regimes s >= bad_state are treated as stress states (bad, severe, ...).
     bad_state: int = 1
     ramp_episodes: int = 2_000
     shock_times: Tuple[int, ...] = (0, 4, 8, 12)
@@ -34,9 +36,11 @@ class CritiqueCurriculumConfig:
 
 @dataclass(frozen=True)
 class RobustModTaylorRuleConfig:
-    """Uncertainty-aware add-on for modified Taylor rules in bad regime."""
+    """Uncertainty-aware add-on for modified Taylor rules in stress regimes."""
 
     enabled: bool = False
+    # Threshold regime index for stress handling:
+    # all regimes s >= bad_state are treated as stress states (bad, severe, ...).
     bad_state: int = 1
     kappa: float = 0.02
     uncertainty_ref: float = 0.0
@@ -89,7 +93,7 @@ class CritiqueAugmentedTrainer(Trainer):
 
         if bool(rr.bad_only):
             premium = torch.where(
-                st.s == int(rr.bad_state),
+                st.s.to(torch.long) >= int(rr.bad_state),
                 premium,
                 torch.zeros_like(premium),
             )
@@ -127,7 +131,7 @@ class CritiqueAugmentedTrainer(Trainer):
             if strength > 0.0:
                 bad_mult = 1.0 + strength * (float(self.curriculum.bad_sigma_mult) - 1.0)
                 mult = torch.where(
-                    st.s == int(self.curriculum.bad_state),
+                    st.s.to(torch.long) >= int(self.curriculum.bad_state),
                     torch.full((B,), float(bad_mult), device=dev, dtype=dt),
                     torch.ones((B,), device=dev, dtype=dt),
                 )

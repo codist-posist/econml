@@ -57,6 +57,16 @@ def _regime_label(reg: int) -> str:
     return f"regime_{r}"
 
 
+def _bad_regime(params: ModelParams) -> int:
+    n_reg = max(1, int(params.n_regimes))
+    if n_reg <= 1:
+        return 0
+    br = int(params.bad_state)
+    if br < 1 or br >= n_reg:
+        return min(1, n_reg - 1)
+    return br
+
+
 def _maybe_rbar(params: ModelParams, policy: str) -> torch.Tensor | None:
     if policy not in ("mod_taylor", "mod_taylor_zlb"):
         return None
@@ -351,7 +361,6 @@ def _build_shock_train(
     shock_times: Sequence[int],
     shock_size: float,
 ) -> None:
-    regime_path = [0] + [1] * int(T)
     base_epst = np.zeros(T, dtype=np.float64)
     train_epst = np.zeros(T, dtype=np.float64)
     for k in shock_times:
@@ -360,6 +369,7 @@ def _build_shock_train(
 
     rows: List[Dict[str, float | str]] = []
     for policy, b in bundles.items():
+        regime_path = [0] + [int(_bad_regime(b.params))] * int(T)
         sim_base = _simulate_custom(
             b.params,
             policy,
@@ -542,12 +552,15 @@ def _build_bad_uncertainty(
                 }
             )
 
-        pi_b_base = _ann(sim_base["pi"])[burn_in:, :][sim_base["s"][burn_in:, :] == 1]
-        pi_b_hi = _ann(sim_hi["pi"])[burn_in:, :][sim_hi["s"][burn_in:, :] == 1]
+        bad_reg = int(_bad_regime(b.params))
+        m_stress_base = np.asarray(sim_base["s"][burn_in:, :], dtype=np.int64) >= int(bad_reg)
+        m_stress_hi = np.asarray(sim_hi["s"][burn_in:, :], dtype=np.int64) >= int(bad_reg)
+        pi_b_base = _ann(sim_base["pi"])[burn_in:, :][m_stress_base]
+        pi_b_hi = _ann(sim_hi["pi"])[burn_in:, :][m_stress_hi]
         fig, ax = plt.subplots(1, 2, figsize=(12, 4))
         ax[0].hist(pi_b_base, bins=60, alpha=0.55, label="baseline")
         ax[0].hist(pi_b_hi, bins=60, alpha=0.55, label=f"bad uncertainty x{bad_sigma_mult:g}")
-        ax[0].set_title("(a) Bad-regime inflation distribution")
+        ax[0].set_title("(a) Stress-regime inflation distribution")
         ax[0].set_xlabel("annualized inflation, %")
         ax[0].legend()
         ax[1].bar(
@@ -557,7 +570,7 @@ def _build_bad_uncertainty(
                 float(np.nanstd(pi_b_hi)) if pi_b_hi.size else float("nan"),
             ],
         )
-        ax[1].set_title("(b) std(inflation | bad)")
+        ax[1].set_title("(b) std(inflation | stress)")
         ax[1].set_ylabel("annualized pp")
         fig.suptitle(f"Critique Bad-Uncertainty: {policy}", y=1.03)
         plt.tight_layout()
@@ -592,7 +605,6 @@ def _build_combined(
     bad_sigma_mult: float,
     noise_scale: float,
 ) -> None:
-    regime_path = [0] + [1] * int(T)
     base_epst = np.zeros(T, dtype=np.float64)
     comb_epst = np.zeros(T, dtype=np.float64)
     for k in shock_times:
@@ -601,6 +613,7 @@ def _build_combined(
 
     rows: List[Dict[str, str | float]] = []
     for policy, b in bundles.items():
+        regime_path = [0] + [int(_bad_regime(b.params))] * int(T)
         x0 = b.x0.repeat(int(B), 1)
         sim_base = _simulate_custom(
             b.params,
