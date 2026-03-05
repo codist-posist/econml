@@ -18,7 +18,7 @@ import torch
 
 from .config import ModelParams, PolicyName, TrainConfig
 from .deqn import PolicyNetwork, Trainer, implied_nominal_rate_from_euler, _transition_probs_to_next
-from .model_common import unpack_state, shock_laws_of_motion, identities
+from .model_common import unpack_state, shock_laws_of_motion, identities, transition_probs_to_next_regimes, regime_sigma_tau
 
 @dataclass
 class DeterministicPathSpec:
@@ -111,7 +111,7 @@ def simulate_deterministic_path(
     B = x0.shape[0]
     x = x0.to(device=params.device, dtype=params.dtype)
 
-    out_store = {k: np.zeros((T+1, B)) for k in ["c","pi","Delta","pstar","y","h","g","A","tau","i","logA","loggtilde","xi"]}
+    out_store = {k: np.zeros((T+1, B)) for k in ["c","pi","Delta","pstar","y","h","g","A","tau","i","logA","loggtilde","xi","p12_eff","p21_eff","sigma_tau_t"]}
     out_store["s"] = np.zeros((T+1, B), dtype=np.int64)
 
     for t in range(T+1):
@@ -144,6 +144,22 @@ def simulate_deterministic_path(
         out_store["xi"][t] = st.xi.cpu().numpy()
         out_store["s"][t] = st.s.cpu().numpy()
         out_store["i"][t] = i_t.cpu().numpy()
+        p21_state = st.p21 if st.p21 is not None else None
+        probs_s0 = transition_probs_to_next_regimes(
+            params,
+            torch.zeros_like(st.s),
+            xi=st.xi,
+            p21_state=p21_state,
+        )
+        probs_s1 = transition_probs_to_next_regimes(
+            params,
+            torch.ones_like(st.s),
+            xi=st.xi,
+            p21_state=p21_state,
+        )
+        out_store["p12_eff"][t] = probs_s0[:, 1].cpu().numpy()
+        out_store["p21_eff"][t] = probs_s1[:, 0].cpu().numpy()
+        out_store["sigma_tau_t"][t] = regime_sigma_tau(params, st.s).cpu().numpy()
 
         if t == T:
             break

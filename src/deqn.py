@@ -2304,6 +2304,9 @@ def simulate_paths(
         "A": np.zeros((keep, B)),
         "tau": np.zeros((keep, B)),
         "s": np.zeros((keep, B), dtype=np.int64),
+        "p12_eff": np.zeros((keep, B)),
+        "p21_eff": np.zeros((keep, B)),
+        "sigma_tau_t": np.zeros((keep, B)),
     }
     explicit_i_policies = ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb")
     if (policy in explicit_i_policies) or compute_implied_i:
@@ -2312,6 +2315,8 @@ def simulate_paths(
         store["logA"] = np.zeros((keep, B))
         store["loggtilde"] = np.zeros((keep, B))
         store["xi"] = np.zeros((keep, B))
+    if policy == "taylor_para":
+        store["p21_state"] = np.zeros((keep, B))
 
     if policy in ("commitment", "commitment_zlb"):
         store["vartheta_prev"] = np.zeros((keep, B))
@@ -2342,6 +2347,19 @@ def simulate_paths(
                 i_t = torch.full_like(out["pi"], float("nan"))
 
         if (t >= burn_in) and ((t - burn_in) % thin == 0):
+            p21_state_now = st.p21 if st.p21 is not None else None
+            probs_s0 = transition_probs_to_next_regimes(
+                params_sim,
+                torch.zeros_like(st.s),
+                xi=st.xi,
+                p21_state=p21_state_now,
+            )
+            probs_s1 = transition_probs_to_next_regimes(
+                params_sim,
+                torch.ones_like(st.s),
+                xi=st.xi,
+                p21_state=p21_state_now,
+            )
             store["c"][k] = out["c"].cpu().numpy()
             store["pi"][k] = out["pi"].cpu().numpy()
             store["pstar"][k] = out["pstar"].cpu().numpy()
@@ -2352,12 +2370,20 @@ def simulate_paths(
             store["A"][k] = ids["A"].cpu().numpy()
             store["tau"][k] = (ids["one_plus_tau"] - 1.0).cpu().numpy()
             store["s"][k] = st.s.cpu().numpy()
+            store["p12_eff"][k] = probs_s0[:, 1].cpu().numpy()
+            store["p21_eff"][k] = probs_s1[:, 0].cpu().numpy()
+            store["sigma_tau_t"][k] = regime_sigma_tau(params_sim, st.s).cpu().numpy()
             if "i" in store:
                 store["i"][k] = i_t.cpu().numpy()
             if store_states:
                 store["logA"][k] = st.logA.cpu().numpy()
                 store["loggtilde"][k] = st.loggtilde.cpu().numpy()
                 store["xi"][k] = st.xi.cpu().numpy()
+            if "p21_state" in store:
+                if st.p21 is not None:
+                    store["p21_state"][k] = st.p21.cpu().numpy()
+                else:
+                    store["p21_state"][k] = np.full((B,), float(params_sim.p21))
             if policy in ("commitment", "commitment_zlb"):
                 store["vartheta_prev"][k] = st.vartheta_prev.cpu().numpy()
                 store["varrho_prev"][k] = st.varrho_prev.cpu().numpy()

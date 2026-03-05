@@ -19,7 +19,7 @@ from src.config import ModelParams, PolicyName, TrainConfig
 from src.deqn import Trainer, implied_nominal_rate_from_euler
 from src.io_utils import load_json, load_torch
 from src.metrics import flex_c_series_from_A_g_tau
-from src.model_common import identities, shock_laws_of_motion, unpack_state
+from src.model_common import identities, shock_laws_of_motion, unpack_state, transition_probs_to_next_regimes, regime_sigma_tau
 from src.steady_states import export_rbar_tensor, solve_flexprice_sss
 from src.table2_builder import _load_net_from_run, _load_run_dir
 from scripts.build_author_postprocess_like import _i_flex_author_like, _i_flex_paper_like
@@ -421,6 +421,9 @@ def _compute_sim_arrays_from_states(
         "i": [],
         "xi": [],
         "p21": [],
+        "p12_eff": [],
+        "p21_eff": [],
+        "sigma_tau": [],
     }
     explicit_i = ("taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb")
 
@@ -448,6 +451,22 @@ def _compute_sim_arrays_from_states(
         vals["s"].append(st.s.detach().cpu().numpy())
         vals["i"].append(i_now.detach().cpu().numpy())
         vals["xi"].append(st.xi.detach().cpu().numpy())
+        p21_state = st.p21 if st.p21 is not None else None
+        probs_s0 = transition_probs_to_next_regimes(
+            params,
+            torch.zeros_like(st.s),
+            xi=st.xi,
+            p21_state=p21_state,
+        )
+        probs_s1 = transition_probs_to_next_regimes(
+            params,
+            torch.ones_like(st.s),
+            xi=st.xi,
+            p21_state=p21_state,
+        )
+        vals["p12_eff"].append(probs_s0[:, 1].detach().cpu().numpy())
+        vals["p21_eff"].append(probs_s1[:, 0].detach().cpu().numpy())
+        vals["sigma_tau"].append(regime_sigma_tau(params, st.s).detach().cpu().numpy())
         if st.p21 is None:
             vals["p21"].append(np.full((i1 - i0,), float(params.p21), dtype=np.float64))
         else:
@@ -532,6 +551,12 @@ def _to_author_defs_shaped(
     }
     if "p21" in sim:
         out["p_21_x"] = np.asarray(sim["p21"], dtype=np.float64).reshape(shp)
+    if "p12_eff" in sim:
+        out["p_12_eff_x"] = np.asarray(sim["p12_eff"], dtype=np.float64).reshape(shp)
+    if "p21_eff" in sim:
+        out["p_21_eff_x"] = np.asarray(sim["p21_eff"], dtype=np.float64).reshape(shp)
+    if "sigma_tau" in sim:
+        out["sigma_tau_x"] = np.asarray(sim["sigma_tau"], dtype=np.float64).reshape(shp)
     return out
 
 

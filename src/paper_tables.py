@@ -28,8 +28,12 @@ def build_table1_calibration(params: ModelParams | None = None) -> pd.DataFrame:
         ("TFP shock st.dev", "sigma_A", float(p.sigma_A)),
         ("Cost-push shock st.dev", "sigma_tau", float(p.sigma_tau)),
         ("Gov. spending shock st.dev", "sigma_g", float(p.sigma_g)),
+        ("Bad-regime sigma_tau multiplier", "sigma_tau_bad_mult", float(p.sigma_tau_bad_mult)),
         ("Transition prob. normal->bad", "p12", float(p.p12)),
         ("Transition prob. bad->normal", "p21", float(p.p21)),
+        ("State-dependent transitions enabled", "state_dependent_transitions", float(bool(p.state_dependent_transitions))),
+        ("Xi sensitivity of p21", "p21_xi_slope", float(p.p21_xi_slope)),
+        ("Xi sensitivity of p12", "p12_xi_slope", float(p.p12_xi_slope)),
         ("Inflation target (quarterly net)", "pi_bar", float(p.pi_bar)),
         ("Taylor inflation response", "psi", float(p.psi)),
     ]

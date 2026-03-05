@@ -601,6 +601,52 @@ def _load_net_from_run(
     net.eval()
     return net
 
+
+def _load_params_from_run(
+    run_dir: str,
+    *,
+    device: str,
+    dtype: torch.dtype,
+) -> ModelParams:
+    p = ModelParams(device=device, dtype=dtype)
+    cfg_path = os.path.join(run_dir, "config.json")
+    if not os.path.exists(cfg_path):
+        return p.to_torch()
+    try:
+        blob = load_json(cfg_path)
+        p_blob = blob.get("params", {})
+        fields = set(ModelParams.__dataclass_fields__.keys())
+        kwargs = {k: v for k, v in p_blob.items() if k in fields}
+        kwargs["device"] = device
+        kwargs["dtype"] = dtype
+        return ModelParams(**kwargs).to_torch()
+    except Exception:
+        return p.to_torch()
+
+
+def _resolve_reference_params(
+    artifacts_root: str,
+    *,
+    device: str,
+    dtype: torch.dtype,
+    use_selected: bool,
+    strict_selected: bool,
+    candidate_policies: Sequence[str],
+) -> ModelParams:
+    for pol in candidate_policies:
+        try:
+            run_dir = _load_run_dir(
+                artifacts_root,
+                pol,
+                use_selected=use_selected,
+                strict_selected=strict_selected,
+                required_files=(),
+            )
+            return _load_params_from_run(run_dir, device=device, dtype=dtype)
+        except Exception:
+            continue
+    return ModelParams(device=device, dtype=dtype).to_torch()
+
 def _load_sim_paths(run_dir: str) -> Dict[str, np.ndarray]:
     p = os.path.join(run_dir, "sim_paths.npz")
     if not os.path.exists(p):
@@ -851,8 +897,22 @@ def build_table0(
           * "best": prefer weights_best.pt,
           * "last": prefer weights_last.pt.
     """
-    params = ModelParams(device=device, dtype=dtype).to_torch()
     sss_source_norm = _normalize_sss_source(sss_source)
+    candidate_policies: List[str] = ["commitment", "discretion"]
+    if include_rules:
+        candidate_policies += ["taylor", "mod_taylor"]
+        if include_para:
+            candidate_policies += ["taylor_para"]
+        if include_zlb:
+            candidate_policies += ["taylor_zlb", "mod_taylor_zlb", "discretion_zlb", "commitment_zlb"]
+    params = _resolve_reference_params(
+        artifacts_root,
+        device=device,
+        dtype=dtype,
+        use_selected=use_selected,
+        strict_selected=strict_selected,
+        candidate_policies=candidate_policies,
+    )
     # flex SSS
     flex = solve_flexprice_sss(params)
 
@@ -912,6 +972,9 @@ def build_table0(
             x_m = {"mean": np.nan, "std": np.nan, "skew": np.nan}
             r_m = {"mean": np.nan, "std": np.nan, "skew": np.nan}
             i_m = {"mean": np.nan, "std": np.nan, "skew": np.nan}
+            p12_eff_m = {"mean": np.nan, "std": np.nan}
+            p21_eff_m = {"mean": np.nan, "std": np.nan}
+            sigma_tau_m = {"mean": np.nan, "std": np.nan}
         else:
             s = sim["s"]
             # inflation
@@ -928,6 +991,15 @@ def build_table0(
             r_all, s_al = _compute_real_rate_series(sim)
             r_series = _split_by_regime(r_all, s_al, regime)
             r_m = _moments_with_skew(r_series)
+            p12_arr = np.asarray(sim.get("p12_eff", np.full_like(np.asarray(sim["s"], dtype=np.float64), float(params.p12))), dtype=np.float64)
+            p21_arr = np.asarray(sim.get("p21_eff", np.full_like(np.asarray(sim["s"], dtype=np.float64), float(params.p21))), dtype=np.float64)
+            sig_arr = np.asarray(sim.get("sigma_tau_t", np.full_like(np.asarray(sim["s"], dtype=np.float64), float(params.sigma_tau))), dtype=np.float64)
+            p12_eff_series = _split_by_regime(p12_arr, s, regime)
+            p21_eff_series = _split_by_regime(p21_arr, s, regime)
+            sigma_tau_series = _split_by_regime(sig_arr, s, regime)
+            p12_eff_m = {"mean": float(np.mean(p12_eff_series)) if p12_eff_series.size else np.nan, "std": float(np.std(p12_eff_series)) if p12_eff_series.size else np.nan}
+            p21_eff_m = {"mean": float(np.mean(p21_eff_series)) if p21_eff_series.size else np.nan, "std": float(np.std(p21_eff_series)) if p21_eff_series.size else np.nan}
+            sigma_tau_m = {"mean": float(np.mean(sigma_tau_series)) if sigma_tau_series.size else np.nan, "std": float(np.std(sigma_tau_series)) if sigma_tau_series.size else np.nan}
 
         # Prefer author post-process fixed-regime moment files in sim_conditional mode.
         if sss_source_norm == "sim_conditional":
@@ -1058,6 +1130,13 @@ def build_table0(
             "i_mean_pct": _annualize_pct(i_m["mean"]),
             "i_std_pct": _annualize_pct(i_m["std"]),
             "i_skew": i_m["skew"],
+            # Strategy diagnostics: state-dependent transitions and regime-dependent uncertainty
+            "p12_eff_mean": p12_eff_m["mean"],
+            "p12_eff_std": p12_eff_m["std"],
+            "p21_eff_mean": p21_eff_m["mean"],
+            "p21_eff_std": p21_eff_m["std"],
+            "sigma_tau_mean": sigma_tau_m["mean"],
+            "sigma_tau_std": sigma_tau_m["std"],
         })
 
     nets: Dict[str, PolicyNetwork] = {}

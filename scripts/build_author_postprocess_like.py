@@ -19,7 +19,7 @@ from src.config import ModelParams
 from src.table2_builder import _load_net_from_run, _load_run_dir
 from src.deqn import Trainer, implied_nominal_rate_from_euler
 from src.config import TrainConfig
-from src.model_common import unpack_state, identities
+from src.model_common import unpack_state, identities, transition_probs_to_next_regimes, regime_sigma_tau
 from src.metrics import flex_c_series_from_A_g_tau, efficient_c_hat_series_from_A_g
 from src.io_utils import load_json, load_torch
 from src.steady_states import solve_flexprice_sss, export_rbar_tensor
@@ -76,16 +76,23 @@ def _cons_flex_paper(
 def _transition_probs_to_next_regime(
     params: ModelParams,
     s: np.ndarray,
+    xi: np.ndarray | None = None,
     p21_state: np.ndarray | None = None,
+    p12_state: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     s_i = np.asarray(s, dtype=np.int64).reshape(-1)
-    p0 = np.where(s_i == 0, 1.0 - float(params.p12), float(params.p21)).astype(np.float64)
+    dev, dt = params.device, params.dtype
+    s_t = torch.as_tensor(s_i, device=dev, dtype=torch.long)
+    kwargs: Dict[str, torch.Tensor] = {}
+    if xi is not None:
+        kwargs["xi"] = torch.as_tensor(np.asarray(xi, dtype=np.float64).reshape(-1), device=dev, dtype=dt)
     if p21_state is not None:
-        p21v = np.clip(np.asarray(p21_state, dtype=np.float64).reshape(-1), 0.0, 1.0)
-        bad = (s_i == 1)
-        if np.any(bad):
-            p0[bad] = p21v[bad]
-    p1 = 1.0 - p0
+        kwargs["p21_state"] = torch.as_tensor(np.asarray(p21_state, dtype=np.float64).reshape(-1), device=dev, dtype=dt)
+    if p12_state is not None:
+        kwargs["p12_state"] = torch.as_tensor(np.asarray(p12_state, dtype=np.float64).reshape(-1), device=dev, dtype=dt)
+    probs = transition_probs_to_next_regimes(params, s_t, **kwargs).detach().cpu().numpy()
+    p0 = np.asarray(probs[:, 0], dtype=np.float64)
+    p1 = np.asarray(probs[:, 1], dtype=np.float64)
     return p0, p1
 
 
@@ -180,15 +187,15 @@ def _i_flex_paper_like(
     rho_g = float(params.rho_g)
     sigma_g = float(params.sigma_g)
     rho_tau = float(params.rho_tau)
-    sigma_tau = float(params.sigma_tau)
     tau_bar = float(params.tau_bar)
-    eta_bar = float(params.eta_bar)
-    bad_state = int(params.bad_state)
     gamma = float(params.gamma)
+    sigma_by_regime = np.asarray(params.sigma_tau_by_regime, dtype=np.float64).reshape(-1)
+    eta_by_regime = np.asarray(params.eta_by_regime, dtype=np.float64).reshape(-1)
+    if sigma_by_regime.size < 2 or eta_by_regime.size < 2:
+        raise ValueError("Expected at least two regime levels for sigma_tau and eta.")
 
     driftA = (1.0 - rho_A) * (-(sigma_A**2) / 2.0)
     driftg = (1.0 - rho_g) * (-(sigma_g**2) / 2.0)
-    drift_xi = (1.0 - rho_tau) * (-(sigma_tau**2) / 2.0)
 
     # N(0,1) GH nodes/weights
     x, w = hermgauss(int(n_quad_pts))
@@ -198,11 +205,13 @@ def _i_flex_paper_like(
     lam_t = np.clip(cons_flex, 1e-12, None) ** (-gamma)
     logA_next = driftA + rho_A * logA[:, None] + sigma_A * nodes[None, :]
     logg_next = driftg + rho_g * logg[:, None] + sigma_g * nodes[None, :]
-    xi_next = drift_xi + rho_tau * xi[:, None] + sigma_tau * nodes[None, :]
-
-    p0, p1 = _transition_probs_to_next_regime(params, s, p21_state=p21_state)
-    eta0 = eta_bar if bad_state == 0 else 0.0
-    eta1 = eta_bar if bad_state == 1 else 0.0
+    p0, p1 = _transition_probs_to_next_regime(params, s, xi=xi, p21_state=p21_state)
+    sigma0 = float(sigma_by_regime[0])
+    sigma1 = float(sigma_by_regime[1])
+    eta0 = float(eta_by_regime[0])
+    eta1 = float(eta_by_regime[1])
+    drift_xi_0 = (1.0 - rho_tau) * (-(sigma0**2) / 2.0)
+    drift_xi_1 = (1.0 - rho_tau) * (-(sigma1**2) / 2.0)
 
     E_lam_next = np.zeros_like(lam_t)
     for ia in range(int(n_quad_pts)):
@@ -213,10 +222,12 @@ def _i_flex_paper_like(
             wAG = wA * weights[ig]
             for it in range(int(n_quad_pts)):
                 w_all = wAG * weights[it]
-                xi_n = xi_next[:, it]
+                eps_tau = nodes[it]
+                xi_n_0 = drift_xi_0 + rho_tau * xi + sigma0 * eps_tau
+                xi_n_1 = drift_xi_1 + rho_tau * xi + sigma1 * eps_tau
 
-                one_plus_tau_0 = (1.0 - tau_bar) + xi_n + eta0
-                one_plus_tau_1 = (1.0 - tau_bar) + xi_n + eta1
+                one_plus_tau_0 = (1.0 - tau_bar) + xi_n_0 + eta0
+                one_plus_tau_1 = (1.0 - tau_bar) + xi_n_1 + eta1
                 c_next_0 = flex_c_series_from_A_g_tau(
                     params,
                     A=A_n,
@@ -260,6 +271,9 @@ def _to_author_defs(
     s = np.asarray(sim["s"], dtype=np.float64).reshape(-1)
     xi = np.asarray(sim.get("xi", np.zeros_like(c)), dtype=np.float64).reshape(-1)
     p21_state = np.asarray(sim.get("p21", np.full_like(c, float(params.p21))), dtype=np.float64).reshape(-1)
+    p12_eff = np.asarray(sim.get("p12_eff", np.full_like(c, float(params.p12))), dtype=np.float64).reshape(-1)
+    p21_eff = np.asarray(sim.get("p21_eff", np.full_like(c, float(params.p21))), dtype=np.float64).reshape(-1)
+    sigma_tau_x = np.asarray(sim.get("sigma_tau", np.full_like(c, float(params.sigma_tau))), dtype=np.float64).reshape(-1)
 
     one_plus_pi = np.clip(1.0 + pi, 1e-12, None)
     eps = float(params.eps)
@@ -314,6 +328,9 @@ def _to_author_defs(
         "i_flex_y": i_flex,
         "cons_flex_y": cons_flex,
         "regime_x": s,
+        "p_12_eff_x": p12_eff,
+        "p_21_eff_x": p21_eff,
+        "sigma_tau_x": sigma_tau_x,
     }
 
 
@@ -363,7 +380,7 @@ def _export_for_policy(
 
     names = ["full", "NT", "SS", "ss_only", "xi_only"]
     explicit_i = {"taylor", "taylor_para", "mod_taylor", "taylor_zlb", "mod_taylor_zlb", "commitment_zlb"}
-    keys = ["c", "pi", "pstar", "Delta", "y", "h", "g", "A", "tau", "s", "i", "xi", "p21"]
+    keys = ["c", "pi", "pstar", "Delta", "y", "h", "g", "A", "tau", "s", "i", "xi", "p21", "p12_eff", "p21_eff", "sigma_tau"]
     sims: Dict[str, Dict[str, np.ndarray]] = {
         nm: {k: np.zeros((int(T), 1), dtype=np.float64) for k in keys} for nm in names
     }
@@ -396,6 +413,23 @@ def _export_for_policy(
                 sims[nm]["p21"][t, 0] = float(st.p21[b].detach().cpu())
             else:
                 sims[nm]["p21"][t, 0] = float(params.p21)
+            p21_state_b = st.p21[b : b + 1] if st.p21 is not None else None
+            xi_b = st.xi[b : b + 1]
+            p12_eff_b = transition_probs_to_next_regimes(
+                params,
+                torch.zeros((1,), device=params.device, dtype=torch.long),
+                xi=xi_b,
+                p21_state=p21_state_b,
+            )[0, 1]
+            p21_eff_b = transition_probs_to_next_regimes(
+                params,
+                torch.ones((1,), device=params.device, dtype=torch.long),
+                xi=xi_b,
+                p21_state=p21_state_b,
+            )[0, 0]
+            sims[nm]["p12_eff"][t, 0] = float(p12_eff_b.detach().cpu())
+            sims[nm]["p21_eff"][t, 0] = float(p21_eff_b.detach().cpu())
+            sims[nm]["sigma_tau"][t, 0] = float(regime_sigma_tau(params, st.s[b : b + 1]).detach().cpu().view(-1)[0])
 
         # One shared episode step, then branch transformations as in author post_process.py
         x = trainer._step_state(x)

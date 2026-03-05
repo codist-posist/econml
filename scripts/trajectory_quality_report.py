@@ -29,10 +29,32 @@ import os
 import torch
 
 from src.config import ModelParams
-from src.io_utils import save_json
+from src.io_utils import save_json, load_json
 from src.sanity_checks import trajectory_residuals_check
 from src.steady_states import solve_flexprice_sss, export_rbar_tensor
 from src.table2_builder import _load_run_dir, _load_net_from_run, _load_sim_paths
+
+
+def _load_params_from_run(
+    run_dir: str,
+    *,
+    device: str,
+    dtype: torch.dtype,
+) -> ModelParams:
+    p = ModelParams(device=device, dtype=dtype)
+    cfg_path = os.path.join(run_dir, "config.json")
+    if not os.path.exists(cfg_path):
+        return p.to_torch()
+    try:
+        blob = load_json(cfg_path)
+        p_blob = blob.get("params", {})
+        fields = set(ModelParams.__dataclass_fields__.keys())
+        kwargs = {k: v for k, v in p_blob.items() if k in fields}
+        kwargs["device"] = device
+        kwargs["dtype"] = dtype
+        return ModelParams(**kwargs).to_torch()
+    except Exception:
+        return p.to_torch()
 
 
 def main() -> None:
@@ -73,8 +95,8 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    params = ModelParams(device=args.device).to_torch()
     run_dir = _load_run_dir(args.artifacts_root, args.policy, use_selected=bool(args.use_selected))
+    params = _load_params_from_run(run_dir, device=args.device, dtype=torch.float64)
     net = _load_net_from_run(run_dir, params, args.policy)  # type: ignore[arg-type]
     sim = _load_sim_paths(run_dir)
 

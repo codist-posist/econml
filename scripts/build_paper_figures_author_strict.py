@@ -405,7 +405,7 @@ def build_figures(
         use_selected=use_selected,
         enabled=ensure_ir,
         out_subdir="IRS_fig9_base",
-        params_override={"eta_bar": 0.0, "p12": 0.0, "p21": 1.0},
+        params_override={"eta_bar": 0.0, "eta0": 0.0, "eta1": 0.0, "p12": 0.0, "p21": 1.0},
         force_rebuild=force_rebuild_ir,
         cons_mode=mode,
     )
@@ -418,7 +418,7 @@ def build_figures(
         use_selected=use_selected,
         enabled=ensure_ir,
         out_subdir="IRS_fig9_hi",
-        params_override={"eta_bar": 0.0, "p12": 0.0, "p21": 1.0, "rho_tau": 0.99},
+        params_override={"eta_bar": 0.0, "eta0": 0.0, "eta1": 0.0, "p12": 0.0, "p21": 1.0, "rho_tau": 0.99},
         force_rebuild=force_rebuild_ir,
         cons_mode=mode,
     )
@@ -431,7 +431,7 @@ def build_figures(
         use_selected=use_selected,
         enabled=ensure_ir,
         out_subdir="IRS_fig13_big",
-        params_override={"eta_bar": float(p_c.eta_bar) * float(shock_size_mult)},
+        params_override={"eta_bar": float(p_c.eta_bar) * float(shock_size_mult), "eta1": float(p_c.eta_bar) * float(shock_size_mult)},
         force_rebuild=force_rebuild_ir,
         cons_mode=mode,
     )
