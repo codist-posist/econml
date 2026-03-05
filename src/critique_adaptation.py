@@ -69,6 +69,16 @@ class CritiqueAugmentedTrainer(Trainer):
         strength = min(1.0, float(ep_idx) / float(ramp))
         return ep_idx, t_in_ep, float(strength)
 
+    def _sample_next_regime(self, st, *, B: int, dev: str, dt: torch.dtype) -> torch.Tensor:
+        u = torch.rand(B, device=dev, dtype=dt)
+        probs = _transition_probs_to_next(self.params, st)
+        if isinstance(probs, tuple):
+            p0, _ = probs
+            return torch.where(u < p0, torch.zeros_like(st.s), torch.ones_like(st.s))
+        cdf = torch.cumsum(probs, dim=-1)
+        cdf[..., -1] = 1.0
+        return torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
+
     def _policy_outputs(self, x: torch.Tensor, *, apply_hard_bounds: bool = True):
         out = super()._policy_outputs(x, apply_hard_bounds=apply_hard_bounds)
         rr = self.robust_rule
@@ -135,11 +145,7 @@ class CritiqueAugmentedTrainer(Trainer):
                 if int(t_in_ep) in self._shock_times:
                     epst = epst + float(self.curriculum.shock_size) * float(strength)
 
-        u = torch.rand(B, device=dev, dtype=dt)
-        probs = _transition_probs_to_next(self.params, st)  # (B,R)
-        cdf = torch.cumsum(probs, dim=-1)
-        cdf[..., -1] = 1.0
-        s_next = torch.sum(u.view(-1, 1) > cdf, dim=-1).to(torch.long)
+        s_next = self._sample_next_regime(st, B=B, dev=dev, dt=dt)
 
         logA_n, logg_n, xi_n, s_n = shock_laws_of_motion(self.params, st, epsA, epsg, epst, s_next)
 
