@@ -399,12 +399,19 @@ class TrainConfig:
             sim_batch = 1024
 
         # Quality-oriented defaults for long author runs:
-        # - rule families are more prone to early plateau/branching, so monitor longer
-        # - all policies use a larger fixed validation set for stabler stop decisions
-        is_rule_family = policy in ("taylor", "mod_taylor", "taylor_zlb", "mod_taylor_zlb")
-        auto_warmup = 10_000 if is_rule_family else 6_000
-        auto_patience = 40_000 if is_rule_family else 25_000
-        auto_min_rel_delta = 5e-5 if is_rule_family else 1e-4
+        # Use the longer Taylor-like early-stop window for discretion/commitment too,
+        # as requested for better convergence robustness.
+        long_patience_family = policy in (
+            "taylor",
+            "mod_taylor",
+            "taylor_zlb",
+            "mod_taylor_zlb",
+            "discretion",
+            "commitment",
+        )
+        auto_warmup = 10_000 if long_patience_family else 6_000
+        auto_patience = 40_000 if long_patience_family else 25_000
+        auto_min_rel_delta = 5e-5 if long_patience_family else 1e-4
 
         base = TrainConfig(
             mode="author",
