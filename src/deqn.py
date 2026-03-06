@@ -1609,6 +1609,13 @@ class Trainer:
             auto_stop_patience_steps = max(0, int(getattr(self.cfg, "auto_stop_patience_steps", 0)))
             auto_stop_min_delta = max(0.0, float(getattr(self.cfg, "auto_stop_min_delta", 0.0)))
             auto_stop_min_rel_delta = max(0.0, float(getattr(self.cfg, "auto_stop_min_rel_delta", 0.0)))
+            _auto_req_raw = getattr(self.cfg, "auto_stop_require_metric_below", None)
+            auto_stop_require_metric_below: float | None
+            if _auto_req_raw is None:
+                auto_stop_require_metric_below = None
+            else:
+                _v = float(_auto_req_raw)
+                auto_stop_require_metric_below = _v if np.isfinite(_v) else None
             auto_best_metric = float("inf")
             auto_best_step = -1
             val_every = max(1, int(getattr(self.cfg, "val_every", 2000) or 2000))
@@ -1888,13 +1895,30 @@ class Trainer:
                             auto_best_metric = float(metric_value)
                             auto_best_step = int(global_step)
                         elif auto_best_step >= 0 and (global_step - auto_best_step) >= auto_stop_patience_steps:
+                            quality_gate_ok = True
+                            if auto_stop_require_metric_below is not None:
+                                quality_gate_ok = bool(
+                                    np.isfinite(float(auto_best_metric))
+                                    and (float(auto_best_metric) <= float(auto_stop_require_metric_below))
+                                )
+                            if not quality_gate_ok:
+                                if need_log or (use_val_metric and val_metr is not None):
+                                    print(
+                                        f"[{self.policy} | {tag}] auto_monitor gate: "
+                                        f"best_{auto_stop_metric}={auto_best_metric:.3e} "
+                                        f"> required<={float(auto_stop_require_metric_below):.3e}; continue training."
+                                    )
+                                return False
                             rel_clause = ""
                             if auto_stop_min_rel_delta > 0.0:
                                 rel_clause = f", min_rel_delta={auto_stop_min_rel_delta:.2e}"
+                            gate_clause = ""
+                            if auto_stop_require_metric_below is not None:
+                                gate_clause = f", require<={float(auto_stop_require_metric_below):.3e}"
                             if use_val_metric:
                                 stop_reason = (
                                     f"auto_stop({auto_stop_metric} plateau): "
-                                    f"no improvement > {auto_stop_min_delta:.2e}{rel_clause} for {int(auto_stop_patience_steps)} steps; "
+                                    f"no improvement > {auto_stop_min_delta:.2e}{rel_clause}{gate_clause} for {int(auto_stop_patience_steps)} steps; "
                                     f"best_{auto_stop_metric}={auto_best_metric:.3e} at step={int(auto_best_step)}, "
                                     f"current_{auto_stop_metric}={metric_value:.3e}; "
                                     f"last_val_step={last_val_metrics['step']:.0f}, "
@@ -1908,7 +1932,7 @@ class Trainer:
                             else:
                                 stop_reason = (
                                     f"auto_stop({auto_stop_metric} plateau): "
-                                    f"no improvement > {auto_stop_min_delta:.2e}{rel_clause} for {int(auto_stop_patience_steps)} steps; "
+                                    f"no improvement > {auto_stop_min_delta:.2e}{rel_clause}{gate_clause} for {int(auto_stop_patience_steps)} steps; "
                                     f"best_{auto_stop_metric}={auto_best_metric:.3e} at step={int(auto_best_step)}, "
                                     f"current_{auto_stop_metric}={metric_value:.3e}; "
                                     f"last_log_step={last_logged_metrics['step']:.0f}, "
@@ -2108,6 +2132,9 @@ class Trainer:
                 "auto_stop_patience_steps": int(auto_stop_patience_steps),
                 "auto_stop_min_delta": float(auto_stop_min_delta),
                 "auto_stop_min_rel_delta": float(auto_stop_min_rel_delta),
+                "auto_stop_require_metric_below": float(auto_stop_require_metric_below)
+                if auto_stop_require_metric_below is not None
+                else float("nan"),
                 "auto_stop_best_metric": float(auto_best_metric) if auto_best_step >= 0 else float("nan"),
                 "auto_stop_best_step": int(auto_best_step),
                 "auto_stop_last_val_step": float(last_val_metrics["step"]),

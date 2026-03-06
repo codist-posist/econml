@@ -297,6 +297,9 @@ class TrainConfig:
     auto_stop_patience_steps: int = 0
     auto_stop_min_delta: float = 0.0
     auto_stop_min_rel_delta: float = 0.0
+    # Optional quality guard for auto-stop metrics where lower is better.
+    # If set, plateau-based auto-stop is allowed only when best(metric) <= this value.
+    auto_stop_require_metric_below: float | None = None
 
     # ---- Paper-style stopping rule (Appendix B): stop on epsilon ----
     # If enabled and a phase has eps_stop set, training runs until loss < eps_stop,
@@ -494,6 +497,46 @@ class TrainConfig:
             phase1=PhaseConfig(steps=200_000, lr=1e-5, batch_size=128, gh_n_train=3, use_float64=False, eps_stop=None),
             # Kept for compatibility (not used when use_two_phase=False).
             phase2=PhaseConfig(steps=0, lr=1e-5, batch_size=128, gh_n_train=3, use_float64=False, eps_stop=None),
+        )
+        return replace(base, **overrides)
+
+    @staticmethod
+    def author_like_balanced_3reg(*, policy: PolicyName | None = None, **overrides) -> "TrainConfig":
+        """
+        Balanced preset for 3-regime runs:
+        - keeps author architecture/equations unchanged,
+        - shortens plateau windows to avoid very long stalls,
+        - adds a quality gate so auto-stop only triggers after reaching
+          a reasonable validation residual level.
+        """
+        long_patience_family = policy in (
+            "taylor",
+            "mod_taylor",
+            "taylor_zlb",
+            "mod_taylor_zlb",
+            "discretion",
+            "commitment",
+        )
+        auto_warmup = 8_000 if long_patience_family else 6_000
+        auto_patience = 22_000 if long_patience_family else 16_000
+        # Slightly stricter relative-improvement floor to detect plateaus earlier.
+        auto_min_rel_delta = 5e-5
+        # Safety cap keeps runaway plateaus bounded.
+        step_cap = 420_000 if long_patience_family else 300_000
+        # Guard against quality loss from early stopping.
+        quality_gate = 5e-3
+
+        base = TrainConfig.author_like(
+            policy=policy,
+            auto_stop_enabled=True,
+            auto_stop_metric="rms_resid_val",
+            auto_stop_warmup_steps=auto_warmup,
+            auto_stop_patience_steps=auto_patience,
+            auto_stop_min_delta=0.0,
+            auto_stop_min_rel_delta=auto_min_rel_delta,
+            auto_stop_require_metric_below=quality_gate,
+            val_every=1000,
+            author_step_cap=step_cap,
         )
         return replace(base, **overrides)
 
