@@ -136,7 +136,6 @@ def _train_variant(
             "ramp_episodes": int(curriculum.ramp_episodes),
             "shock_times": [int(v) for v in curriculum.shock_times],
             "shock_size": float(curriculum.shock_size),
-            "bad_sigma_mult": float(curriculum.bad_sigma_mult),
         },
         "robust_rule": {
             "enabled": bool(enable_robust_rule),
@@ -173,12 +172,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--curr-ramp-episodes", type=int, default=2500)
     ap.add_argument("--curr-shock-times", type=str, default="0,4,8,12")
     ap.add_argument("--curr-shock-size", type=float, default=1.25)
-    ap.add_argument("--curr-bad-sigma-mult", type=float, default=2.0)
     ap.add_argument(
         "--curr-bad-state",
         type=int,
         default=1,
-        help="Stress-state threshold for curriculum noise scaling (applies to regimes s >= this index).",
+        help="Stress-state threshold for curriculum shocks (applies to regimes s >= this index).",
     )
 
     ap.add_argument("--robust-kappa", type=float, default=0.02)
@@ -206,7 +204,6 @@ def main(argv: Iterable[str] | None = None) -> int:
         ramp_episodes=max(1, int(args.curr_ramp_episodes)),
         shock_times=tuple(int(v.strip()) for v in str(args.curr_shock_times).split(",") if v.strip()),
         shock_size=float(args.curr_shock_size),
-        bad_sigma_mult=float(args.curr_bad_sigma_mult),
     )
     robust_rule = RobustModTaylorRuleConfig(
         enabled=True,

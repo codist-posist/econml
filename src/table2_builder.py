@@ -15,7 +15,7 @@ from .sss_from_policy import switching_policy_sss_by_regime_from_policy, frozen_
 from .deqn import PolicyNetwork, implied_nominal_rate_from_euler
 from .deqn import Trainer
 from .config import TrainConfig
-from .model_common import regime_eta, regime_sigma_tau, transition_probs_to_next_regimes
+from .model_common import regime_eta, transition_probs_to_next_regimes
 from .metrics import output_gap_from_consumption, efficient_c_hat_series_from_A_g
 from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
 from .experiments import DeterministicPathSpec, simulate_deterministic_path
@@ -154,8 +154,7 @@ def _simulate_flex_prices_for_table2(
 
     logA = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_A)), device=dev, dtype=dt)
     logg = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_g)), device=dev, dtype=dt)
-    sigma_init = float(params.sigma_tau_by_regime[min(max(int(normal_reg), 0), len(params.sigma_tau_by_regime) - 1)])
-    xi = torch.full((B,), _ar1_lognorm_mean(sigma_init), device=dev, dtype=dt)
+    xi = torch.full((B,), _ar1_lognorm_mean(float(params.sigma_tau)), device=dev, dtype=dt)
     s = torch.full((B,), int(normal_reg), device=dev, dtype=torch.long)  # start normal
     h_guess = h0.expand(B)
 
@@ -189,9 +188,9 @@ def _simulate_flex_prices_for_table2(
         lam_next_by_regime: list[torch.Tensor] = []
         for sp in range(R):
             s_sp = torch.full((B, N), int(sp), device=dev, dtype=torch.long)
-            sig_sp = regime_sigma_tau(params, s_sp).to(device=dev, dtype=dt)
-            drift_xi_sp = (1.0 - float(params.rho_tau)) * (-(sig_sp**2) / 2.0)
-            xi_n_sp = drift_xi_sp + params.rho_tau * xi[:, None] + sig_sp * epst_nodes[None, :]
+            sig_xi = float(params.sigma_tau)
+            drift_xi_sp = (1.0 - float(params.rho_tau)) * (-(sig_xi**2) / 2.0)
+            xi_n_sp = drift_xi_sp + params.rho_tau * xi[:, None] + sig_xi * epst_nodes[None, :]
             c_sp = _solve_flex_c_batch(
                 params,
                 logA=logA_n.reshape(-1),
@@ -219,7 +218,7 @@ def _simulate_flex_prices_for_table2(
             logg_list.append(logg.detach().cpu().numpy())
             xi_list.append(xi.detach().cpu().numpy())
 
-        # Markov draw for next regime, using current state-dependent probabilities.
+        # Markov draw for next regime from the fixed escalation matrix.
         u = torch.rand((B,), device=dev, dtype=dt)
         cdf = torch.cumsum(probs_next, dim=-1)
         cdf[:, -1] = 1.0
@@ -231,9 +230,9 @@ def _simulate_flex_prices_for_table2(
         epst = torch.randn((B,), device=dev, dtype=dt)
         logA = driftA + params.rho_A * logA + params.sigma_A * epsA
         logg = driftg + params.rho_g * logg + params.sigma_g * epsg
-        sig_xi_next = regime_sigma_tau(params, s_next).to(device=dev, dtype=dt)
-        drift_xi_next = (1.0 - float(params.rho_tau)) * (-(sig_xi_next**2) / 2.0)
-        xi = drift_xi_next + params.rho_tau * xi + sig_xi_next * epst
+        sig_xi = float(params.sigma_tau)
+        drift_xi_next = (1.0 - float(params.rho_tau)) * (-(sig_xi**2) / 2.0)
+        xi = drift_xi_next + params.rho_tau * xi + sig_xi * epst
         s = s_next
 
         # update h_guess roughly with current h implied

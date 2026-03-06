@@ -105,7 +105,7 @@ def _transition_probs_to_next_regime(
     idx = np.clip(s_i, 0, max(0, R - 1))
     probs = P[idx, :].copy()
 
-    floor = max(1e-12, float(getattr(params, "transition_prob_floor", 1e-8)))
+    floor = 1e-12
     p12 = np.asarray(p12_state, dtype=np.float64).reshape(-1) if p12_state is not None else None
     p21 = np.asarray(p21_state, dtype=np.float64).reshape(-1) if p21_state is not None else None
 
@@ -131,51 +131,6 @@ def _transition_probs_to_next_regime(
                 fixed_sum = fixed_other.sum(axis=1)
                 p10_max = np.clip(1.0 - floor - fixed_sum, floor, 1.0 - floor)
                 p10 = np.clip(p21[m1], floor, p10_max)
-                probs[m1, 0] = p10
-                probs[m1, 1] = 1.0 - p10 - fixed_sum
-
-    if bool(getattr(params, "state_dependent_transitions", False)) and xi is not None and R >= 2:
-        xi_v = np.asarray(xi, dtype=np.float64).reshape(-1)
-        if params.transition_xi_ref is None:
-            sigma_levels = np.asarray(params.sigma_tau_by_regime, dtype=np.float64)
-            if sigma_levels.size == 0:
-                sigma_levels = np.asarray([float(params.sigma_tau)], dtype=np.float64)
-            sigma_ref = sigma_levels[np.clip(idx, 0, sigma_levels.size - 1)]
-            xi_ref = -(sigma_ref**2) / 2.0
-        else:
-            xi_ref = float(params.transition_xi_ref)
-        z = xi_v - xi_ref
-
-        slope12 = float(getattr(params, "p12_xi_slope", 0.0))
-        slope21 = float(getattr(params, "p21_xi_slope", 0.0))
-
-        if abs(slope12) > 0.0:
-            m0 = idx == 0
-            if np.any(m0):
-                p01_base = np.clip(p12[m0], floor, 1.0 - floor) if p12 is not None else np.clip(probs[m0, 1], floor, 1.0 - floor)
-                z0 = np.log(np.clip(p01_base, floor, 1.0 - floor) / np.clip(1.0 - p01_base, floor, 1.0 - floor)) + slope12 * z[m0]
-                p01 = 1.0 / (1.0 + np.exp(-z0))
-                fixed_other = probs[m0].copy()
-                fixed_other[:, 0] = 0.0
-                fixed_other[:, 1] = 0.0
-                fixed_sum = fixed_other.sum(axis=1)
-                p01_max = np.clip(1.0 - floor - fixed_sum, floor, 1.0 - floor)
-                p01 = np.clip(p01, floor, p01_max)
-                probs[m0, 1] = p01
-                probs[m0, 0] = 1.0 - p01 - fixed_sum
-
-        if abs(slope21) > 0.0:
-            m1 = idx == 1
-            if np.any(m1):
-                p10_base = np.clip(p21[m1], floor, 1.0 - floor) if p21 is not None else np.clip(probs[m1, 0], floor, 1.0 - floor)
-                z1 = np.log(np.clip(p10_base, floor, 1.0 - floor) / np.clip(1.0 - p10_base, floor, 1.0 - floor)) - slope21 * z[m1]
-                p10 = 1.0 / (1.0 + np.exp(-z1))
-                fixed_other = probs[m1].copy()
-                fixed_other[:, 0] = 0.0
-                fixed_other[:, 1] = 0.0
-                fixed_sum = fixed_other.sum(axis=1)
-                p10_max = np.clip(1.0 - floor - fixed_sum, floor, 1.0 - floor)
-                p10 = np.clip(p10, floor, p10_max)
                 probs[m1, 0] = p10
                 probs[m1, 1] = 1.0 - p10 - fixed_sum
 
@@ -275,16 +230,13 @@ def _i_flex_paper_like(
     rho_g = float(params.rho_g)
     sigma_g = float(params.sigma_g)
     rho_tau = float(params.rho_tau)
+    sigma_tau = float(params.sigma_tau)
     tau_bar = float(params.tau_bar)
     eta_by_reg = tuple(float(v) for v in params.eta_by_regime)
-    sigma_by_reg = tuple(float(v) for v in params.sigma_tau_by_regime)
     gamma = float(params.gamma)
 
     driftA = (1.0 - rho_A) * (-(sigma_A**2) / 2.0)
     driftg = (1.0 - rho_g) * (-(sigma_g**2) / 2.0)
-    sigma_levels = np.asarray(sigma_by_reg, dtype=np.float64)
-    if sigma_levels.size == 0:
-        sigma_levels = np.asarray([float(params.sigma_tau)], dtype=np.float64)
 
     # N(0,1) GH nodes/weights
     x, w = hermgauss(int(n_quad_pts))
@@ -312,9 +264,8 @@ def _i_flex_paper_like(
                 lam_next_by_reg = np.zeros((A_n.size, R), dtype=np.float64)
                 for r in range(R):
                     eta_r = float(eta_levels[min(r, eta_levels.size - 1)])
-                    sigma_r = float(sigma_levels[min(r, sigma_levels.size - 1)])
-                    drift_xi_r = (1.0 - rho_tau) * (-(sigma_r**2) / 2.0)
-                    xi_n_r = drift_xi_r + rho_tau * xi + sigma_r * nodes[it]
+                    drift_xi_r = (1.0 - rho_tau) * (-(sigma_tau**2) / 2.0)
+                    xi_n_r = drift_xi_r + rho_tau * xi + sigma_tau * nodes[it]
                     one_plus_tau_r = (1.0 - tau_bar) + xi_n_r + eta_r
                     c_next_r = flex_c_series_from_A_g_tau(
                         params,

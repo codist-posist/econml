@@ -141,12 +141,11 @@ def switching_policy_sss_by_regime_from_policy(
     # Exogenous states fixed at unconditional means (drift-corrected AR(1))
     logA0 = _uncond_mean_log_ar1(float(params.rho_A), float(params.sigma_A))
     logg0 = _uncond_mean_log_ar1(float(params.rho_g), float(params.sigma_g))
-    sigma_by_reg = tuple(float(v) for v in params.sigma_tau_by_regime)
-    xi_by_reg = tuple(_uncond_mean_log_ar1(float(params.rho_tau), sig) for sig in sigma_by_reg)
+    xi0 = _uncond_mean_log_ar1(float(params.rho_tau), float(params.sigma_tau))
 
     def _init_state(regime: int) -> torch.Tensor:
         s_val = float(regime)
-        xi_ss = float(xi_by_reg[int(regime)] if int(regime) < len(xi_by_reg) else xi_by_reg[-1])
+        xi_ss = float(xi0)
         if policy == "commitment_zlb":
             vec = [1.0, logA0, logg0, xi_ss, s_val, 0.0, 0.0, 1.0, 0.002461, -0.000012]
             return torch.tensor(vec, device=dev, dtype=dt).view(1, -1)

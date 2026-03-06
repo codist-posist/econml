@@ -98,15 +98,6 @@ def unpack_state(x: torch.Tensor, policy: str) -> State:
     raise ValueError(f"Unknown policy: {policy}")
 
 
-def _logit(p: torch.Tensor) -> torch.Tensor:
-    p_safe = torch.clamp(p, min=1e-9, max=1.0 - 1e-9)
-    return torch.log(p_safe) - torch.log1p(-p_safe)
-
-
-def _inv_logit(z: torch.Tensor) -> torch.Tensor:
-    return torch.sigmoid(z)
-
-
 def _regime_lookup(levels: Tuple[float, ...], s: torch.Tensor, *, device: str | torch.device, dtype: torch.dtype) -> torch.Tensor:
     vals = torch.tensor(levels, device=device, dtype=dtype)
     idx = torch.clamp(s.to(device=device, dtype=torch.long), min=0, max=int(vals.numel()) - 1)
@@ -122,15 +113,6 @@ def regime_eta(params: ModelParams, s: torch.Tensor) -> torch.Tensor:
     )
 
 
-def regime_sigma_tau(params: ModelParams, s: torch.Tensor) -> torch.Tensor:
-    return _regime_lookup(
-        tuple(float(v) for v in params.sigma_tau_by_regime),
-        s,
-        device=s.device,
-        dtype=params.dtype,
-    )
-
-
 def transition_probs_to_next_regimes(
     params: ModelParams,
     s: torch.Tensor,
@@ -140,7 +122,7 @@ def transition_probs_to_next_regimes(
     p12_state: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
-    Regime transition probabilities with optional xi-dependent adjustments.
+    Regime transition probabilities with optional per-path p12/p21 overrides.
 
     Returns probs with shape s.shape + (R,), where probs[..., j] = Pr(s_{t+1}=j | state_t)
     and R = params.n_regimes.
@@ -175,23 +157,7 @@ def transition_probs_to_next_regimes(
     if p12_state is not None:
         p12 = torch.as_tensor(p12_state, device=s_t.device, dtype=dt) + zeros * 0.0
 
-    xi_t = None
-    if xi is not None:
-        xi_t = torch.as_tensor(xi, device=s_t.device, dtype=dt) + zeros * 0.0
-
-    if bool(getattr(params, "state_dependent_transitions", False)) and (xi_t is not None):
-        if params.transition_xi_ref is None:
-            sigma_ref = regime_sigma_tau(params, s_t).to(device=s_t.device, dtype=dt)
-            xi_ref = -0.5 * sigma_ref.pow(2)
-        else:
-            xi_ref = torch.full_like(zeros, float(params.transition_xi_ref))
-        xi_centered = xi_t - xi_ref
-        # Positive p21_xi_slope lowers bad->normal recovery probability when xi is high.
-        p21 = _inv_logit(_logit(p21) - float(params.p21_xi_slope) * xi_centered)
-        # Positive p12_xi_slope raises normal->bad probability when xi is high.
-        p12 = _inv_logit(_logit(p12) + float(params.p12_xi_slope) * xi_centered)
-
-    eps = max(1e-9, min(0.49, float(getattr(params, "transition_prob_floor", 1e-8))))
+    eps = 1e-9
     p21 = torch.clamp(p21, min=eps, max=1.0 - eps)
     p12 = torch.clamp(p12, min=eps, max=1.0 - eps)
 
@@ -291,11 +257,11 @@ def shock_laws_of_motion(
     logg = st.loggtilde.view(view_shape)
     xi = st.xi.view(view_shape)
 
-    sigma_xi_next = regime_sigma_tau(params, s_next.long()).to(device=epsA.device, dtype=epsA.dtype)
-    drift_xi_next = (1.0 - float(params.rho_tau)) * (-(sigma_xi_next ** 2) / 2.0)
+    sigma_xi = float(params.sigma_tau)
+    drift_xi_next = (1.0 - float(params.rho_tau)) * (-(sigma_xi ** 2) / 2.0)
 
     logA_next = driftA + params.rho_A * logA + params.sigma_A * epsA
     logg_next = driftg + params.rho_g * logg + params.sigma_g * epsg
-    xi_next = drift_xi_next + params.rho_tau * xi + sigma_xi_next * epstau
+    xi_next = drift_xi_next + params.rho_tau * xi + sigma_xi * epstau
 
     return logA_next, logg_next, xi_next, s_next.long()

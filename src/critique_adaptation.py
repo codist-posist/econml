@@ -20,7 +20,6 @@ class CritiqueCurriculumConfig:
     ramp_episodes: int = 2_000
     shock_times: Tuple[int, ...] = (0, 4, 8, 12)
     shock_size: float = 1.25
-    bad_sigma_mult: float = 2.0
     apply_to_policies: Tuple[str, ...] = (
         "taylor",
         "taylor_para",
@@ -129,13 +128,6 @@ class CritiqueAugmentedTrainer(Trainer):
         if bool(self.curriculum.enabled) and (self.policy in self.curriculum.apply_to_policies):
             _, t_in_ep, strength = self._curriculum_position()
             if strength > 0.0:
-                bad_mult = 1.0 + strength * (float(self.curriculum.bad_sigma_mult) - 1.0)
-                mult = torch.where(
-                    st.s.to(torch.long) >= int(self.curriculum.bad_state),
-                    torch.full((B,), float(bad_mult), device=dev, dtype=dt),
-                    torch.ones((B,), device=dev, dtype=dt),
-                )
-                epst = epst * mult
                 if int(t_in_ep) in self._shock_times:
                     epst = epst + float(self.curriculum.shock_size) * float(strength)
 

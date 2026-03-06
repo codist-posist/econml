@@ -21,7 +21,6 @@ from .model_common import (
     shock_laws_of_motion,
     identities,
     transition_probs_to_next_regimes,
-    regime_sigma_tau,
 )
 from .transforms import decode_outputs
 from .policy_rules import i_taylor, i_taylor_zlb, i_modified_taylor, i_modified_taylor_zlb
@@ -190,7 +189,6 @@ def _transition_probs_to_next(params: ModelParams, st) -> torch.Tensor:
     Supports:
       - baseline escalation Markov matrix params.P
       - optional taylor_para path-level p21 state
-      - optional state-dependent p12_t / p21_t via params.*_xi_slope
     """
     return transition_probs_to_next_regimes(
         params,
@@ -459,13 +457,8 @@ class Trainer:
         logA = sd_logA * torch.randn(B, device=dev, dtype=dt)
         logg = sd_logg * torch.randn(B, device=dev, dtype=dt)
         s = self._sample_regimes_for_init(B, device=dev, dtype=dt)
-        sig_xi_reg = regime_sigma_tau(self.params, s).to(device=dev, dtype=dt)
-        sd_xi_reg = torch.where(
-            torch.abs(torch.tensor(rho_xi, device=dev, dtype=dt)) < 1.0,
-            (sig_xi_reg ** 2) / max(1e-12, (1.0 - rho_xi ** 2)),
-            sig_xi_reg ** 2,
-        )
-        xi = sd_xi_reg * torch.randn(B, device=dev, dtype=dt)
+        sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
+        xi = sd_xi * torch.randn(B, device=dev, dtype=dt)
         if self.policy == "taylor_para":
             Delta_prev = torch.ones(B, device=dev, dtype=dt) + 2e-3 * torch.randn(B, device=dev, dtype=dt)
             i_nom_ss = (1.0 + float(self.params.pi_bar)) / float(self.params.beta) - 1.0
@@ -531,7 +524,7 @@ class Trainer:
         rho_xi, sig_xi = float(self.params.rho_tau), float(self.params.sigma_tau)
         sd_logA = (sig_A ** 2) / max(1e-12, (1.0 - rho_A ** 2)) if abs(rho_A) < 1.0 else sig_A ** 2
         sd_logg = (sig_g ** 2) / max(1e-12, (1.0 - rho_g ** 2)) if abs(rho_g) < 1.0 else sig_g ** 2
-        _ = sig_xi  # retained for backward-compat comments below
+        sd_xi = (sig_xi ** 2) / max(1e-12, (1.0 - rho_xi ** 2)) if abs(rho_xi) < 1.0 else sig_xi ** 2
 
         def _reset_exogenous_if_needed() -> None:
             if int(episode_idx) >= 2:
@@ -540,13 +533,7 @@ class Trainer:
             x_new[:, 2] = sd_logg * torch.randn(B, device=dev, dtype=dt)
             s = self._sample_regimes_for_init(B, device=dev, dtype=dt)
             x_new[:, 4] = s.to(dt)
-            sig_xi_reg = regime_sigma_tau(self.params, s).to(device=dev, dtype=dt)
-            sd_xi_reg = torch.where(
-                torch.abs(torch.tensor(rho_xi, device=dev, dtype=dt)) < 1.0,
-                (sig_xi_reg ** 2) / max(1e-12, (1.0 - rho_xi ** 2)),
-                sig_xi_reg ** 2,
-            )
-            x_new[:, 3] = sd_xi_reg * torch.randn(B, device=dev, dtype=dt)
+            x_new[:, 3] = sd_xi * torch.randn(B, device=dev, dtype=dt)
 
         if self.policy == "taylor_para":
             # Always refresh p21_x in author hooks.

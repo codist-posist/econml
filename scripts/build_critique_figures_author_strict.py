@@ -240,7 +240,7 @@ def _simulate_custom(
     epsg_path: np.ndarray | None = None,
     epst_path: np.ndarray | None = None,
     noise_scale: float = 0.0,
-    bad_sigma_mult: float = 1.0,
+    noise_mult: float = 1.0,
     seed: int = 123,
     rbar_by_regime: torch.Tensor | None = None,
     gh_n: int = 3,
@@ -332,14 +332,8 @@ def _simulate_custom(
         epst = torch.full((B,), float(epst_path[t]), device=params.device, dtype=params.dtype)
 
         if float(noise_scale) != 0.0:
-            stress_threshold = int(_bad_regime(params))
             z = torch.randn((B,), device=params.device, dtype=params.dtype)
-            mult = torch.where(
-                st.s.to(torch.long) >= stress_threshold,
-                torch.full((B,), float(bad_sigma_mult), device=params.device, dtype=params.dtype),
-                torch.ones((B,), device=params.device, dtype=params.dtype),
-            )
-            epst = epst + float(noise_scale) * z * mult
+            epst = epst + float(noise_scale) * float(noise_mult) * z
 
         if regime_path is not None:
             s_next = torch.full((B,), int(regime_path[t + 1]), device=params.device, dtype=torch.long)
@@ -505,7 +499,7 @@ def _build_bad_uncertainty(
     T: int,
     B: int,
     burn_in: int,
-    bad_sigma_mult: float,
+    noise_mult: float,
     noise_scale: float,
 ) -> None:
     rows: List[Dict[str, str | float]] = []
@@ -520,7 +514,7 @@ def _build_bad_uncertainty(
             regime_path=None,
             epst_path=np.zeros(T, dtype=np.float64),
             noise_scale=float(noise_scale),
-            bad_sigma_mult=1.0,
+            noise_mult=1.0,
             seed=123,
             rbar_by_regime=b.rbar_by_regime,
         )
@@ -533,7 +527,7 @@ def _build_bad_uncertainty(
             regime_path=None,
             epst_path=np.zeros(T, dtype=np.float64),
             noise_scale=float(noise_scale),
-            bad_sigma_mult=float(bad_sigma_mult),
+            noise_mult=float(noise_mult),
             seed=123,
             rbar_by_regime=b.rbar_by_regime,
         )
@@ -565,7 +559,7 @@ def _build_bad_uncertainty(
             rows.append(
                 {
                     "policy": policy,
-                    "scenario": f"bad_uncertainty_x{bad_sigma_mult:g}",
+                    "scenario": f"high_uncertainty_x{noise_mult:g}",
                     "regime": reg,
                     "pi_mean_ann_pct": m_hi_pi[reg]["mean"],
                     "pi_std_ann_pct": m_hi_pi[reg]["std"],
@@ -583,12 +577,12 @@ def _build_bad_uncertainty(
         pi_b_hi = _ann(sim_hi["pi"])[burn_in:, :][m_stress_hi]
         fig, ax = plt.subplots(1, 2, figsize=(12, 4))
         ax[0].hist(pi_b_base, bins=60, alpha=0.55, label="baseline")
-        ax[0].hist(pi_b_hi, bins=60, alpha=0.55, label=f"bad uncertainty x{bad_sigma_mult:g}")
+        ax[0].hist(pi_b_hi, bins=60, alpha=0.55, label=f"high uncertainty x{noise_mult:g}")
         ax[0].set_title("(a) Stress-regime inflation distribution")
         ax[0].set_xlabel("annualized inflation, %")
         ax[0].legend()
         ax[1].bar(
-            ["baseline", f"x{bad_sigma_mult:g}"],
+            ["baseline", f"x{noise_mult:g}"],
             [
                 float(np.nanstd(pi_b_base)) if pi_b_base.size else float("nan"),
                 float(np.nanstd(pi_b_hi)) if pi_b_hi.size else float("nan"),
@@ -626,7 +620,7 @@ def _build_combined(
     B: int,
     shock_times: Sequence[int],
     shock_size: float,
-    bad_sigma_mult: float,
+    noise_mult: float,
     noise_scale: float,
 ) -> None:
     base_epst = np.zeros(T, dtype=np.float64)
@@ -652,7 +646,7 @@ def _build_combined(
                 regime_path=regime_path,
                 epst_path=base_epst,
                 noise_scale=float(noise_scale),
-                bad_sigma_mult=1.0,
+                noise_mult=1.0,
                 seed=123,
                 rbar_by_regime=b.rbar_by_regime,
             )
@@ -665,7 +659,7 @@ def _build_combined(
                 regime_path=regime_path,
                 epst_path=comb_epst,
                 noise_scale=float(noise_scale),
-                bad_sigma_mult=float(bad_sigma_mult),
+                noise_mult=float(noise_mult),
                 seed=123,
                 rbar_by_regime=b.rbar_by_regime,
             )
@@ -799,7 +793,7 @@ def build_critique_figures(
             T=int(bad_uncert_T),
             B=int(bad_uncert_B),
             burn_in=int(bad_uncert_burn_in),
-            bad_sigma_mult=float(bad_uncert_mult),
+            noise_mult=float(bad_uncert_mult),
             noise_scale=float(bad_uncert_noise),
         )
     if "combined" in wanted:
@@ -810,7 +804,7 @@ def build_critique_figures(
             B=int(combined_B),
             shock_times=[int(v) for v in combined_times],
             shock_size=float(combined_size),
-            bad_sigma_mult=float(combined_mult),
+            noise_mult=float(combined_mult),
             noise_scale=float(combined_noise),
         )
 

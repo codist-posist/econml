@@ -2,7 +2,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal, Tuple
 import os
-import math
 import torch
 
 PolicyName = Literal[
@@ -68,22 +67,6 @@ class ModelParams:
     # Author taylor_para uses per-path p21 sampled in [p21_l, p21_u].
     p21_l: float = 1.0 / 60.0
     p21_u: float = 1.0
-    # Optional state-dependent transitions for critique experiments.
-    # If enabled, p12_t and p21_t are obtained by a logit shift driven by xi_t:
-    #   logit(p21_t) = logit(p21_base) - p21_xi_slope * (xi_t - xi_ref)
-    #   logit(p12_t) = logit(p12_base) + p12_xi_slope * (xi_t - xi_ref)
-    # where xi_ref is transition_xi_ref or the stationary mean -sigma_tau^2/2.
-    state_dependent_transitions: bool = False
-    p21_xi_slope: float = 0.0
-    p12_xi_slope: float = 0.0
-    transition_xi_ref: float | None = None
-    transition_prob_floor: float = 1e-8
-
-    # Regime-dependent uncertainty extension.
-    # sigma_tau(s=1) = sigma_tau * sigma_tau_bad_mult
-    # sigma_tau(s=2) = sigma_tau * sigma_tau_severe_mult
-    sigma_tau_bad_mult: float = 1.0
-    sigma_tau_severe_mult: float = 1.0
 
     # Taylor-rule objects (paper uses pi_bar = 0)
     pi_bar: float = 0.0
@@ -154,17 +137,6 @@ class ModelParams:
         return (float(self.eta0), eta1, eta2)
 
     @property
-    def sigma_tau_by_regime(self) -> Tuple[float, float, float]:
-        sig0 = max(0.0, float(self.sigma_tau))
-        sig1 = sig0 * max(0.0, float(self.sigma_tau_bad_mult))
-        sig2 = sig0 * max(0.0, float(self.sigma_tau_severe_mult))
-        return (sig0, sig1, sig2)
-
-    @property
-    def sigma_tau_by_regime_tensor(self) -> torch.Tensor:
-        return torch.tensor(self.sigma_tau_by_regime, device=self.device, dtype=self.dtype)
-
-    @property
     def P(self) -> torch.Tensor:
         # IMPORTANT: P[s_current, s_next] (row-stochastic, as in paper Appendix A.1)
         p12 = float(self.p12)
@@ -191,11 +163,6 @@ class ModelParams:
         if not torch.allclose(rows, torch.ones_like(rows), atol=1e-7, rtol=0.0):
             raise ValueError(f"Transition matrix rows must sum to 1, got {rows.tolist()}")
         return P
-
-    def transition_xi_reference(self) -> float:
-        if self.transition_xi_ref is not None and math.isfinite(float(self.transition_xi_ref)):
-            return float(self.transition_xi_ref)
-        return float(-(float(self.sigma_tau) ** 2) / 2.0)
 
 
 @dataclass(frozen=True)
