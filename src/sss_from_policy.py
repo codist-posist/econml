@@ -215,7 +215,8 @@ def switching_policy_sss_by_regime_from_policy(
             wprev = _backward_weights(P_eff, pi_stat, curr_s)
             Delta_prev = _weighted_scalar(wprev, Delta_by_regime)
             s_val = float(curr_s)
-            xi_ss = float(xi_by_reg[int(curr_s)] if int(curr_s) < len(xi_by_reg) else xi_by_reg[-1])
+            # xi has one common stationary mean across regimes in the current model.
+            xi_ss = float(xi0)
 
             if policy == "commitment_zlb":
                 vartheta_prev = _weighted_scalar(wprev, {j: out_by_regime[j]["vartheta"].view(()) for j in range(R)})
