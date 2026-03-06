@@ -14,7 +14,7 @@ from typing import Dict, Tuple
 
 
 # Key: (policy, regime)
-# regime: "normal" | "bad"
+# Legacy paper Table-2 targets are two-regime ("normal" | "bad").
 TABLE2_TARGETS: Dict[Tuple[str, str], Dict[str, float]] = {
     ("flex", "normal"): {
         "pi_sss_pct": 0.00, "pi_mean_pct": 0.00, "pi_std_pct": 0.00, "pi_skew": 0.00,
