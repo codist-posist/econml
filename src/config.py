@@ -529,7 +529,9 @@ class TrainConfig:
             auto_patience = 18_000
             auto_min_rel_delta = 7e-5
             step_cap = 320_000
-            quality_gate = 8.5e-3
+            # Keep pure relative plateau-stop semantics for discretion/commitment.
+            # Stop is controlled by (metric, min_rel_delta, patience), without absolute gate.
+            quality_gate = None
         elif taylor_family:
             auto_warmup = 8_000
             auto_patience = 22_000
