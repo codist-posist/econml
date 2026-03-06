@@ -509,22 +509,39 @@ class TrainConfig:
         - adds a quality gate so auto-stop only triggers after reaching
           a reasonable validation residual level.
         """
-        long_patience_family = policy in (
+        # Discretion/commitment are typically slower and have noisier validation RMS in 3-regime runs.
+        # Use a more reachable quality gate + shorter plateau window as a practical quality/time compromise.
+        disc_comm_family = policy in (
+            "discretion",
+            "commitment",
+            "discretion_zlb",
+            "commitment_zlb",
+        )
+        taylor_family = policy in (
             "taylor",
             "mod_taylor",
             "taylor_zlb",
             "mod_taylor_zlb",
-            "discretion",
-            "commitment",
+            "taylor_para",
         )
-        auto_warmup = 8_000 if long_patience_family else 6_000
-        auto_patience = 22_000 if long_patience_family else 16_000
-        # Slightly stricter relative-improvement floor to detect plateaus earlier.
-        auto_min_rel_delta = 5e-5
-        # Safety cap keeps runaway plateaus bounded.
-        step_cap = 420_000 if long_patience_family else 300_000
-        # Guard against quality loss from early stopping.
-        quality_gate = 5e-3
+        if disc_comm_family:
+            auto_warmup = 8_000
+            auto_patience = 18_000
+            auto_min_rel_delta = 7e-5
+            step_cap = 320_000
+            quality_gate = 8.5e-3
+        elif taylor_family:
+            auto_warmup = 8_000
+            auto_patience = 22_000
+            auto_min_rel_delta = 5e-5
+            step_cap = 420_000
+            quality_gate = 5e-3
+        else:
+            auto_warmup = 6_000
+            auto_patience = 16_000
+            auto_min_rel_delta = 5e-5
+            step_cap = 300_000
+            quality_gate = 5e-3
 
         base = TrainConfig.author_like(
             policy=policy,
