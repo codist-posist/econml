@@ -295,7 +295,7 @@ class TrainConfig:
     auto_stop_metric: AutoStopMetric = "loss"
     auto_stop_warmup_steps: int = 0
     auto_stop_patience_steps: int = 0
-    auto_stop_min_delta: float = 0.0
+    auto_stop_min_delta: float = 1e-6
     auto_stop_min_rel_delta: float = 0.0
     # Optional quality guard for auto-stop metrics where lower is better.
     # If set, plateau-based auto-stop is allowed only when best(metric) <= this value.
@@ -489,7 +489,7 @@ class TrainConfig:
             auto_stop_metric="rms_resid_val",
             auto_stop_warmup_steps=auto_warmup,
             auto_stop_patience_steps=auto_patience,
-            auto_stop_min_delta=0.0,
+            auto_stop_min_delta=1e-6,
             auto_stop_min_rel_delta=auto_min_rel_delta,
             log_every=100,
             val_size=2048,
@@ -549,7 +549,7 @@ class TrainConfig:
             auto_stop_metric="rms_resid_val",
             auto_stop_warmup_steps=auto_warmup,
             auto_stop_patience_steps=auto_patience,
-            auto_stop_min_delta=0.0,
+            auto_stop_min_delta=1e-6,
             auto_stop_min_rel_delta=auto_min_rel_delta,
             auto_stop_require_metric_below=quality_gate,
             val_every=1000,
