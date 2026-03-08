@@ -91,21 +91,24 @@ def main() -> int:
         print("Saved:", out)
 
     if bool(args.include_taylor_para_robustness):
-        rob = build_taylor_para_robustness_table(
-            args.artifacts_root,
-            device=args.device,
-            dtype=torch.float64,
-            use_selected=bool(args.use_selected),
-            strict_selected=bool(args.strict_selected),
-            weights_source=args.weights_source,
-            sss_source=args.sss_source,
-            strict_author_table2=bool(args.strict_author_table2),
-        )
-        out = os.path.join(args.artifacts_root, f"table_taylor_para_compare_{args.sss_source}.csv")
-        rob.to_csv(out, index=False)
-        print("\nTAYLOR_PARA_ROBUSTNESS")
-        print(rob.to_string(index=False))
-        print("Saved:", out)
+        try:
+            rob = build_taylor_para_robustness_table(
+                args.artifacts_root,
+                device=args.device,
+                dtype=torch.float64,
+                use_selected=bool(args.use_selected),
+                strict_selected=bool(args.strict_selected),
+                weights_source=args.weights_source,
+                sss_source=args.sss_source,
+                strict_author_table2=bool(args.strict_author_table2),
+            )
+            out = os.path.join(args.artifacts_root, f"table_taylor_para_compare_{args.sss_source}.csv")
+            rob.to_csv(out, index=False)
+            print("\nTAYLOR_PARA_ROBUSTNESS")
+            print(rob.to_string(index=False))
+            print("Saved:", out)
+        except FileNotFoundError as e:
+            print(f"[build_paper_tables] WARNING: skipping taylor_para robustness table: {e}")
 
     return 0
 

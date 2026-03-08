@@ -53,6 +53,10 @@ def _savefig(fig_dir: str, name: str) -> str:
     return p
 
 
+def _warn(msg: str) -> None:
+    print(f"[warn] {msg}")
+
+
 def _slug(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]+", "_", str(s)).strip("_") or "variant"
 
@@ -82,6 +86,27 @@ def _maybe_rbar(params: ModelParams) -> torch.Tensor:
         device=params.device,
         dtype=params.dtype,
     )
+
+
+def _cons_flex_author(params: ModelParams, A: np.ndarray) -> np.ndarray:
+    expo = (1.0 + float(params.omega)) / (float(params.omega) + float(params.gamma))
+    return np.clip(np.asarray(A, dtype=np.float64).reshape(-1), 1e-12, None) ** expo
+
+
+def _rebase_to_start(x: np.ndarray) -> np.ndarray:
+    arr = np.asarray(x, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return arr
+    return arr - float(arr[0])
+
+
+def _rebase_panel_to_start(x: np.ndarray) -> np.ndarray:
+    arr = np.asarray(x, dtype=np.float64)
+    if arr.ndim == 1:
+        return _rebase_to_start(arr)
+    if arr.shape[0] == 0:
+        return arr
+    return arr - arr[0:1, :]
 
 
 @dataclass
@@ -302,10 +327,22 @@ def _simulate_custom(
     return store
 
 
-def _add_output_gap(sim: Dict[str, np.ndarray], params: ModelParams) -> Dict[str, np.ndarray]:
-    eff = solve_efficient_sss(params)
+def _add_output_gap(
+    sim: Dict[str, np.ndarray],
+    params: ModelParams,
+    *,
+    cons_mode: str,
+) -> Dict[str, np.ndarray]:
+    mode = _resolve_cons_mode(cons_mode)
     shp = np.asarray(sim["c"]).shape
-    x = output_gap_from_consumption(sim, eff, params=params, time_varying=True)
+    if mode == "author":
+        c = np.asarray(sim["c"], dtype=np.float64).reshape(-1)
+        A = np.asarray(sim["A"], dtype=np.float64).reshape(-1)
+        cons_flex = _cons_flex_author(params, A)
+        x = np.log(np.clip(c, 1e-12, None)) - np.log(np.clip(cons_flex, 1e-12, None))
+    else:
+        eff = solve_efficient_sss(params)
+        x = output_gap_from_consumption(sim, eff, params=params, time_varying=True)
     sim["x"] = np.asarray(x, dtype=np.float64).reshape(shp)
     return sim
 
@@ -353,6 +390,7 @@ def _build_shock_train(
     *,
     fig_dir: str,
     baseline_label: str,
+    cons_mode: str,
     T: int,
     shock_times: Sequence[int],
     shock_size: float,
@@ -382,16 +420,16 @@ def _build_shock_train(
             noise_scale=0.0,
             seed=123,
         )
-        sim_base = _add_output_gap(sim_base, v.params)
-        sim_train = _add_output_gap(sim_train, v.params)
+        sim_base = _add_output_gap(sim_base, v.params, cons_mode=cons_mode)
+        sim_train = _add_output_gap(sim_train, v.params, cons_mode=cons_mode)
 
         t = np.arange(T + 1)
         pi_b = _ann(sim_base["pi"][:, 0])
         pi_t = _ann(sim_train["pi"][:, 0])
         i_b = _ann(sim_base["i"][:, 0])
         i_t = _ann(sim_train["i"][:, 0])
-        x_b = 100.0 * sim_base["x"][:, 0]
-        x_t = 100.0 * sim_train["x"][:, 0]
+        x_b = 100.0 * _rebase_to_start(sim_base["x"][:, 0])
+        x_t = 100.0 * _rebase_to_start(sim_train["x"][:, 0])
 
         fig, ax = plt.subplots(2, 2, figsize=(12, 8))
         ax[0, 0].plot(t, pi_b, label="baseline")
@@ -408,7 +446,7 @@ def _build_shock_train(
 
         ax[1, 0].plot(t, x_b, label="baseline")
         ax[1, 0].plot(t, x_t, "--", label="shock train")
-        ax[1, 0].set_title("(c) Output gap")
+        ax[1, 0].set_title("(c) Output gap deviation")
         ax[1, 0].set_ylabel("%")
         ax[1, 0].set_xlabel("quarter")
         ax[1, 0].legend()
@@ -462,6 +500,7 @@ def _build_bad_uncertainty(
     *,
     fig_dir: str,
     baseline_label: str,
+    cons_mode: str,
     T: int,
     B: int,
     burn_in: int,
@@ -489,8 +528,8 @@ def _build_bad_uncertainty(
             bad_sigma_mult=float(bad_sigma_mult),
             seed=123,
         )
-        sim_base = _add_output_gap(sim_base, v.params)
-        sim_hi = _add_output_gap(sim_hi, v.params)
+        sim_base = _add_output_gap(sim_base, v.params, cons_mode=cons_mode)
+        sim_hi = _add_output_gap(sim_hi, v.params, cons_mode=cons_mode)
 
         m_base_pi = _regime_moments(
             {"pi": _ann(sim_base["pi"]), "s": sim_base["s"]},
@@ -582,6 +621,7 @@ def _build_combined(
     *,
     fig_dir: str,
     baseline_label: str,
+    cons_mode: str,
     T: int,
     B: int,
     shock_times: Sequence[int],
@@ -617,14 +657,16 @@ def _build_combined(
             bad_sigma_mult=float(bad_sigma_mult),
             seed=123,
         )
-        sim_base = _add_output_gap(sim_base, v.params)
-        sim_comb = _add_output_gap(sim_comb, v.params)
+        sim_base = _add_output_gap(sim_base, v.params, cons_mode=cons_mode)
+        sim_comb = _add_output_gap(sim_comb, v.params, cons_mode=cons_mode)
 
         t = np.arange(T + 1)
         pi_b_q10, pi_b_q50, pi_b_q90 = _qband(_ann(sim_base["pi"]))
         pi_c_q10, pi_c_q50, pi_c_q90 = _qband(_ann(sim_comb["pi"]))
-        x_b_q10, x_b_q50, x_b_q90 = _qband(100.0 * sim_base["x"])
-        x_c_q10, x_c_q50, x_c_q90 = _qband(100.0 * sim_comb["x"])
+        x_base_dev = 100.0 * _rebase_panel_to_start(sim_base["x"])
+        x_comb_dev = 100.0 * _rebase_panel_to_start(sim_comb["x"])
+        x_b_q10, x_b_q50, x_b_q90 = _qband(x_base_dev)
+        x_c_q10, x_c_q50, x_c_q90 = _qband(x_comb_dev)
 
         fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
         ax[0].plot(t, pi_b_q50, color="tab:blue", label="baseline median")
@@ -638,7 +680,7 @@ def _build_combined(
         ax[1].fill_between(t, x_b_q10, x_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
         ax[1].plot(t, x_c_q50, color="tab:red", label="combined median")
         ax[1].fill_between(t, x_c_q10, x_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
-        ax[1].set_title("(b) Output gap (%)")
+        ax[1].set_title("(b) Output gap deviation (%)")
         ax[1].set_xlabel("quarter")
         ax[1].legend(ncol=2)
 
@@ -739,22 +781,25 @@ def build_compare(
     )
 
     if bool(include_robust):
-        variants.append(
-            _load_variant_bundle(
-                artifacts_root=artifacts_root,
-                label=robust_label,
-                run_dir_override=robust_run_dir,
-                use_selected=use_selected,
-                device=device,
-                dtype=dtype,
-                ensure_postprocess=ensure_postprocess,
-                ensure_ir=ensure_ir,
-                force_rebuild_postprocess=force_rebuild_postprocess,
-                force_rebuild_ir=force_rebuild_ir,
-                cons_mode=mode,
-                robust_rule=robust_rule,
+        try:
+            variants.append(
+                _load_variant_bundle(
+                    artifacts_root=artifacts_root,
+                    label=robust_label,
+                    run_dir_override=robust_run_dir,
+                    use_selected=use_selected,
+                    device=device,
+                    dtype=dtype,
+                    ensure_postprocess=ensure_postprocess,
+                    ensure_ir=ensure_ir,
+                    force_rebuild_postprocess=force_rebuild_postprocess,
+                    force_rebuild_ir=force_rebuild_ir,
+                    cons_mode=mode,
+                    robust_rule=robust_rule,
+                )
             )
-        )
+        except Exception as e:
+            _warn(f"Skipping robust variant {robust_label!r}: {e}")
 
     wanted = {str(s).strip().lower() for s in scenarios}
     valid = {"shock_train", "bad_uncertainty", "combined", "all"}
@@ -769,6 +814,7 @@ def build_compare(
             variants,
             fig_dir=fig_dir,
             baseline_label=baseline_label,
+            cons_mode=mode,
             T=int(shock_train_T),
             shock_times=[int(v) for v in shock_train_times],
             shock_size=float(shock_train_size),
@@ -778,6 +824,7 @@ def build_compare(
             variants,
             fig_dir=fig_dir,
             baseline_label=baseline_label,
+            cons_mode=mode,
             T=int(bad_uncert_T),
             B=int(bad_uncert_B),
             burn_in=int(bad_uncert_burn_in),
@@ -789,6 +836,7 @@ def build_compare(
             variants,
             fig_dir=fig_dir,
             baseline_label=baseline_label,
+            cons_mode=mode,
             T=int(combined_T),
             B=int(combined_B),
             shock_times=[int(v) for v in combined_times],

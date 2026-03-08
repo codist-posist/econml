@@ -281,10 +281,40 @@ def _ergodic_series(defs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     }
 
 
+def _warn(msg: str) -> None:
+    print(f"[warn] {msg}")
+
+
+def _rebase_to_preshock(x: np.ndarray, *, pre: int) -> np.ndarray:
+    arr = np.asarray(x, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return arr
+    idx0 = min(max(int(pre) - 1, 0), int(arr.size) - 1)
+    return arr - float(arr[idx0])
+
+
+def _save_missing_figure(fig_dir: str, name: str, title: str, missing: list[str]) -> None:
+    fig, ax = plt.subplots(1, 1, figsize=(11, 4))
+    ax.axis("off")
+    miss = "\n".join(f"- {m}" for m in missing) if missing else "- unavailable inputs"
+    ax.text(
+        0.5,
+        0.55,
+        f"{title}\n\nSkipped because inputs are missing:\n{miss}",
+        ha="center",
+        va="center",
+        fontsize=11,
+        transform=ax.transAxes,
+    )
+    plt.tight_layout()
+    _savefig(fig_dir, name)
+    plt.close(fig)
+
+
 def _transition_pack(ir: Dict[str, np.ndarray], *, pre: int, n_post: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     h = int(pre) + int(n_post)
     pi = _vec(ir, "pi_tot_y")[:h]
-    x = _vec(ir, "out_gap_y")[:h]
+    x = _rebase_to_preshock(_vec(ir, "out_gap_y")[:h], pre=pre)
     r = _vec(ir, "r_real_y")[:h]
     D = _vec(ir, "disp_y")[:h]
     return pi, x, r, D
@@ -293,7 +323,7 @@ def _transition_pack(ir: Dict[str, np.ndarray], *, pre: int, n_post: int) -> Tup
 def _irf_pack(ir: Dict[str, np.ndarray], *, pre: int, ir_h: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     h = min(int(pre) + int(ir_h), _vec(ir, "pi_tot_y").shape[0])
     pi = _vec(ir, "pi_tot_y")[:h]
-    x = _vec(ir, "out_gap_y")[:h]
+    x = _rebase_to_preshock(_vec(ir, "out_gap_y")[:h], pre=pre)
     r = _vec(ir, "r_real_y")[:h]
     P = np.cumprod(np.clip(1.0 + pi, 1e-12, None))
     idx0 = max(0, int(pre) - 1)
@@ -338,10 +368,24 @@ def build_figures(
     run_m, p_m = _resolve_run_dir(artifacts_root, "mod_taylor", use_selected=use_selected, device=device, dtype=dtype)
     run_d, p_d = _resolve_run_dir(artifacts_root, "discretion", use_selected=use_selected, device=device, dtype=dtype)
     run_c, p_c = _resolve_run_dir(artifacts_root, "commitment", use_selected=use_selected, device=device, dtype=dtype)
-    run_tz, p_tz = _resolve_run_dir(artifacts_root, "taylor_zlb", use_selected=use_selected, device=device, dtype=dtype)
-    run_mz, p_mz = _resolve_run_dir(artifacts_root, "mod_taylor_zlb", use_selected=use_selected, device=device, dtype=dtype)
-    run_dz, p_dz = _resolve_run_dir(artifacts_root, "discretion_zlb", use_selected=use_selected, device=device, dtype=dtype)
-    run_cz, p_cz = _resolve_run_dir(artifacts_root, "commitment_zlb", use_selected=use_selected, device=device, dtype=dtype)
+    run_tz = run_mz = run_dz = run_cz = None
+    p_tz = p_mz = p_dz = p_cz = None
+    try:
+        run_tz, p_tz = _resolve_run_dir(artifacts_root, "taylor_zlb", use_selected=use_selected, device=device, dtype=dtype)
+    except Exception as e:
+        _warn(f"ZLB policy unavailable (taylor_zlb): {e}")
+    try:
+        run_mz, p_mz = _resolve_run_dir(artifacts_root, "mod_taylor_zlb", use_selected=use_selected, device=device, dtype=dtype)
+    except Exception as e:
+        _warn(f"ZLB policy unavailable (mod_taylor_zlb): {e}")
+    try:
+        run_dz, p_dz = _resolve_run_dir(artifacts_root, "discretion_zlb", use_selected=use_selected, device=device, dtype=dtype)
+    except Exception as e:
+        _warn(f"ZLB policy unavailable (discretion_zlb): {e}")
+    try:
+        run_cz, p_cz = _resolve_run_dir(artifacts_root, "commitment_zlb", use_selected=use_selected, device=device, dtype=dtype)
+    except Exception as e:
+        _warn(f"ZLB policy unavailable (commitment_zlb): {e}")
 
     pp_t = _ensure_author_postprocess(
         artifacts_root=artifacts_root, policy="taylor", run_dir=run_t, device=device, dtype=dtype,
@@ -359,22 +403,39 @@ def build_figures(
         artifacts_root=artifacts_root, policy="commitment", run_dir=run_c, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
     )
-    pp_tz = _ensure_author_postprocess(
-        artifacts_root=artifacts_root, policy="taylor_zlb", run_dir=run_tz, device=device, dtype=dtype,
-        use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
-    )
-    pp_mz = _ensure_author_postprocess(
-        artifacts_root=artifacts_root, policy="mod_taylor_zlb", run_dir=run_mz, device=device, dtype=dtype,
-        use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
-    )
-    pp_dz = _ensure_author_postprocess(
-        artifacts_root=artifacts_root, policy="discretion_zlb", run_dir=run_dz, device=device, dtype=dtype,
-        use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
-    )
-    pp_cz = _ensure_author_postprocess(
-        artifacts_root=artifacts_root, policy="commitment_zlb", run_dir=run_cz, device=device, dtype=dtype,
-        use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
-    )
+    pp_tz = pp_mz = pp_dz = pp_cz = None
+    if run_tz is not None:
+        try:
+            pp_tz = _ensure_author_postprocess(
+                artifacts_root=artifacts_root, policy="taylor_zlb", run_dir=run_tz, device=device, dtype=dtype,
+                use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
+            )
+        except Exception as e:
+            _warn(f"Skipping taylor_zlb postprocess: {e}")
+    if run_mz is not None:
+        try:
+            pp_mz = _ensure_author_postprocess(
+                artifacts_root=artifacts_root, policy="mod_taylor_zlb", run_dir=run_mz, device=device, dtype=dtype,
+                use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
+            )
+        except Exception as e:
+            _warn(f"Skipping mod_taylor_zlb postprocess: {e}")
+    if run_dz is not None:
+        try:
+            pp_dz = _ensure_author_postprocess(
+                artifacts_root=artifacts_root, policy="discretion_zlb", run_dir=run_dz, device=device, dtype=dtype,
+                use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
+            )
+        except Exception as e:
+            _warn(f"Skipping discretion_zlb postprocess: {e}")
+    if run_cz is not None:
+        try:
+            pp_cz = _ensure_author_postprocess(
+                artifacts_root=artifacts_root, policy="commitment_zlb", run_dir=run_cz, device=device, dtype=dtype,
+                use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
+            )
+        except Exception as e:
+            _warn(f"Skipping commitment_zlb postprocess: {e}")
 
     ir_t = _ensure_author_ir(
         artifacts_root=artifacts_root, policy="taylor", run_dir=run_t, device=device, dtype=dtype,
@@ -392,10 +453,15 @@ def build_figures(
         artifacts_root=artifacts_root, policy="commitment", run_dir=run_c, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_ir, out_subdir="IRS", force_rebuild=force_rebuild_ir, cons_mode=mode
     )
-    ir_cz = _ensure_author_ir(
-        artifacts_root=artifacts_root, policy="commitment_zlb", run_dir=run_cz, device=device, dtype=dtype,
-        use_selected=use_selected, enabled=ensure_ir, out_subdir="IRS", force_rebuild=force_rebuild_ir, cons_mode=mode
-    )
+    ir_cz = None
+    if run_cz is not None:
+        try:
+            ir_cz = _ensure_author_ir(
+                artifacts_root=artifacts_root, policy="commitment_zlb", run_dir=run_cz, device=device, dtype=dtype,
+                use_selected=use_selected, enabled=ensure_ir, out_subdir="IRS", force_rebuild=force_rebuild_ir, cons_mode=mode
+            )
+        except Exception as e:
+            _warn(f"Skipping commitment_zlb IR: {e}")
     ir_c_fig9_base = _ensure_author_ir(
         artifacts_root=artifacts_root,
         policy="commitment",
@@ -440,21 +506,21 @@ def build_figures(
     s_m = _ergodic_series(_load_defs_npz(os.path.join(pp_m, "simulated_definitions.npz")))
     s_d = _ergodic_series(_load_defs_npz(os.path.join(pp_d, "simulated_definitions.npz")))
     s_c = _ergodic_series(_load_defs_npz(os.path.join(pp_c, "simulated_definitions.npz")))
-    s_tz = _ergodic_series(_load_defs_npz(os.path.join(pp_tz, "simulated_definitions.npz")))
-    s_mz = _ergodic_series(_load_defs_npz(os.path.join(pp_mz, "simulated_definitions.npz")))
-    s_dz = _ergodic_series(_load_defs_npz(os.path.join(pp_dz, "simulated_definitions.npz")))
-    s_cz = _ergodic_series(_load_defs_npz(os.path.join(pp_cz, "simulated_definitions.npz")))
+    s_tz = _ergodic_series(_load_defs_npz(os.path.join(pp_tz, "simulated_definitions.npz"))) if pp_tz else None
+    s_mz = _ergodic_series(_load_defs_npz(os.path.join(pp_mz, "simulated_definitions.npz"))) if pp_mz else None
+    s_dz = _ergodic_series(_load_defs_npz(os.path.join(pp_dz, "simulated_definitions.npz"))) if pp_dz else None
+    s_cz = _ergodic_series(_load_defs_npz(os.path.join(pp_cz, "simulated_definitions.npz"))) if pp_cz else None
 
     ir_t_npz = os.path.join(ir_t, "IR_definitions.npz")
     ir_m_npz = os.path.join(ir_m, "IR_definitions.npz")
     ir_d_npz = os.path.join(ir_d, "IR_definitions.npz")
     ir_c_npz = os.path.join(ir_c, "IR_definitions.npz")
-    ir_cz_npz = os.path.join(ir_cz, "IR_definitions.npz")
+    ir_cz_npz = os.path.join(ir_cz, "IR_definitions.npz") if ir_cz else None
     tr_t = _load_ir_label(ir_t_npz, "NT")
     tr_m = _load_ir_label(ir_m_npz, "NT")
     tr_d = _load_ir_label(ir_d_npz, "NT")
     tr_c = _load_ir_label(ir_c_npz, "NT")
-    tr_cz = _load_ir_label(ir_cz_npz, "NT")
+    tr_cz = _load_ir_label(ir_cz_npz, "NT") if ir_cz_npz else None
     ir7_c = _load_ir_label(ir_c_npz, "1sigT_SS")
     ir7_m = _load_ir_label(ir_m_npz, "1sigT_SS")
     ir9_b = _load_ir_label(os.path.join(ir_c_fig9_base, "IR_definitions.npz"), "1sigT_NT")
@@ -504,7 +570,7 @@ def build_figures(
     ax[0, 1].plot(t, 100.0 * x_ta, label="Taylor")
     ax[0, 1].plot(t, 100.0 * x_ma, "--", label="Modified Taylor")
     ax[0, 1].axhline(0, color="k", lw=1)
-    ax[0, 1].set_title("(b) Output gap")
+    ax[0, 1].set_title("(b) Output gap deviation")
     ax[1, 0].plot(t, _ann(r_ta), label="Taylor")
     ax[1, 0].plot(t, _ann(r_ma), "--", label="Modified Taylor")
     ax[1, 0].axhline(0, color="k", lw=1)
@@ -611,7 +677,7 @@ def build_figures(
     ax[0, 1].plot(t7, 100.0 * x_c7, label="Commitment")
     ax[0, 1].plot(t7, 100.0 * x_m7, "--", label="Modified Taylor")
     ax[0, 1].axhline(0, color="k", lw=1)
-    ax[0, 1].set_title("(b) Output gap")
+    ax[0, 1].set_title("(b) Output gap deviation")
     ax[1, 0].plot(t7, _ann(r_c7), label="Commitment")
     ax[1, 0].plot(t7, _ann(r_m7), "--", label="Modified Taylor")
     ax[1, 0].axhline(0, color="k", lw=1)
@@ -638,7 +704,7 @@ def build_figures(
     ax[0, 1].plot(t8, 100.0 * x_c8, label="Commitment")
     ax[0, 1].plot(t8, 100.0 * x_d8, "--", label="Discretion")
     ax[0, 1].axhline(0, color="k", lw=1)
-    ax[0, 1].set_title("(b) Output gap")
+    ax[0, 1].set_title("(b) Output gap deviation")
     ax[1, 0].plot(t8, _ann(r_c8), label="Commitment")
     ax[1, 0].plot(t8, _ann(r_d8), "--", label="Discretion")
     ax[1, 0].axhline(0, color="k", lw=1)
@@ -664,7 +730,7 @@ def build_figures(
     ax[0, 0].axhline(0, color="k", lw=1)
     ax[0, 1].plot(t9, 100.0 * x_b9, label="baseline rho_tau")
     ax[0, 1].plot(t9, 100.0 * x_h9, "--", label="rho_tau=0.99")
-    ax[0, 1].set_title("(b) Output gap")
+    ax[0, 1].set_title("(b) Output gap deviation")
     ax[0, 1].axhline(0, color="k", lw=1)
     ax[1, 0].plot(t9, _ann(r_b9), label="baseline rho_tau")
     ax[1, 0].plot(t9, _ann(r_h9), "--", label="rho_tau=0.99")
@@ -681,61 +747,77 @@ def build_figures(
     _savefig(fig_dir, "figure9")
     plt.close(fig)
 
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].hist(_ann(s_tz["pi"])[s_tz["s"] == 0], bins=60, alpha=0.45, color="tab:blue", label="Taylor ZLB normal")
-    ax[0, 0].hist(_ann(s_tz["pi"])[s_tz["s"] == 1], bins=60, alpha=0.45, color="tab:orange", label="Taylor ZLB bad")
-    ax[0, 0].hist(_ann(s_mz["pi"])[s_mz["s"] == 0], bins=60, alpha=0.45, color="tab:green", label="Mod Taylor ZLB normal")
-    ax[0, 0].hist(_ann(s_mz["pi"])[s_mz["s"] == 1], bins=60, alpha=0.45, color="tab:red", label="Mod Taylor ZLB bad")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].legend(fontsize=8)
-    ax[0, 1].hist(100.0 * s_tz["x"][s_tz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[0, 1].hist(100.0 * s_tz["x"][s_tz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[0, 1].hist(100.0 * s_mz["x"][s_mz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[0, 1].hist(100.0 * s_mz["x"][s_mz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
-    ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].hist(_ann(s_tz["i"])[s_tz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 0].hist(_ann(s_tz["i"])[s_tz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 0].hist(_ann(s_mz["i"])[s_mz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 0].hist(_ann(s_mz["i"])[s_mz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
-    ax[1, 0].set_title("(c) Nominal interest rate")
-    ax[1, 1].hist(_ann(s_tz["r"])[s_tz["s_r"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 1].hist(_ann(s_tz["r"])[s_tz["s_r"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 1].hist(_ann(s_mz["r"])[s_mz["s_r"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 1].hist(_ann(s_mz["r"])[s_mz["s_r"] == 1], bins=60, alpha=0.45, color="tab:red")
-    ax[1, 1].set_title("(d) Real interest rate")
-    for a in ax.ravel():
-        a.set_xlabel("model units")
-    fig.suptitle("Figure 10: Ergodic distribution: Taylor rules with a ZLB", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure10")
-    plt.close(fig)
+    if (s_tz is None) or (s_mz is None):
+        _save_missing_figure(
+            fig_dir,
+            "figure10",
+            "Figure 10: Ergodic distribution: Taylor rules with a ZLB",
+            [x for x, v in {"taylor_zlb": s_tz, "mod_taylor_zlb": s_mz}.items() if v is None],
+        )
+    else:
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].hist(_ann(s_tz["pi"])[s_tz["s"] == 0], bins=60, alpha=0.45, color="tab:blue", label="Taylor ZLB normal")
+        ax[0, 0].hist(_ann(s_tz["pi"])[s_tz["s"] == 1], bins=60, alpha=0.45, color="tab:orange", label="Taylor ZLB bad")
+        ax[0, 0].hist(_ann(s_mz["pi"])[s_mz["s"] == 0], bins=60, alpha=0.45, color="tab:green", label="Mod Taylor ZLB normal")
+        ax[0, 0].hist(_ann(s_mz["pi"])[s_mz["s"] == 1], bins=60, alpha=0.45, color="tab:red", label="Mod Taylor ZLB bad")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].legend(fontsize=8)
+        ax[0, 1].hist(100.0 * s_tz["x"][s_tz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
+        ax[0, 1].hist(100.0 * s_tz["x"][s_tz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
+        ax[0, 1].hist(100.0 * s_mz["x"][s_mz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
+        ax[0, 1].hist(100.0 * s_mz["x"][s_mz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
+        ax[0, 1].set_title("(b) Output gap")
+        ax[1, 0].hist(_ann(s_tz["i"])[s_tz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
+        ax[1, 0].hist(_ann(s_tz["i"])[s_tz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
+        ax[1, 0].hist(_ann(s_mz["i"])[s_mz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
+        ax[1, 0].hist(_ann(s_mz["i"])[s_mz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
+        ax[1, 0].set_title("(c) Nominal interest rate")
+        ax[1, 1].hist(_ann(s_tz["r"])[s_tz["s_r"] == 0], bins=60, alpha=0.45, color="tab:blue")
+        ax[1, 1].hist(_ann(s_tz["r"])[s_tz["s_r"] == 1], bins=60, alpha=0.45, color="tab:orange")
+        ax[1, 1].hist(_ann(s_mz["r"])[s_mz["s_r"] == 0], bins=60, alpha=0.45, color="tab:green")
+        ax[1, 1].hist(_ann(s_mz["r"])[s_mz["s_r"] == 1], bins=60, alpha=0.45, color="tab:red")
+        ax[1, 1].set_title("(d) Real interest rate")
+        for a in ax.ravel():
+            a.set_xlabel("model units")
+        fig.suptitle("Figure 10: Ergodic distribution: Taylor rules with a ZLB", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure10")
+        plt.close(fig)
 
-    pi_c11, x_c11, r_c11, D_c11 = _transition_pack(tr_c, pre=pre, n_post=n_post)
-    pi_z11, x_z11, r_z11, D_z11 = _transition_pack(tr_cz, pre=pre, n_post=n_post)
-    t11 = np.arange(-pre, n_post)
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].plot(t11, _ann(pi_c11), label="Commitment (no ZLB)")
-    ax[0, 0].plot(t11, _ann(pi_z11), "--", label="Commitment ZLB")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].axhline(0, color="k", lw=1)
-    ax[0, 1].plot(t11, 100.0 * x_c11, label="Commitment (no ZLB)")
-    ax[0, 1].plot(t11, 100.0 * x_z11, "--", label="Commitment ZLB")
-    ax[0, 1].set_title("(b) Output gap")
-    ax[0, 1].axhline(0, color="k", lw=1)
-    ax[1, 0].plot(t11, _ann(r_c11), label="Commitment (no ZLB)")
-    ax[1, 0].plot(t11, _ann(r_z11), "--", label="Commitment ZLB")
-    ax[1, 0].set_title("(c) Real interest rate")
-    ax[1, 0].axhline(0, color="k", lw=1)
-    ax[1, 1].plot(t11, D_c11, label="Commitment (no ZLB)")
-    ax[1, 1].plot(t11, D_z11, "--", label="Commitment ZLB")
-    ax[1, 1].set_title("(d) Price dispersion")
-    for a in ax.ravel():
-        a.set_xlabel("Time in quarters")
-    ax[0, 0].legend()
-    fig.suptitle("Figure 11: Response to a regime change: commitment with ZLB.", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure11")
-    plt.close(fig)
+    if tr_cz is None:
+        _save_missing_figure(
+            fig_dir,
+            "figure11",
+            "Figure 11: Response to a regime change: commitment with ZLB.",
+            ["commitment_zlb IR"],
+        )
+    else:
+        pi_c11, x_c11, r_c11, D_c11 = _transition_pack(tr_c, pre=pre, n_post=n_post)
+        pi_z11, x_z11, r_z11, D_z11 = _transition_pack(tr_cz, pre=pre, n_post=n_post)
+        t11 = np.arange(-pre, n_post)
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].plot(t11, _ann(pi_c11), label="Commitment (no ZLB)")
+        ax[0, 0].plot(t11, _ann(pi_z11), "--", label="Commitment ZLB")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].axhline(0, color="k", lw=1)
+        ax[0, 1].plot(t11, 100.0 * x_c11, label="Commitment (no ZLB)")
+        ax[0, 1].plot(t11, 100.0 * x_z11, "--", label="Commitment ZLB")
+        ax[0, 1].set_title("(b) Output gap deviation")
+        ax[0, 1].axhline(0, color="k", lw=1)
+        ax[1, 0].plot(t11, _ann(r_c11), label="Commitment (no ZLB)")
+        ax[1, 0].plot(t11, _ann(r_z11), "--", label="Commitment ZLB")
+        ax[1, 0].set_title("(c) Real interest rate")
+        ax[1, 0].axhline(0, color="k", lw=1)
+        ax[1, 1].plot(t11, D_c11, label="Commitment (no ZLB)")
+        ax[1, 1].plot(t11, D_z11, "--", label="Commitment ZLB")
+        ax[1, 1].set_title("(d) Price dispersion")
+        for a in ax.ravel():
+            a.set_xlabel("Time in quarters")
+        ax[0, 0].legend()
+        fig.suptitle("Figure 11: Response to a regime change: commitment with ZLB.", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure11")
+        plt.close(fig)
 
     defs_c_full = _load_defs_npz(os.path.join(pp_c, "simulated_definitions.npz"))
     pi_sim = np.asarray(defs_c_full["pi_tot_y"], dtype=np.float64).reshape(-1)
@@ -760,7 +842,7 @@ def build_figures(
     ax[0, 0].axhline(0, color="k", lw=1)
     ax[0, 1].plot(t13, 100.0 * x_b13, label="baseline")
     ax[0, 1].plot(t13, 100.0 * x_g13, "--", label="larger shock")
-    ax[0, 1].set_title("(b) Output gap")
+    ax[0, 1].set_title("(b) Output gap deviation")
     ax[0, 1].axhline(0, color="k", lw=1)
     ax[1, 0].plot(t13, _ann(r_b13), label="baseline")
     ax[1, 0].plot(t13, _ann(r_g13), "--", label="larger shock")
@@ -777,36 +859,44 @@ def build_figures(
     _savefig(fig_dir, "figure13")
     plt.close(fig)
 
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    # Paper note for Fig. 14 color mapping:
-    # commitment -> blue/orange, discretion -> green/red.
-    ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue", label="Commitment ZLB normal")
-    ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange", label="Commitment ZLB bad")
-    ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green", label="Discretion ZLB normal")
-    ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red", label="Discretion ZLB bad")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].legend(fontsize=8)
-    ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
-    ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
-    ax[1, 0].set_title("(c) Nominal interest rate")
-    ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 0], bins=60, alpha=0.45, color="tab:blue")
-    ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 1], bins=60, alpha=0.45, color="tab:orange")
-    ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 0], bins=60, alpha=0.45, color="tab:green")
-    ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 1], bins=60, alpha=0.45, color="tab:red")
-    ax[1, 1].set_title("(d) Real interest rate")
-    for a in ax.ravel():
-        a.set_xlabel("model units")
-    fig.suptitle("Figure 14: Ergodic distribution: optimal policy at the ZLB.", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure14")
-    plt.close(fig)
+    if (s_cz is None) or (s_dz is None):
+        _save_missing_figure(
+            fig_dir,
+            "figure14",
+            "Figure 14: Ergodic distribution: optimal policy at the ZLB.",
+            [x for x, v in {"commitment_zlb": s_cz, "discretion_zlb": s_dz}.items() if v is None],
+        )
+    else:
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        # Paper note for Fig. 14 color mapping:
+        # commitment -> blue/orange, discretion -> green/red.
+        ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue", label="Commitment ZLB normal")
+        ax[0, 0].hist(_ann(s_cz["pi"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange", label="Commitment ZLB bad")
+        ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green", label="Discretion ZLB normal")
+        ax[0, 0].hist(_ann(s_dz["pi"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red", label="Discretion ZLB bad")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].legend(fontsize=8)
+        ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
+        ax[0, 1].hist(100.0 * s_cz["x"][s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
+        ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
+        ax[0, 1].hist(100.0 * s_dz["x"][s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
+        ax[0, 1].set_title("(b) Output gap")
+        ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 0], bins=60, alpha=0.45, color="tab:blue")
+        ax[1, 0].hist(_ann(s_cz["i"])[s_cz["s"] == 1], bins=60, alpha=0.45, color="tab:orange")
+        ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 0], bins=60, alpha=0.45, color="tab:green")
+        ax[1, 0].hist(_ann(s_dz["i"])[s_dz["s"] == 1], bins=60, alpha=0.45, color="tab:red")
+        ax[1, 0].set_title("(c) Nominal interest rate")
+        ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 0], bins=60, alpha=0.45, color="tab:blue")
+        ax[1, 1].hist(_ann(s_cz["r"])[s_cz["s_r"] == 1], bins=60, alpha=0.45, color="tab:orange")
+        ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 0], bins=60, alpha=0.45, color="tab:green")
+        ax[1, 1].hist(_ann(s_dz["r"])[s_dz["s_r"] == 1], bins=60, alpha=0.45, color="tab:red")
+        ax[1, 1].set_title("(d) Real interest rate")
+        for a in ax.ravel():
+            a.set_xlabel("model units")
+        fig.suptitle("Figure 14: Ergodic distribution: optimal policy at the ZLB.", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure14")
+        plt.close(fig)
 
     note = os.path.join(fig_dir, "figure1_note.txt")
     with open(note, "w", encoding="utf-8") as f:
@@ -825,7 +915,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--use-selected", type=str, default="true")
     ap.add_argument("--ensure-postprocess", type=str, default="true")
     ap.add_argument("--ensure-ir", type=str, default="true")
-    ap.add_argument("--cons-mode", type=str, default="paper", choices=["author", "paper"])
+    ap.add_argument("--cons-mode", type=str, default="author", choices=["author", "paper"])
     ap.add_argument("--force-rebuild-postprocess", type=str, default="false")
     ap.add_argument("--force-rebuild-ir", type=str, default="false")
     ap.add_argument("--pre", type=int, default=5)

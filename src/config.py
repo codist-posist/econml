@@ -411,7 +411,7 @@ class TrainConfig:
         )
         auto_warmup = 10_000 if long_patience_family else 6_000
         auto_patience = 40_000 if long_patience_family else 25_000
-        auto_min_rel_delta = 1e-5
+        auto_min_rel_delta = 5e-4
 
         base = TrainConfig(
             mode="author",
@@ -450,7 +450,7 @@ class TrainConfig:
             auto_stop_metric="rms_resid_val",
             auto_stop_warmup_steps=auto_warmup,
             auto_stop_patience_steps=auto_patience,
-            auto_stop_min_delta=0.0,
+            auto_stop_min_delta=1e-6,
             auto_stop_min_rel_delta=auto_min_rel_delta,
             log_every=100,
             val_size=2048,
