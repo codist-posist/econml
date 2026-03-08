@@ -307,7 +307,7 @@ class TrainConfig:
     auto_stop_metric: AutoStopMetric = "loss"
     auto_stop_warmup_steps: int = 0
     auto_stop_patience_steps: int = 0
-    auto_stop_min_delta: float = 0.0
+    auto_stop_min_delta: float = 1e-6
     auto_stop_min_rel_delta: float = 0.0
 
     # ---- Paper-style stopping rule (Appendix B): stop on epsilon ----
