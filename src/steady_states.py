@@ -496,7 +496,7 @@ def solve_commitment_sss_switching(params: ModelParams, max_iter: int = 200, tol
 
     This legacy routine returns a regime-generic warm-start object:
       1) solve local commitment SS in each regime separately;
-      2) form backward weights Pr(s_{t-1}=j | s_t) from the full Markov matrix;
+      2) form backward weights Pr(s_{t-1}=j | s_t) from effective transition rows;
       3) set lagged state objects as backward-weighted averages.
     """
     _ = (max_iter, tol, damping)  # kept for backward-compatible signature
@@ -505,8 +505,31 @@ def solve_commitment_sss_switching(params: ModelParams, max_iter: int = 200, tol
         raise ValueError("params.n_regimes must be >= 1")
 
     local = {s: commitment_local_ss(params, s) for s in range(n_reg)}
-    P = params.P.detach().cpu().numpy().astype(np.float64)
+    P_default = params.P.detach().cpu().numpy().astype(np.float64)
+    P = np.zeros_like(P_default)
     gamma = float(params.gamma)
+
+    # Keep legacy helper aligned with state-dependent transitions by evaluating
+    # each transition row at regime-specific xi stationary means.
+    sigma_by_regime = tuple(float(v) for v in params.sigma_tau_by_regime)
+    for cur in range(n_reg):
+        sig = sigma_by_regime[cur] if cur < len(sigma_by_regime) else sigma_by_regime[-1]
+        xi_ref = float(-(sig**2) / 2.0)
+        s_t = torch.tensor([int(cur)], device=params.device, dtype=torch.long)
+        xi_t = torch.tensor([xi_ref], device=params.device, dtype=params.dtype)
+        try:
+            p_row = (
+                transition_probs_to_next_regimes(params, s_t, xi=xi_t)
+                .view(-1)
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float64)
+            )
+            P[cur, : p_row.shape[0]] = p_row[: P.shape[1]]
+        except Exception:
+            # Fallback to constant transition matrix if state-dependent mapping is unavailable.
+            P[cur, :] = P_default[cur, :]
 
     # Stationary distribution for row-stochastic P[current, next].
     pi = np.full((n_reg,), 1.0 / float(n_reg), dtype=np.float64)
@@ -672,6 +695,7 @@ def solve_discretion_sss_switching(
     taylor = solve_taylor_sss(params, flex)
 
     gamma = float(params.gamma)
+    beta = float(params.beta)
     theta = float(params.theta)
     eps = float(params.eps)
     gbar = float(params.g_bar)

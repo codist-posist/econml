@@ -104,6 +104,12 @@ def _sim_paths_conditional_moments(run_dir: str, *, params: ModelParams) -> pd.D
                 "i_mean_pct",
                 "r_mean_same_pct",
                 "r_mean_next_pct",
+                "p12_eff_mean",
+                "p12_eff_std",
+                "p21_eff_mean",
+                "p21_eff_std",
+                "sigma_tau_mean",
+                "sigma_tau_std",
             ]
         )
 
@@ -113,6 +119,12 @@ def _sim_paths_conditional_moments(run_dir: str, *, params: ModelParams) -> pd.D
     s = np.asarray(sim["s"]).reshape(-1).astype(np.int64)
     pi = np.asarray(sim["pi"]).reshape(-1)
     c = np.asarray(sim["c"]).reshape(-1)
+    p12_eff = np.asarray(sim.get("p12_eff", np.full_like(pi, float(params.p12))), dtype=np.float64).reshape(-1)
+    p21_eff = np.asarray(sim.get("p21_eff", np.full_like(pi, float(params.p21))), dtype=np.float64).reshape(-1)
+    sigma_tau = np.asarray(
+        sim.get("sigma_tau_t", np.full_like(pi, float(params.sigma_tau))),
+        dtype=np.float64,
+    ).reshape(-1)
 
     if "A" in sim:
         A = np.asarray(sim["A"]).reshape(-1)
@@ -153,6 +165,12 @@ def _sim_paths_conditional_moments(run_dir: str, *, params: ModelParams) -> pd.D
             "i_mean_pct": float("nan"),
             "r_mean_same_pct": float("nan"),
             "r_mean_next_pct": float("nan"),
+            "p12_eff_mean": float(np.mean(p12_eff[m])) if np.any(m) else float("nan"),
+            "p12_eff_std": float(np.std(p12_eff[m])) if np.any(m) else float("nan"),
+            "p21_eff_mean": float(np.mean(p21_eff[m])) if np.any(m) else float("nan"),
+            "p21_eff_std": float(np.std(p21_eff[m])) if np.any(m) else float("nan"),
+            "sigma_tau_mean": float(np.mean(sigma_tau[m])) if np.any(m) else float("nan"),
+            "sigma_tau_std": float(np.std(sigma_tau[m])) if np.any(m) else float("nan"),
         }
         if has_i and i is not None:
             row["i_mean_pct"] = 400.0 * float(np.mean(i[m])) if np.any(m) else float("nan")
