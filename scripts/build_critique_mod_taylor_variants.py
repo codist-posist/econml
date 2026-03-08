@@ -53,6 +53,14 @@ def _savefig(fig_dir: str, name: str) -> str:
     return p
 
 
+def _x_dev_pre_shock(x: np.ndarray) -> np.ndarray:
+    xs = np.asarray(x, dtype=np.float64)
+    if xs.size == 0:
+        return xs
+    # For these trajectories, t=0 is the pre-shock reference point.
+    return xs - xs[0]
+
+
 def _slug(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]+", "_", str(s)).strip("_") or "variant"
 
@@ -423,6 +431,8 @@ def _build_shock_train(
             i_t = _ann(sim_train["i"][:, 0])
             x_b = 100.0 * sim_base["x"][:, 0]
             x_t = 100.0 * sim_train["x"][:, 0]
+            x_b_plot = _x_dev_pre_shock(x_b)
+            x_t_plot = _x_dev_pre_shock(x_t)
 
             fig, ax = plt.subplots(2, 2, figsize=(12, 8))
             ax[0, 0].plot(t, pi_b, label="baseline")
@@ -437,9 +447,9 @@ def _build_shock_train(
             ax[0, 1].set_ylabel("ann. %")
             ax[0, 1].legend()
 
-            ax[1, 0].plot(t, x_b, label="baseline")
-            ax[1, 0].plot(t, x_t, "--", label="shock train")
-            ax[1, 0].set_title("(c) Output gap")
+            ax[1, 0].plot(t, x_b_plot, label="baseline")
+            ax[1, 0].plot(t, x_t_plot, "--", label="shock train")
+            ax[1, 0].set_title("(c) Output gap (deviation from pre-shock)")
             ax[1, 0].set_ylabel("%")
             ax[1, 0].set_xlabel("quarter")
             ax[1, 0].legend()
@@ -691,8 +701,10 @@ def _build_combined(
             t = np.arange(T + 1)
             pi_b_q10, pi_b_q50, pi_b_q90 = _qband(_ann(sim_base["pi"]))
             pi_c_q10, pi_c_q50, pi_c_q90 = _qband(_ann(sim_comb["pi"]))
-            x_b_q10, x_b_q50, x_b_q90 = _qband(100.0 * sim_base["x"])
-            x_c_q10, x_c_q50, x_c_q90 = _qband(100.0 * sim_comb["x"])
+            x_base_dev = _x_dev_pre_shock(100.0 * sim_base["x"])
+            x_comb_dev = _x_dev_pre_shock(100.0 * sim_comb["x"])
+            x_b_q10, x_b_q50, x_b_q90 = _qband(x_base_dev)
+            x_c_q10, x_c_q50, x_c_q90 = _qband(x_comb_dev)
 
             fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
             ax[0].plot(t, pi_b_q50, color="tab:blue", label="baseline median")
@@ -706,7 +718,7 @@ def _build_combined(
             ax[1].fill_between(t, x_b_q10, x_b_q90, color="tab:blue", alpha=0.2, label="baseline 10-90")
             ax[1].plot(t, x_c_q50, color="tab:red", label="combined median")
             ax[1].fill_between(t, x_c_q10, x_c_q90, color="tab:red", alpha=0.2, label="combined 10-90")
-            ax[1].set_title("(b) Output gap (%)")
+            ax[1].set_title("(b) Output gap deviation from pre-shock (%)")
             ax[1].set_xlabel("quarter")
             ax[1].legend(ncol=2)
 

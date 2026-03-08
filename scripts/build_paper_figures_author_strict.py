@@ -379,6 +379,122 @@ def _clone_params(p: ModelParams, **overrides: float) -> ModelParams:
     return ModelParams(**kwargs).to_torch()
 
 
+def _try_resolve_run_dir(
+    artifacts_root: str,
+    policy: PolicyName,
+    *,
+    use_selected: bool,
+    device: str,
+    dtype: torch.dtype,
+) -> tuple[str | None, ModelParams | None]:
+    try:
+        rd, params = _resolve_run_dir(
+            artifacts_root,
+            policy,
+            use_selected=use_selected,
+            device=device,
+            dtype=dtype,
+        )
+        return rd, params
+    except Exception as e:
+        print(f"[skip] policy={policy} run not available: {e}")
+        return None, None
+
+
+def _try_ensure_author_postprocess(
+    *,
+    artifacts_root: str,
+    policy: PolicyName,
+    run_dir: str | None,
+    device: str,
+    dtype: torch.dtype,
+    use_selected: bool,
+    enabled: bool,
+    force_rebuild: bool,
+    cons_mode: str,
+) -> str | None:
+    if run_dir is None:
+        return None
+    try:
+        return _ensure_author_postprocess(
+            artifacts_root=artifacts_root,
+            policy=policy,
+            run_dir=run_dir,
+            device=device,
+            dtype=dtype,
+            use_selected=use_selected,
+            enabled=enabled,
+            force_rebuild=force_rebuild,
+            cons_mode=cons_mode,
+        )
+    except Exception as e:
+        print(f"[skip] postprocess failed for policy={policy}: {e}")
+        return None
+
+
+def _try_ensure_author_ir(
+    *,
+    artifacts_root: str,
+    policy: PolicyName,
+    run_dir: str | None,
+    device: str,
+    dtype: torch.dtype,
+    use_selected: bool,
+    enabled: bool,
+    out_subdir: str = "IRS",
+    params_override: Dict[str, float] | None = None,
+    force_rebuild: bool = False,
+    cons_mode: str = "paper",
+) -> str | None:
+    if run_dir is None:
+        return None
+    try:
+        return _ensure_author_ir(
+            artifacts_root=artifacts_root,
+            policy=policy,
+            run_dir=run_dir,
+            device=device,
+            dtype=dtype,
+            use_selected=use_selected,
+            enabled=enabled,
+            out_subdir=out_subdir,
+            params_override=params_override,
+            force_rebuild=force_rebuild,
+            cons_mode=cons_mode,
+        )
+    except Exception as e:
+        print(f"[skip] IR build failed for policy={policy}, out_subdir={out_subdir}: {e}")
+        return None
+
+
+def _x_dev_pre_shock(x: np.ndarray, *, pre: int) -> np.ndarray:
+    xs = np.asarray(x, dtype=np.float64).reshape(-1)
+    if xs.size == 0:
+        return xs
+    idx0 = int(max(0, min(xs.size - 1, int(pre) - 1)))
+    return xs - float(xs[idx0])
+
+
+def _try_load_transition_by_start(path: str | None, n_regimes: int, *, policy: str) -> Dict[int, Dict[str, np.ndarray]]:
+    if not path:
+        return {}
+    try:
+        return _load_transition_by_start(path, n_regimes)
+    except Exception as e:
+        print(f"[skip] transition-by-start load failed for policy={policy}: {e}")
+        return {}
+
+
+def _try_load_ir_label(path: str | None, label: str, *, what: str) -> Dict[str, np.ndarray] | None:
+    if not path:
+        return None
+    try:
+        return _load_ir_label(path, label)
+    except Exception as e:
+        print(f"[skip] IR label load failed for {what} (label={label}): {e}")
+        return None
+
+
 def build_figures(
     *,
     artifacts_root: str,
@@ -397,69 +513,69 @@ def build_figures(
     shock_size_mult: float,
 ) -> None:
     mode = _resolve_cons_mode(cons_mode)
-    run_t, p_t = _resolve_run_dir(artifacts_root, "taylor", use_selected=use_selected, device=device, dtype=dtype)
-    run_m, p_m = _resolve_run_dir(artifacts_root, "mod_taylor", use_selected=use_selected, device=device, dtype=dtype)
-    run_d, p_d = _resolve_run_dir(artifacts_root, "discretion", use_selected=use_selected, device=device, dtype=dtype)
-    run_c, p_c = _resolve_run_dir(artifacts_root, "commitment", use_selected=use_selected, device=device, dtype=dtype)
-    run_tz, p_tz = _resolve_run_dir(artifacts_root, "taylor_zlb", use_selected=use_selected, device=device, dtype=dtype)
-    run_mz, p_mz = _resolve_run_dir(artifacts_root, "mod_taylor_zlb", use_selected=use_selected, device=device, dtype=dtype)
-    run_dz, p_dz = _resolve_run_dir(artifacts_root, "discretion_zlb", use_selected=use_selected, device=device, dtype=dtype)
-    run_cz, p_cz = _resolve_run_dir(artifacts_root, "commitment_zlb", use_selected=use_selected, device=device, dtype=dtype)
+    run_t, p_t = _try_resolve_run_dir(artifacts_root, "taylor", use_selected=use_selected, device=device, dtype=dtype)
+    run_m, p_m = _try_resolve_run_dir(artifacts_root, "mod_taylor", use_selected=use_selected, device=device, dtype=dtype)
+    run_d, p_d = _try_resolve_run_dir(artifacts_root, "discretion", use_selected=use_selected, device=device, dtype=dtype)
+    run_c, p_c = _try_resolve_run_dir(artifacts_root, "commitment", use_selected=use_selected, device=device, dtype=dtype)
+    run_tz, p_tz = _try_resolve_run_dir(artifacts_root, "taylor_zlb", use_selected=use_selected, device=device, dtype=dtype)
+    run_mz, p_mz = _try_resolve_run_dir(artifacts_root, "mod_taylor_zlb", use_selected=use_selected, device=device, dtype=dtype)
+    run_dz, p_dz = _try_resolve_run_dir(artifacts_root, "discretion_zlb", use_selected=use_selected, device=device, dtype=dtype)
+    run_cz, p_cz = _try_resolve_run_dir(artifacts_root, "commitment_zlb", use_selected=use_selected, device=device, dtype=dtype)
 
-    pp_t = _ensure_author_postprocess(
+    pp_t = _try_ensure_author_postprocess(
         artifacts_root=artifacts_root, policy="taylor", run_dir=run_t, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
     )
-    pp_m = _ensure_author_postprocess(
+    pp_m = _try_ensure_author_postprocess(
         artifacts_root=artifacts_root, policy="mod_taylor", run_dir=run_m, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
     )
-    pp_d = _ensure_author_postprocess(
+    pp_d = _try_ensure_author_postprocess(
         artifacts_root=artifacts_root, policy="discretion", run_dir=run_d, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
     )
-    pp_c = _ensure_author_postprocess(
+    pp_c = _try_ensure_author_postprocess(
         artifacts_root=artifacts_root, policy="commitment", run_dir=run_c, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
     )
-    pp_tz = _ensure_author_postprocess(
+    pp_tz = _try_ensure_author_postprocess(
         artifacts_root=artifacts_root, policy="taylor_zlb", run_dir=run_tz, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
     )
-    pp_mz = _ensure_author_postprocess(
+    pp_mz = _try_ensure_author_postprocess(
         artifacts_root=artifacts_root, policy="mod_taylor_zlb", run_dir=run_mz, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
     )
-    pp_dz = _ensure_author_postprocess(
+    pp_dz = _try_ensure_author_postprocess(
         artifacts_root=artifacts_root, policy="discretion_zlb", run_dir=run_dz, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
     )
-    pp_cz = _ensure_author_postprocess(
+    pp_cz = _try_ensure_author_postprocess(
         artifacts_root=artifacts_root, policy="commitment_zlb", run_dir=run_cz, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_postprocess, force_rebuild=force_rebuild_postprocess, cons_mode=mode
     )
 
-    ir_t = _ensure_author_ir(
+    ir_t = _try_ensure_author_ir(
         artifacts_root=artifacts_root, policy="taylor", run_dir=run_t, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_ir, out_subdir="IRS", force_rebuild=force_rebuild_ir, cons_mode=mode
     )
-    ir_m = _ensure_author_ir(
+    ir_m = _try_ensure_author_ir(
         artifacts_root=artifacts_root, policy="mod_taylor", run_dir=run_m, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_ir, out_subdir="IRS", force_rebuild=force_rebuild_ir, cons_mode=mode
     )
-    ir_d = _ensure_author_ir(
+    ir_d = _try_ensure_author_ir(
         artifacts_root=artifacts_root, policy="discretion", run_dir=run_d, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_ir, out_subdir="IRS", force_rebuild=force_rebuild_ir, cons_mode=mode
     )
-    ir_c = _ensure_author_ir(
+    ir_c = _try_ensure_author_ir(
         artifacts_root=artifacts_root, policy="commitment", run_dir=run_c, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_ir, out_subdir="IRS", force_rebuild=force_rebuild_ir, cons_mode=mode
     )
-    ir_cz = _ensure_author_ir(
+    ir_cz = _try_ensure_author_ir(
         artifacts_root=artifacts_root, policy="commitment_zlb", run_dir=run_cz, device=device, dtype=dtype,
         use_selected=use_selected, enabled=ensure_ir, out_subdir="IRS", force_rebuild=force_rebuild_ir, cons_mode=mode
     )
-    ir_c_fig9_base = _ensure_author_ir(
+    ir_c_fig9_base = _try_ensure_author_ir(
         artifacts_root=artifacts_root,
         policy="commitment",
         run_dir=run_c,
@@ -472,7 +588,7 @@ def build_figures(
         force_rebuild=force_rebuild_ir,
         cons_mode=mode,
     )
-    ir_c_fig9_hi = _ensure_author_ir(
+    ir_c_fig9_hi = _try_ensure_author_ir(
         artifacts_root=artifacts_root,
         policy="commitment",
         run_dir=run_c,
@@ -485,7 +601,7 @@ def build_figures(
         force_rebuild=force_rebuild_ir,
         cons_mode=mode,
     )
-    ir_c_fig13_big = _ensure_author_ir(
+    ir_c_fig13_big = _try_ensure_author_ir(
         artifacts_root=artifacts_root,
         policy="commitment",
         run_dir=run_c,
@@ -494,103 +610,140 @@ def build_figures(
         use_selected=use_selected,
         enabled=ensure_ir,
         out_subdir="IRS_fig13_big",
-        params_override={"eta_bar": float(p_c.eta_bar) * float(shock_size_mult)},
+        params_override={"eta_bar": float(p_c.eta_bar) * float(shock_size_mult)} if p_c is not None else None,
         force_rebuild=force_rebuild_ir,
         cons_mode=mode,
     )
 
-    s_t = _ergodic_series(_load_defs_npz(os.path.join(pp_t, "simulated_definitions.npz")))
-    s_m = _ergodic_series(_load_defs_npz(os.path.join(pp_m, "simulated_definitions.npz")))
-    s_d = _ergodic_series(_load_defs_npz(os.path.join(pp_d, "simulated_definitions.npz")))
-    s_c = _ergodic_series(_load_defs_npz(os.path.join(pp_c, "simulated_definitions.npz")))
-    s_tz = _ergodic_series(_load_defs_npz(os.path.join(pp_tz, "simulated_definitions.npz")))
-    s_mz = _ergodic_series(_load_defs_npz(os.path.join(pp_mz, "simulated_definitions.npz")))
-    s_dz = _ergodic_series(_load_defs_npz(os.path.join(pp_dz, "simulated_definitions.npz")))
-    s_cz = _ergodic_series(_load_defs_npz(os.path.join(pp_cz, "simulated_definitions.npz")))
+    s_t = _ergodic_series(_load_defs_npz(os.path.join(pp_t, "simulated_definitions.npz"))) if pp_t else None
+    s_m = _ergodic_series(_load_defs_npz(os.path.join(pp_m, "simulated_definitions.npz"))) if pp_m else None
+    s_d = _ergodic_series(_load_defs_npz(os.path.join(pp_d, "simulated_definitions.npz"))) if pp_d else None
+    s_c = _ergodic_series(_load_defs_npz(os.path.join(pp_c, "simulated_definitions.npz"))) if pp_c else None
+    s_tz = _ergodic_series(_load_defs_npz(os.path.join(pp_tz, "simulated_definitions.npz"))) if pp_tz else None
+    s_mz = _ergodic_series(_load_defs_npz(os.path.join(pp_mz, "simulated_definitions.npz"))) if pp_mz else None
+    s_dz = _ergodic_series(_load_defs_npz(os.path.join(pp_dz, "simulated_definitions.npz"))) if pp_dz else None
+    s_cz = _ergodic_series(_load_defs_npz(os.path.join(pp_cz, "simulated_definitions.npz"))) if pp_cz else None
 
-    ir_t_npz = os.path.join(ir_t, "IR_definitions.npz")
-    ir_m_npz = os.path.join(ir_m, "IR_definitions.npz")
-    ir_d_npz = os.path.join(ir_d, "IR_definitions.npz")
-    ir_c_npz = os.path.join(ir_c, "IR_definitions.npz")
-    ir_cz_npz = os.path.join(ir_cz, "IR_definitions.npz")
-    tr_t_by_start = _load_transition_by_start(ir_t_npz, int(p_t.n_regimes))
-    tr_m_by_start = _load_transition_by_start(ir_m_npz, int(p_m.n_regimes))
-    tr_d_by_start = _load_transition_by_start(ir_d_npz, int(p_d.n_regimes))
-    tr_c_by_start = _load_transition_by_start(ir_c_npz, int(p_c.n_regimes))
+    ir_t_npz = os.path.join(ir_t, "IR_definitions.npz") if ir_t else None
+    ir_m_npz = os.path.join(ir_m, "IR_definitions.npz") if ir_m else None
+    ir_d_npz = os.path.join(ir_d, "IR_definitions.npz") if ir_d else None
+    ir_c_npz = os.path.join(ir_c, "IR_definitions.npz") if ir_c else None
+    ir_cz_npz = os.path.join(ir_cz, "IR_definitions.npz") if ir_cz else None
+
+    tr_t_by_start = _try_load_transition_by_start(
+        ir_t_npz,
+        int(p_t.n_regimes) if p_t is not None else 0,
+        policy="taylor",
+    )
+    tr_m_by_start = _try_load_transition_by_start(
+        ir_m_npz,
+        int(p_m.n_regimes) if p_m is not None else 0,
+        policy="mod_taylor",
+    )
+    tr_d_by_start = _try_load_transition_by_start(
+        ir_d_npz,
+        int(p_d.n_regimes) if p_d is not None else 0,
+        policy="discretion",
+    )
+    tr_c_by_start = _try_load_transition_by_start(
+        ir_c_npz,
+        int(p_c.n_regimes) if p_c is not None else 0,
+        policy="commitment",
+    )
     common_tm = sorted(set(tr_t_by_start.keys()) & set(tr_m_by_start.keys()))
     common_cd = sorted(set(tr_c_by_start.keys()) & set(tr_d_by_start.keys()))
-    if not common_tm:
-        raise KeyError("No shared baseline transition labels for Taylor vs Mod Taylor IR files.")
-    if not common_cd:
-        raise KeyError("No shared baseline transition labels for Commitment vs Discretion IR files.")
-    base_tm = 0 if 0 in common_tm else common_tm[0]
-    base_cd = 0 if 0 in common_cd else common_cd[0]
-    tr_t = tr_t_by_start[base_tm]
-    tr_m = tr_m_by_start[base_tm]
-    tr_d = tr_d_by_start[base_cd]
-    tr_c = tr_c_by_start[base_cd]
-    tr_cz = _load_ir_label(ir_cz_npz, "NT")
-    ir7_c = _load_ir_label(ir_c_npz, "1sigT_SS")
-    ir7_m = _load_ir_label(ir_m_npz, "1sigT_SS")
-    ir9_b = _load_ir_label(os.path.join(ir_c_fig9_base, "IR_definitions.npz"), "1sigT_NT")
-    ir9_h = _load_ir_label(os.path.join(ir_c_fig9_hi, "IR_definitions.npz"), "1sigT_NT")
-    ir13_b = _load_ir_label(ir_c_npz, "NT")
-    ir13_g = _load_ir_label(os.path.join(ir_c_fig13_big, "IR_definitions.npz"), "NT")
+    base_tm = (0 if 0 in common_tm else common_tm[0]) if common_tm else None
+    base_cd = (0 if 0 in common_cd else common_cd[0]) if common_cd else None
+    tr_t = tr_t_by_start[base_tm] if base_tm is not None else None
+    tr_m = tr_m_by_start[base_tm] if base_tm is not None else None
+    tr_d = tr_d_by_start[base_cd] if base_cd is not None else None
+    tr_c = tr_c_by_start[base_cd] if base_cd is not None else None
+
+    tr_cz = _try_load_ir_label(ir_cz_npz, "NT", what="commitment_zlb baseline transition")
+    ir7_c = _try_load_ir_label(ir_c_npz, "1sigT_SS", what="figure7 commitment IR")
+    ir7_m = _try_load_ir_label(ir_m_npz, "1sigT_SS", what="figure7 mod_taylor IR")
+    ir9_b = _try_load_ir_label(
+        os.path.join(ir_c_fig9_base, "IR_definitions.npz") if ir_c_fig9_base else None,
+        "1sigT_NT",
+        what="figure9 baseline IR",
+    )
+    ir9_h = _try_load_ir_label(
+        os.path.join(ir_c_fig9_hi, "IR_definitions.npz") if ir_c_fig9_hi else None,
+        "1sigT_NT",
+        what="figure9 high-persistence IR",
+    )
+    ir13_b = _try_load_ir_label(ir_c_npz, "NT", what="figure13 baseline IR")
+    ir13_g = _try_load_ir_label(
+        os.path.join(ir_c_fig13_big, "IR_definitions.npz") if ir_c_fig13_big else None,
+        "NT",
+        what="figure13 larger-shock IR",
+    )
 
     cols_t = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
     cols_m = ["tab:green", "tab:red", "tab:olive", "tab:pink", "tab:cyan"]
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    _hist_by_regime(ax[0, 0], _ann(s_t["pi"]), s_t["s"], bins=60, alpha=0.45, colors=cols_t, label_prefix="Taylor")
-    _hist_by_regime(ax[0, 0], _ann(s_m["pi"]), s_m["s"], bins=60, alpha=0.45, colors=cols_m, label_prefix="Mod Taylor")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].set_xlabel("Ann. perc.")
-    ax[0, 0].legend(fontsize=8)
-    _hist_by_regime(ax[0, 1], 100.0 * s_t["x"], s_t["s"], bins=60, alpha=0.45, colors=cols_t)
-    _hist_by_regime(ax[0, 1], 100.0 * s_m["x"], s_m["s"], bins=60, alpha=0.45, colors=cols_m)
-    ax[0, 1].set_title("(b) Output gap")
-    ax[0, 1].set_xlabel("Perc. of log")
-    _hist_by_regime(ax[1, 0], _ann(s_t["i"]), s_t["s"], bins=60, alpha=0.45, colors=cols_t)
-    _hist_by_regime(ax[1, 0], _ann(s_m["i"]), s_m["s"], bins=60, alpha=0.45, colors=cols_m)
-    ax[1, 0].set_title("(c) Nominal interest rate")
-    ax[1, 0].set_xlabel("Ann. perc.")
-    _hist_by_regime(ax[1, 1], _ann(s_t["r"]), s_t["s_r"], bins=60, alpha=0.45, colors=cols_t)
-    _hist_by_regime(ax[1, 1], _ann(s_m["r"]), s_m["s_r"], bins=60, alpha=0.45, colors=cols_m)
-    ax[1, 1].set_title("(d) Real interest rate")
-    ax[1, 1].set_xlabel("Ann. perc.")
-    fig.suptitle("Figure 2: Ergodic distribution", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure2")
-    plt.close(fig)
+    if (s_t is not None) and (s_m is not None):
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        _hist_by_regime(ax[0, 0], _ann(s_t["pi"]), s_t["s"], bins=60, alpha=0.45, colors=cols_t, label_prefix="Taylor")
+        _hist_by_regime(ax[0, 0], _ann(s_m["pi"]), s_m["s"], bins=60, alpha=0.45, colors=cols_m, label_prefix="Mod Taylor")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].set_xlabel("Ann. perc.")
+        ax[0, 0].legend(fontsize=8)
+        _hist_by_regime(ax[0, 1], 100.0 * s_t["x"], s_t["s"], bins=60, alpha=0.45, colors=cols_t)
+        _hist_by_regime(ax[0, 1], 100.0 * s_m["x"], s_m["s"], bins=60, alpha=0.45, colors=cols_m)
+        ax[0, 1].set_title("(b) Output gap")
+        ax[0, 1].set_xlabel("Perc. of log")
+        _hist_by_regime(ax[1, 0], _ann(s_t["i"]), s_t["s"], bins=60, alpha=0.45, colors=cols_t)
+        _hist_by_regime(ax[1, 0], _ann(s_m["i"]), s_m["s"], bins=60, alpha=0.45, colors=cols_m)
+        ax[1, 0].set_title("(c) Nominal interest rate")
+        ax[1, 0].set_xlabel("Ann. perc.")
+        _hist_by_regime(ax[1, 1], _ann(s_t["r"]), s_t["s_r"], bins=60, alpha=0.45, colors=cols_t)
+        _hist_by_regime(ax[1, 1], _ann(s_m["r"]), s_m["s_r"], bins=60, alpha=0.45, colors=cols_m)
+        ax[1, 1].set_title("(d) Real interest rate")
+        ax[1, 1].set_xlabel("Ann. perc.")
+        fig.suptitle("Figure 2: Ergodic distribution", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure2")
+        plt.close(fig)
+    else:
+        print("[skip] figure2 requires taylor + mod_taylor postprocess artifacts.")
 
-    pi_ta, x_ta, r_ta, D_ta = _transition_pack(tr_t, pre=pre, n_post=n_post)
-    pi_ma, x_ma, r_ma, D_ma = _transition_pack(tr_m, pre=pre, n_post=n_post)
-    t = np.arange(-pre, n_post)
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].plot(t, _ann(pi_ta), label="Taylor")
-    ax[0, 0].plot(t, _ann(pi_ma), "--", label="Modified Taylor")
-    ax[0, 0].axhline(0, color="k", lw=1)
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 1].plot(t, 100.0 * x_ta, label="Taylor")
-    ax[0, 1].plot(t, 100.0 * x_ma, "--", label="Modified Taylor")
-    ax[0, 1].axhline(0, color="k", lw=1)
-    ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].plot(t, _ann(r_ta), label="Taylor")
-    ax[1, 0].plot(t, _ann(r_ma), "--", label="Modified Taylor")
-    ax[1, 0].axhline(0, color="k", lw=1)
-    ax[1, 0].set_title("(c) Real interest rate")
-    ax[1, 1].plot(t, D_ta, label="Taylor")
-    ax[1, 1].plot(t, D_ma, "--", label="Modified Taylor")
-    ax[1, 1].set_title("(d) Price dispersion")
-    for a in ax.ravel():
-        a.set_xlabel("Time in quarters")
-    ax[0, 0].legend()
-    fig.suptitle("Figure 3: Response to a regime change (Taylor rule)", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure3")
-    plt.close(fig)
+    if (tr_t is not None) and (tr_m is not None):
+        pi_ta, x_ta, r_ta, D_ta = _transition_pack(tr_t, pre=pre, n_post=n_post)
+        pi_ma, x_ma, r_ma, D_ma = _transition_pack(tr_m, pre=pre, n_post=n_post)
+        x_ta = _x_dev_pre_shock(x_ta, pre=pre)
+        x_ma = _x_dev_pre_shock(x_ma, pre=pre)
+        t = np.arange(-pre, n_post)
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].plot(t, _ann(pi_ta), label="Taylor")
+        ax[0, 0].plot(t, _ann(pi_ma), "--", label="Modified Taylor")
+        ax[0, 0].axhline(0, color="k", lw=1)
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 1].plot(t, 100.0 * x_ta, label="Taylor")
+        ax[0, 1].plot(t, 100.0 * x_ma, "--", label="Modified Taylor")
+        ax[0, 1].axhline(0, color="k", lw=1)
+        ax[0, 1].set_title("(b) Output gap (deviation from pre-shock)")
+        ax[1, 0].plot(t, _ann(r_ta), label="Taylor")
+        ax[1, 0].plot(t, _ann(r_ma), "--", label="Modified Taylor")
+        ax[1, 0].axhline(0, color="k", lw=1)
+        ax[1, 0].set_title("(c) Real interest rate")
+        ax[1, 1].plot(t, D_ta, label="Taylor")
+        ax[1, 1].plot(t, D_ma, "--", label="Modified Taylor")
+        ax[1, 1].set_title("(d) Price dispersion")
+        for a in ax.ravel():
+            a.set_xlabel("Time in quarters")
+        ax[0, 0].legend()
+        fig.suptitle("Figure 3: Response to a regime change (Taylor rule)", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure3")
+        plt.close(fig)
+    else:
+        print("[skip] figure3 requires taylor + mod_taylor IR artifacts.")
+
     for start_reg in common_tm:
         pi_ta_s, x_ta_s, r_ta_s, D_ta_s = _transition_pack(tr_t_by_start[start_reg], pre=pre, n_post=n_post)
         pi_ma_s, x_ma_s, r_ma_s, D_ma_s = _transition_pack(tr_m_by_start[start_reg], pre=pre, n_post=n_post)
+        x_ta_s = _x_dev_pre_shock(x_ta_s, pre=pre)
+        x_ma_s = _x_dev_pre_shock(x_ma_s, pre=pre)
         t_s = np.arange(-pre, n_post)
         fig, ax = plt.subplots(2, 2, figsize=(12, 8))
         ax[0, 0].plot(t_s, _ann(pi_ta_s), label="Taylor")
@@ -600,7 +753,7 @@ def build_figures(
         ax[0, 1].plot(t_s, 100.0 * x_ta_s, label="Taylor")
         ax[0, 1].plot(t_s, 100.0 * x_ma_s, "--", label="Modified Taylor")
         ax[0, 1].axhline(0, color="k", lw=1)
-        ax[0, 1].set_title("(b) Output gap")
+        ax[0, 1].set_title("(b) Output gap (deviation from pre-shock)")
         ax[1, 0].plot(t_s, _ann(r_ta_s), label="Taylor")
         ax[1, 0].plot(t_s, _ann(r_ma_s), "--", label="Modified Taylor")
         ax[1, 0].axhline(0, color="k", lw=1)
@@ -619,140 +772,162 @@ def build_figures(
         _savefig(fig_dir, f"figure3_start_{_regime_tag(start_reg).lower()}")
         plt.close(fig)
 
-    params0 = p_t
-    grid_p21 = np.linspace(0.02, 0.98, 40)
-    dur_bad = 1.0 / grid_p21
-    bad_reg = int(params0.bad_state) if int(params0.n_regimes) > 1 else 0
-    bad_lbl = _regime_name(bad_reg)
-    pi_normal, r_normal, pi_bad_cf, r_bad_cf = [], [], [], []
-    for p21 in grid_p21:
-        pb = _clone_params(params0, p12=float(params0.p12), p21=float(p21))
-        flex_b = solve_flexprice_sss(pb)
-        tay_b = solve_taylor_sss(pb, flex_b)
-        n_key = 0 if 0 in tay_b.by_regime else sorted(tay_b.by_regime.keys())[0]
-        pi_normal.append(float(tay_b.by_regime[n_key]["pi"]))
-        r_normal.append(float(tay_b.by_regime[n_key]["r"]))
-        pc = _clone_params(params0, p12=1.0, p21=float(p21))
-        flex_c = solve_flexprice_sss(pc)
-        tay_c = solve_taylor_sss(pc, flex_c)
-        b_key = bad_reg if bad_reg in tay_c.by_regime else sorted(tay_c.by_regime.keys())[-1]
-        pi_bad_cf.append(float(tay_c.by_regime[b_key]["pi"]))
-        r_bad_cf.append(float(tay_c.by_regime[b_key]["r"]))
-    x = dur_bad
-    idx = np.argsort(x)
-    eff = solve_efficient_sss(params0)
-    fig, ax = plt.subplots(1, 2, figsize=(11, 4))
-    ax[0].plot(x[idx], _ann(np.array(pi_normal)[idx]), label="Baseline (normal SSS)")
-    ax[0].plot(x[idx], _ann(np.array(pi_bad_cf)[idx]), "--", label=f"Counterfactual p12->1 ({bad_lbl} SSS)")
-    ax[0].axhline(0.0, color="gray", ls=":")
-    ax[0].set_title("(a) Inflation")
-    ax[0].set_xlabel("Average bad-times duration (quarters)")
-    ax[0].set_ylabel("Ann. perc.")
-    ax[0].legend()
-    ax[1].plot(x[idx], _ann(np.array(r_normal)[idx]), label="Baseline (normal SSS)")
-    ax[1].plot(x[idx], _ann(np.array(r_bad_cf)[idx]), "--", label=f"Counterfactual p12->1 ({bad_lbl} SSS)")
-    ax[1].axhline(_ann(np.array([float(eff["r_hat"])]))[0], color="gray", ls=":")
-    ax[1].set_title("(b) Real interest rate")
-    ax[1].set_xlabel("Average bad-times duration (quarters)")
-    ax[1].set_ylabel("Ann. perc.")
-    ax[1].legend()
-    fig.suptitle("Figure 4: Sensitivity to regime length (Taylor rule)", y=1.03)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure4")
-    plt.close(fig)
+    if p_t is not None:
+        params0 = p_t
+        grid_p21 = np.linspace(0.02, 0.98, 40)
+        dur_bad = 1.0 / grid_p21
+        bad_reg = int(params0.bad_state) if int(params0.n_regimes) > 1 else 0
+        bad_lbl = _regime_name(bad_reg)
+        pi_normal, r_normal, pi_bad_cf, r_bad_cf = [], [], [], []
+        for p21 in grid_p21:
+            pb = _clone_params(params0, p12=float(params0.p12), p21=float(p21))
+            flex_b = solve_flexprice_sss(pb)
+            tay_b = solve_taylor_sss(pb, flex_b)
+            n_key = 0 if 0 in tay_b.by_regime else sorted(tay_b.by_regime.keys())[0]
+            pi_normal.append(float(tay_b.by_regime[n_key]["pi"]))
+            r_normal.append(float(tay_b.by_regime[n_key]["r"]))
+            pc = _clone_params(params0, p12=1.0, p21=float(p21))
+            flex_c = solve_flexprice_sss(pc)
+            tay_c = solve_taylor_sss(pc, flex_c)
+            b_key = bad_reg if bad_reg in tay_c.by_regime else sorted(tay_c.by_regime.keys())[-1]
+            pi_bad_cf.append(float(tay_c.by_regime[b_key]["pi"]))
+            r_bad_cf.append(float(tay_c.by_regime[b_key]["r"]))
+        x = dur_bad
+        idx = np.argsort(x)
+        eff = solve_efficient_sss(params0)
+        fig, ax = plt.subplots(1, 2, figsize=(11, 4))
+        ax[0].plot(x[idx], _ann(np.array(pi_normal)[idx]), label="Baseline (normal SSS)")
+        ax[0].plot(x[idx], _ann(np.array(pi_bad_cf)[idx]), "--", label=f"Counterfactual p12->1 ({bad_lbl} SSS)")
+        ax[0].axhline(0.0, color="gray", ls=":")
+        ax[0].set_title("(a) Inflation")
+        ax[0].set_xlabel("Average bad-times duration (quarters)")
+        ax[0].set_ylabel("Ann. perc.")
+        ax[0].legend()
+        ax[1].plot(x[idx], _ann(np.array(r_normal)[idx]), label="Baseline (normal SSS)")
+        ax[1].plot(x[idx], _ann(np.array(r_bad_cf)[idx]), "--", label=f"Counterfactual p12->1 ({bad_lbl} SSS)")
+        ax[1].axhline(_ann(np.array([float(eff["r_hat"])]))[0], color="gray", ls=":")
+        ax[1].set_title("(b) Real interest rate")
+        ax[1].set_xlabel("Average bad-times duration (quarters)")
+        ax[1].set_ylabel("Ann. perc.")
+        ax[1].legend()
+        fig.suptitle("Figure 4: Sensitivity to regime length (Taylor rule)", y=1.03)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure4")
+        plt.close(fig)
+    else:
+        print("[skip] figure4 requires a taylor run.")
 
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    cols_d = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
-    _hist_by_regime(ax[0, 0], _ann(s_d["pi"]), s_d["s"], bins=60, alpha=0.6, colors=cols_d, label_prefix="discretion")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].legend()
-    _hist_by_regime(ax[0, 1], 100.0 * s_d["x"], s_d["s"], bins=60, alpha=0.6, colors=cols_d)
-    ax[0, 1].set_title("(b) Output gap")
-    _hist_by_regime(ax[1, 0], _ann(s_d["r"]), s_d["s_r"], bins=60, alpha=0.6, colors=cols_d)
-    ax[1, 0].set_title("(c) Real interest rate")
-    _hist_by_regime(ax[1, 1], s_d["Delta"], s_d["s"], bins=60, alpha=0.6, colors=cols_d)
-    ax[1, 1].set_title("(d) Price dispersion")
-    for a in ax.ravel():
-        a.set_xlabel("model units")
-    fig.suptitle("Figure 5: Ergodic distribution: discretion", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure5")
-    plt.close(fig)
+    if s_d is not None:
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        cols_d = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
+        _hist_by_regime(ax[0, 0], _ann(s_d["pi"]), s_d["s"], bins=60, alpha=0.6, colors=cols_d, label_prefix="discretion")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].legend()
+        _hist_by_regime(ax[0, 1], 100.0 * s_d["x"], s_d["s"], bins=60, alpha=0.6, colors=cols_d)
+        ax[0, 1].set_title("(b) Output gap")
+        _hist_by_regime(ax[1, 0], _ann(s_d["r"]), s_d["s_r"], bins=60, alpha=0.6, colors=cols_d)
+        ax[1, 0].set_title("(c) Real interest rate")
+        _hist_by_regime(ax[1, 1], s_d["Delta"], s_d["s"], bins=60, alpha=0.6, colors=cols_d)
+        ax[1, 1].set_title("(d) Price dispersion")
+        for a in ax.ravel():
+            a.set_xlabel("model units")
+        fig.suptitle("Figure 5: Ergodic distribution: discretion", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure5")
+        plt.close(fig)
+    else:
+        print("[skip] figure5 requires discretion postprocess artifacts.")
 
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    cols_c = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
-    _hist_by_regime(ax[0, 0], _ann(s_c["pi"]), s_c["s"], bins=60, alpha=0.6, colors=cols_c, label_prefix="commitment")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].legend()
-    _hist_by_regime(ax[0, 1], 100.0 * s_c["x"], s_c["s"], bins=60, alpha=0.6, colors=cols_c)
-    ax[0, 1].set_title("(b) Output gap")
-    _hist_by_regime(ax[1, 0], _ann(s_c["r"]), s_c["s_r"], bins=60, alpha=0.6, colors=cols_c)
-    ax[1, 0].set_title("(c) Real interest rate")
-    _hist_by_regime(ax[1, 1], s_c["Delta"], s_c["s"], bins=60, alpha=0.6, colors=cols_c)
-    ax[1, 1].set_title("(d) Price dispersion")
-    for a in ax.ravel():
-        a.set_xlabel("model units")
-    fig.suptitle("Figure 6: Ergodic distribution: commitment", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure6")
-    plt.close(fig)
+    if s_c is not None:
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        cols_c = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
+        _hist_by_regime(ax[0, 0], _ann(s_c["pi"]), s_c["s"], bins=60, alpha=0.6, colors=cols_c, label_prefix="commitment")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].legend()
+        _hist_by_regime(ax[0, 1], 100.0 * s_c["x"], s_c["s"], bins=60, alpha=0.6, colors=cols_c)
+        ax[0, 1].set_title("(b) Output gap")
+        _hist_by_regime(ax[1, 0], _ann(s_c["r"]), s_c["s_r"], bins=60, alpha=0.6, colors=cols_c)
+        ax[1, 0].set_title("(c) Real interest rate")
+        _hist_by_regime(ax[1, 1], s_c["Delta"], s_c["s"], bins=60, alpha=0.6, colors=cols_c)
+        ax[1, 1].set_title("(d) Price dispersion")
+        for a in ax.ravel():
+            a.set_xlabel("model units")
+        fig.suptitle("Figure 6: Ergodic distribution: commitment", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure6")
+        plt.close(fig)
+    else:
+        print("[skip] figure6 requires commitment postprocess artifacts.")
 
-    pi_c7, x_c7, r_c7, P_c7 = _irf_pack(ir7_c, pre=pre, ir_h=ir_h)
-    pi_m7, x_m7, r_m7, P_m7 = _irf_pack(ir7_m, pre=pre, ir_h=ir_h)
-    t7 = np.arange(-pre, -pre + len(pi_c7))
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].plot(t7, _ann(pi_c7), label="Commitment")
-    ax[0, 0].plot(t7, _ann(pi_m7), "--", label="Modified Taylor")
-    ax[0, 0].axhline(0, color="k", lw=1)
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 1].plot(t7, 100.0 * x_c7, label="Commitment")
-    ax[0, 1].plot(t7, 100.0 * x_m7, "--", label="Modified Taylor")
-    ax[0, 1].axhline(0, color="k", lw=1)
-    ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].plot(t7, _ann(r_c7), label="Commitment")
-    ax[1, 0].plot(t7, _ann(r_m7), "--", label="Modified Taylor")
-    ax[1, 0].axhline(0, color="k", lw=1)
-    ax[1, 0].set_title("(c) Real interest rate")
-    ax[1, 1].plot(t7, P_c7, label="Commitment")
-    ax[1, 1].plot(t7, P_m7, "--", label="Modified Taylor")
-    ax[1, 1].set_title("(d) Price level")
-    for a in ax.ravel():
-        a.set_xlabel("Time in quarters")
-    ax[0, 0].legend()
-    fig.suptitle("Figure 7: Impulse response to a transitory cost-push shock: commitment versus Taylor rule.", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure7")
-    plt.close(fig)
+    if (ir7_c is not None) and (ir7_m is not None):
+        pi_c7, x_c7, r_c7, P_c7 = _irf_pack(ir7_c, pre=pre, ir_h=ir_h)
+        pi_m7, x_m7, r_m7, P_m7 = _irf_pack(ir7_m, pre=pre, ir_h=ir_h)
+        x_c7 = _x_dev_pre_shock(x_c7, pre=pre)
+        x_m7 = _x_dev_pre_shock(x_m7, pre=pre)
+        t7 = np.arange(-pre, -pre + len(pi_c7))
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].plot(t7, _ann(pi_c7), label="Commitment")
+        ax[0, 0].plot(t7, _ann(pi_m7), "--", label="Modified Taylor")
+        ax[0, 0].axhline(0, color="k", lw=1)
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 1].plot(t7, 100.0 * x_c7, label="Commitment")
+        ax[0, 1].plot(t7, 100.0 * x_m7, "--", label="Modified Taylor")
+        ax[0, 1].axhline(0, color="k", lw=1)
+        ax[0, 1].set_title("(b) Output gap (deviation from pre-shock)")
+        ax[1, 0].plot(t7, _ann(r_c7), label="Commitment")
+        ax[1, 0].plot(t7, _ann(r_m7), "--", label="Modified Taylor")
+        ax[1, 0].axhline(0, color="k", lw=1)
+        ax[1, 0].set_title("(c) Real interest rate")
+        ax[1, 1].plot(t7, P_c7, label="Commitment")
+        ax[1, 1].plot(t7, P_m7, "--", label="Modified Taylor")
+        ax[1, 1].set_title("(d) Price level")
+        for a in ax.ravel():
+            a.set_xlabel("Time in quarters")
+        ax[0, 0].legend()
+        fig.suptitle("Figure 7: Impulse response to a transitory cost-push shock: commitment versus Taylor rule.", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure7")
+        plt.close(fig)
+    else:
+        print("[skip] figure7 requires commitment + mod_taylor IR artifacts.")
 
-    pi_c8, x_c8, r_c8, D_c8 = _transition_pack(tr_c, pre=pre, n_post=n_post)
-    pi_d8, x_d8, r_d8, D_d8 = _transition_pack(tr_d, pre=pre, n_post=n_post)
-    t8 = np.arange(-pre, n_post)
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].plot(t8, _ann(pi_c8), label="Commitment")
-    ax[0, 0].plot(t8, _ann(pi_d8), "--", label="Discretion")
-    ax[0, 0].axhline(0, color="k", lw=1)
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 1].plot(t8, 100.0 * x_c8, label="Commitment")
-    ax[0, 1].plot(t8, 100.0 * x_d8, "--", label="Discretion")
-    ax[0, 1].axhline(0, color="k", lw=1)
-    ax[0, 1].set_title("(b) Output gap")
-    ax[1, 0].plot(t8, _ann(r_c8), label="Commitment")
-    ax[1, 0].plot(t8, _ann(r_d8), "--", label="Discretion")
-    ax[1, 0].axhline(0, color="k", lw=1)
-    ax[1, 0].set_title("(c) Real interest rate")
-    ax[1, 1].plot(t8, D_c8, label="Commitment")
-    ax[1, 1].plot(t8, D_d8, "--", label="Discretion")
-    ax[1, 1].set_title("(d) Price dispersion")
-    for a in ax.ravel():
-        a.set_xlabel("Time in quarters")
-    ax[0, 0].legend()
-    fig.suptitle("Figure 8: Response to a regime change: commitment versus discretion.", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure8")
-    plt.close(fig)
+    if (tr_c is not None) and (tr_d is not None):
+        pi_c8, x_c8, r_c8, D_c8 = _transition_pack(tr_c, pre=pre, n_post=n_post)
+        pi_d8, x_d8, r_d8, D_d8 = _transition_pack(tr_d, pre=pre, n_post=n_post)
+        x_c8 = _x_dev_pre_shock(x_c8, pre=pre)
+        x_d8 = _x_dev_pre_shock(x_d8, pre=pre)
+        t8 = np.arange(-pre, n_post)
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].plot(t8, _ann(pi_c8), label="Commitment")
+        ax[0, 0].plot(t8, _ann(pi_d8), "--", label="Discretion")
+        ax[0, 0].axhline(0, color="k", lw=1)
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 1].plot(t8, 100.0 * x_c8, label="Commitment")
+        ax[0, 1].plot(t8, 100.0 * x_d8, "--", label="Discretion")
+        ax[0, 1].axhline(0, color="k", lw=1)
+        ax[0, 1].set_title("(b) Output gap (deviation from pre-shock)")
+        ax[1, 0].plot(t8, _ann(r_c8), label="Commitment")
+        ax[1, 0].plot(t8, _ann(r_d8), "--", label="Discretion")
+        ax[1, 0].axhline(0, color="k", lw=1)
+        ax[1, 0].set_title("(c) Real interest rate")
+        ax[1, 1].plot(t8, D_c8, label="Commitment")
+        ax[1, 1].plot(t8, D_d8, "--", label="Discretion")
+        ax[1, 1].set_title("(d) Price dispersion")
+        for a in ax.ravel():
+            a.set_xlabel("Time in quarters")
+        ax[0, 0].legend()
+        fig.suptitle("Figure 8: Response to a regime change: commitment versus discretion.", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure8")
+        plt.close(fig)
+    else:
+        print("[skip] figure8 requires commitment + discretion IR artifacts.")
+
     for start_reg in common_cd:
         pi_c8_s, x_c8_s, r_c8_s, D_c8_s = _transition_pack(tr_c_by_start[start_reg], pre=pre, n_post=n_post)
         pi_d8_s, x_d8_s, r_d8_s, D_d8_s = _transition_pack(tr_d_by_start[start_reg], pre=pre, n_post=n_post)
+        x_c8_s = _x_dev_pre_shock(x_c8_s, pre=pre)
+        x_d8_s = _x_dev_pre_shock(x_d8_s, pre=pre)
         t8_s = np.arange(-pre, n_post)
         fig, ax = plt.subplots(2, 2, figsize=(12, 8))
         ax[0, 0].plot(t8_s, _ann(pi_c8_s), label="Commitment")
@@ -762,7 +937,7 @@ def build_figures(
         ax[0, 1].plot(t8_s, 100.0 * x_c8_s, label="Commitment")
         ax[0, 1].plot(t8_s, 100.0 * x_d8_s, "--", label="Discretion")
         ax[0, 1].axhline(0, color="k", lw=1)
-        ax[0, 1].set_title("(b) Output gap")
+        ax[0, 1].set_title("(b) Output gap (deviation from pre-shock)")
         ax[1, 0].plot(t8_s, _ann(r_c8_s), label="Commitment")
         ax[1, 0].plot(t8_s, _ann(r_d8_s), "--", label="Discretion")
         ax[1, 0].axhline(0, color="k", lw=1)
@@ -781,147 +956,171 @@ def build_figures(
         _savefig(fig_dir, f"figure8_start_{_regime_tag(start_reg).lower()}")
         plt.close(fig)
 
-    pi_b9, x_b9, r_b9, P_b9 = _irf_pack(ir9_b, pre=pre, ir_h=ir_h)
-    pi_h9, x_h9, r_h9, P_h9 = _irf_pack(ir9_h, pre=pre, ir_h=ir_h)
-    t9 = np.arange(-pre, -pre + len(pi_b9))
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].plot(t9, _ann(pi_b9), label="baseline rho_tau")
-    ax[0, 0].plot(t9, _ann(pi_h9), "--", label="rho_tau=0.99")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].axhline(0, color="k", lw=1)
-    ax[0, 1].plot(t9, 100.0 * x_b9, label="baseline rho_tau")
-    ax[0, 1].plot(t9, 100.0 * x_h9, "--", label="rho_tau=0.99")
-    ax[0, 1].set_title("(b) Output gap")
-    ax[0, 1].axhline(0, color="k", lw=1)
-    ax[1, 0].plot(t9, _ann(r_b9), label="baseline rho_tau")
-    ax[1, 0].plot(t9, _ann(r_h9), "--", label="rho_tau=0.99")
-    ax[1, 0].set_title("(c) Real interest rate")
-    ax[1, 0].axhline(0, color="k", lw=1)
-    ax[1, 1].plot(t9, P_b9, label="baseline rho_tau")
-    ax[1, 1].plot(t9, P_h9, "--", label="rho_tau=0.99")
-    ax[1, 1].set_title("(d) Price level")
-    for a in ax.ravel():
-        a.set_xlabel("Time in quarters")
-    ax[0, 0].legend()
-    fig.suptitle("Figure 9: Impulse response to a transitory cost-push shock with different levels of persistence.", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure9")
-    plt.close(fig)
+    if (ir9_b is not None) and (ir9_h is not None):
+        pi_b9, x_b9, r_b9, P_b9 = _irf_pack(ir9_b, pre=pre, ir_h=ir_h)
+        pi_h9, x_h9, r_h9, P_h9 = _irf_pack(ir9_h, pre=pre, ir_h=ir_h)
+        x_b9 = _x_dev_pre_shock(x_b9, pre=pre)
+        x_h9 = _x_dev_pre_shock(x_h9, pre=pre)
+        t9 = np.arange(-pre, -pre + len(pi_b9))
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].plot(t9, _ann(pi_b9), label="baseline rho_tau")
+        ax[0, 0].plot(t9, _ann(pi_h9), "--", label="rho_tau=0.99")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].axhline(0, color="k", lw=1)
+        ax[0, 1].plot(t9, 100.0 * x_b9, label="baseline rho_tau")
+        ax[0, 1].plot(t9, 100.0 * x_h9, "--", label="rho_tau=0.99")
+        ax[0, 1].set_title("(b) Output gap (deviation from pre-shock)")
+        ax[0, 1].axhline(0, color="k", lw=1)
+        ax[1, 0].plot(t9, _ann(r_b9), label="baseline rho_tau")
+        ax[1, 0].plot(t9, _ann(r_h9), "--", label="rho_tau=0.99")
+        ax[1, 0].set_title("(c) Real interest rate")
+        ax[1, 0].axhline(0, color="k", lw=1)
+        ax[1, 1].plot(t9, P_b9, label="baseline rho_tau")
+        ax[1, 1].plot(t9, P_h9, "--", label="rho_tau=0.99")
+        ax[1, 1].set_title("(d) Price level")
+        for a in ax.ravel():
+            a.set_xlabel("Time in quarters")
+        ax[0, 0].legend()
+        fig.suptitle("Figure 9: Impulse response to a transitory cost-push shock with different levels of persistence.", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure9")
+        plt.close(fig)
+    else:
+        print("[skip] figure9 requires commitment counterfactual IR artifacts.")
 
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    cols_tz = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
-    cols_mz = ["tab:green", "tab:red", "tab:olive", "tab:pink", "tab:cyan"]
-    _hist_by_regime(ax[0, 0], _ann(s_tz["pi"]), s_tz["s"], bins=60, alpha=0.45, colors=cols_tz, label_prefix="Taylor ZLB")
-    _hist_by_regime(ax[0, 0], _ann(s_mz["pi"]), s_mz["s"], bins=60, alpha=0.45, colors=cols_mz, label_prefix="Mod Taylor ZLB")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].legend(fontsize=8)
-    _hist_by_regime(ax[0, 1], 100.0 * s_tz["x"], s_tz["s"], bins=60, alpha=0.45, colors=cols_tz)
-    _hist_by_regime(ax[0, 1], 100.0 * s_mz["x"], s_mz["s"], bins=60, alpha=0.45, colors=cols_mz)
-    ax[0, 1].set_title("(b) Output gap")
-    _hist_by_regime(ax[1, 0], _ann(s_tz["i"]), s_tz["s"], bins=60, alpha=0.45, colors=cols_tz)
-    _hist_by_regime(ax[1, 0], _ann(s_mz["i"]), s_mz["s"], bins=60, alpha=0.45, colors=cols_mz)
-    ax[1, 0].set_title("(c) Nominal interest rate")
-    _hist_by_regime(ax[1, 1], _ann(s_tz["r"]), s_tz["s_r"], bins=60, alpha=0.45, colors=cols_tz)
-    _hist_by_regime(ax[1, 1], _ann(s_mz["r"]), s_mz["s_r"], bins=60, alpha=0.45, colors=cols_mz)
-    ax[1, 1].set_title("(d) Real interest rate")
-    for a in ax.ravel():
-        a.set_xlabel("model units")
-    fig.suptitle("Figure 10: Ergodic distribution: Taylor rules with a ZLB", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure10")
-    plt.close(fig)
+    if (s_tz is not None) and (s_mz is not None):
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        cols_tz = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
+        cols_mz = ["tab:green", "tab:red", "tab:olive", "tab:pink", "tab:cyan"]
+        _hist_by_regime(ax[0, 0], _ann(s_tz["pi"]), s_tz["s"], bins=60, alpha=0.45, colors=cols_tz, label_prefix="Taylor ZLB")
+        _hist_by_regime(ax[0, 0], _ann(s_mz["pi"]), s_mz["s"], bins=60, alpha=0.45, colors=cols_mz, label_prefix="Mod Taylor ZLB")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].legend(fontsize=8)
+        _hist_by_regime(ax[0, 1], 100.0 * s_tz["x"], s_tz["s"], bins=60, alpha=0.45, colors=cols_tz)
+        _hist_by_regime(ax[0, 1], 100.0 * s_mz["x"], s_mz["s"], bins=60, alpha=0.45, colors=cols_mz)
+        ax[0, 1].set_title("(b) Output gap")
+        _hist_by_regime(ax[1, 0], _ann(s_tz["i"]), s_tz["s"], bins=60, alpha=0.45, colors=cols_tz)
+        _hist_by_regime(ax[1, 0], _ann(s_mz["i"]), s_mz["s"], bins=60, alpha=0.45, colors=cols_mz)
+        ax[1, 0].set_title("(c) Nominal interest rate")
+        _hist_by_regime(ax[1, 1], _ann(s_tz["r"]), s_tz["s_r"], bins=60, alpha=0.45, colors=cols_tz)
+        _hist_by_regime(ax[1, 1], _ann(s_mz["r"]), s_mz["s_r"], bins=60, alpha=0.45, colors=cols_mz)
+        ax[1, 1].set_title("(d) Real interest rate")
+        for a in ax.ravel():
+            a.set_xlabel("model units")
+        fig.suptitle("Figure 10: Ergodic distribution: Taylor rules with a ZLB", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure10")
+        plt.close(fig)
+    else:
+        print("[skip] figure10 requires taylor_zlb + mod_taylor_zlb postprocess artifacts.")
 
-    pi_c11, x_c11, r_c11, D_c11 = _transition_pack(tr_c, pre=pre, n_post=n_post)
-    pi_z11, x_z11, r_z11, D_z11 = _transition_pack(tr_cz, pre=pre, n_post=n_post)
-    t11 = np.arange(-pre, n_post)
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].plot(t11, _ann(pi_c11), label="Commitment (no ZLB)")
-    ax[0, 0].plot(t11, _ann(pi_z11), "--", label="Commitment ZLB")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].axhline(0, color="k", lw=1)
-    ax[0, 1].plot(t11, 100.0 * x_c11, label="Commitment (no ZLB)")
-    ax[0, 1].plot(t11, 100.0 * x_z11, "--", label="Commitment ZLB")
-    ax[0, 1].set_title("(b) Output gap")
-    ax[0, 1].axhline(0, color="k", lw=1)
-    ax[1, 0].plot(t11, _ann(r_c11), label="Commitment (no ZLB)")
-    ax[1, 0].plot(t11, _ann(r_z11), "--", label="Commitment ZLB")
-    ax[1, 0].set_title("(c) Real interest rate")
-    ax[1, 0].axhline(0, color="k", lw=1)
-    ax[1, 1].plot(t11, D_c11, label="Commitment (no ZLB)")
-    ax[1, 1].plot(t11, D_z11, "--", label="Commitment ZLB")
-    ax[1, 1].set_title("(d) Price dispersion")
-    for a in ax.ravel():
-        a.set_xlabel("Time in quarters")
-    ax[0, 0].legend()
-    fig.suptitle("Figure 11: Response to a regime change: commitment with ZLB.", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure11")
-    plt.close(fig)
+    if (tr_c is not None) and (tr_cz is not None):
+        pi_c11, x_c11, r_c11, D_c11 = _transition_pack(tr_c, pre=pre, n_post=n_post)
+        pi_z11, x_z11, r_z11, D_z11 = _transition_pack(tr_cz, pre=pre, n_post=n_post)
+        x_c11 = _x_dev_pre_shock(x_c11, pre=pre)
+        x_z11 = _x_dev_pre_shock(x_z11, pre=pre)
+        t11 = np.arange(-pre, n_post)
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].plot(t11, _ann(pi_c11), label="Commitment (no ZLB)")
+        ax[0, 0].plot(t11, _ann(pi_z11), "--", label="Commitment ZLB")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].axhline(0, color="k", lw=1)
+        ax[0, 1].plot(t11, 100.0 * x_c11, label="Commitment (no ZLB)")
+        ax[0, 1].plot(t11, 100.0 * x_z11, "--", label="Commitment ZLB")
+        ax[0, 1].set_title("(b) Output gap (deviation from pre-shock)")
+        ax[0, 1].axhline(0, color="k", lw=1)
+        ax[1, 0].plot(t11, _ann(r_c11), label="Commitment (no ZLB)")
+        ax[1, 0].plot(t11, _ann(r_z11), "--", label="Commitment ZLB")
+        ax[1, 0].set_title("(c) Real interest rate")
+        ax[1, 0].axhline(0, color="k", lw=1)
+        ax[1, 1].plot(t11, D_c11, label="Commitment (no ZLB)")
+        ax[1, 1].plot(t11, D_z11, "--", label="Commitment ZLB")
+        ax[1, 1].set_title("(d) Price dispersion")
+        for a in ax.ravel():
+            a.set_xlabel("Time in quarters")
+        ax[0, 0].legend()
+        fig.suptitle("Figure 11: Response to a regime change: commitment with ZLB.", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure11")
+        plt.close(fig)
+    else:
+        print("[skip] figure11 requires commitment + commitment_zlb IR artifacts.")
 
-    defs_c_full = _load_defs_npz(os.path.join(pp_c, "simulated_definitions.npz"))
-    pi_sim = np.asarray(defs_c_full["pi_tot_y"], dtype=np.float64).reshape(-1)
-    t_show = min(10_000, pi_sim.shape[0])
-    P = np.cumprod(np.clip(1.0 + pi_sim[:t_show], 1e-12, None))
-    fig, ax = plt.subplots(1, 1, figsize=(11, 4))
-    ax.plot(np.arange(t_show), P)
-    ax.set_title("Figure 12: Price level dynamics under commitment")
-    ax.set_xlabel("Quarter")
-    ax.set_ylabel("Price level index")
-    plt.tight_layout()
-    _savefig(fig_dir, "figure12")
-    plt.close(fig)
+    if pp_c is not None:
+        defs_c_full = _load_defs_npz(os.path.join(pp_c, "simulated_definitions.npz"))
+        pi_sim = np.asarray(defs_c_full["pi_tot_y"], dtype=np.float64).reshape(-1)
+        t_show = min(10_000, pi_sim.shape[0])
+        P = np.cumprod(np.clip(1.0 + pi_sim[:t_show], 1e-12, None))
+        fig, ax = plt.subplots(1, 1, figsize=(11, 4))
+        ax.plot(np.arange(t_show), P)
+        ax.set_title("Figure 12: Price level dynamics under commitment")
+        ax.set_xlabel("Quarter")
+        ax.set_ylabel("Price level index")
+        plt.tight_layout()
+        _savefig(fig_dir, "figure12")
+        plt.close(fig)
+    else:
+        print("[skip] figure12 requires commitment postprocess artifacts.")
 
-    pi_b13, x_b13, r_b13, D_b13 = _transition_pack(ir13_b, pre=pre, n_post=n_post)
-    pi_g13, x_g13, r_g13, D_g13 = _transition_pack(ir13_g, pre=pre, n_post=n_post)
-    t13 = np.arange(-pre, n_post)
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].plot(t13, _ann(pi_b13), label="baseline")
-    ax[0, 0].plot(t13, _ann(pi_g13), "--", label="larger shock")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].axhline(0, color="k", lw=1)
-    ax[0, 1].plot(t13, 100.0 * x_b13, label="baseline")
-    ax[0, 1].plot(t13, 100.0 * x_g13, "--", label="larger shock")
-    ax[0, 1].set_title("(b) Output gap")
-    ax[0, 1].axhline(0, color="k", lw=1)
-    ax[1, 0].plot(t13, _ann(r_b13), label="baseline")
-    ax[1, 0].plot(t13, _ann(r_g13), "--", label="larger shock")
-    ax[1, 0].set_title("(c) Real interest rate")
-    ax[1, 0].axhline(0, color="k", lw=1)
-    ax[1, 1].plot(t13, D_b13, label="baseline")
-    ax[1, 1].plot(t13, D_g13, "--", label="larger shock")
-    ax[1, 1].set_title("(d) Price dispersion")
-    for a in ax.ravel():
-        a.set_xlabel("Time in quarters")
-    ax[0, 0].legend()
-    fig.suptitle("Figure 13: Response to a regime change: shock size", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure13")
-    plt.close(fig)
+    if (ir13_b is not None) and (ir13_g is not None):
+        pi_b13, x_b13, r_b13, D_b13 = _transition_pack(ir13_b, pre=pre, n_post=n_post)
+        pi_g13, x_g13, r_g13, D_g13 = _transition_pack(ir13_g, pre=pre, n_post=n_post)
+        x_b13 = _x_dev_pre_shock(x_b13, pre=pre)
+        x_g13 = _x_dev_pre_shock(x_g13, pre=pre)
+        t13 = np.arange(-pre, n_post)
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        ax[0, 0].plot(t13, _ann(pi_b13), label="baseline")
+        ax[0, 0].plot(t13, _ann(pi_g13), "--", label="larger shock")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].axhline(0, color="k", lw=1)
+        ax[0, 1].plot(t13, 100.0 * x_b13, label="baseline")
+        ax[0, 1].plot(t13, 100.0 * x_g13, "--", label="larger shock")
+        ax[0, 1].set_title("(b) Output gap (deviation from pre-shock)")
+        ax[0, 1].axhline(0, color="k", lw=1)
+        ax[1, 0].plot(t13, _ann(r_b13), label="baseline")
+        ax[1, 0].plot(t13, _ann(r_g13), "--", label="larger shock")
+        ax[1, 0].set_title("(c) Real interest rate")
+        ax[1, 0].axhline(0, color="k", lw=1)
+        ax[1, 1].plot(t13, D_b13, label="baseline")
+        ax[1, 1].plot(t13, D_g13, "--", label="larger shock")
+        ax[1, 1].set_title("(d) Price dispersion")
+        for a in ax.ravel():
+            a.set_xlabel("Time in quarters")
+        ax[0, 0].legend()
+        fig.suptitle("Figure 13: Response to a regime change: shock size", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure13")
+        plt.close(fig)
+    else:
+        print("[skip] figure13 requires commitment baseline + shock-size IR artifacts.")
 
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    # Paper note for Fig. 14 color mapping:
-    # commitment -> blue/orange, discretion -> green/red.
-    cols_cz = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
-    cols_dz = ["tab:green", "tab:red", "tab:olive", "tab:pink", "tab:cyan"]
-    _hist_by_regime(ax[0, 0], _ann(s_cz["pi"]), s_cz["s"], bins=60, alpha=0.45, colors=cols_cz, label_prefix="Commitment ZLB")
-    _hist_by_regime(ax[0, 0], _ann(s_dz["pi"]), s_dz["s"], bins=60, alpha=0.45, colors=cols_dz, label_prefix="Discretion ZLB")
-    ax[0, 0].set_title("(a) Inflation")
-    ax[0, 0].legend(fontsize=8)
-    _hist_by_regime(ax[0, 1], 100.0 * s_cz["x"], s_cz["s"], bins=60, alpha=0.45, colors=cols_cz)
-    _hist_by_regime(ax[0, 1], 100.0 * s_dz["x"], s_dz["s"], bins=60, alpha=0.45, colors=cols_dz)
-    ax[0, 1].set_title("(b) Output gap")
-    _hist_by_regime(ax[1, 0], _ann(s_cz["i"]), s_cz["s"], bins=60, alpha=0.45, colors=cols_cz)
-    _hist_by_regime(ax[1, 0], _ann(s_dz["i"]), s_dz["s"], bins=60, alpha=0.45, colors=cols_dz)
-    ax[1, 0].set_title("(c) Nominal interest rate")
-    _hist_by_regime(ax[1, 1], _ann(s_cz["r"]), s_cz["s_r"], bins=60, alpha=0.45, colors=cols_cz)
-    _hist_by_regime(ax[1, 1], _ann(s_dz["r"]), s_dz["s_r"], bins=60, alpha=0.45, colors=cols_dz)
-    ax[1, 1].set_title("(d) Real interest rate")
-    for a in ax.ravel():
-        a.set_xlabel("model units")
-    fig.suptitle("Figure 14: Ergodic distribution: optimal policy at the ZLB.", y=1.02)
-    plt.tight_layout()
-    _savefig(fig_dir, "figure14")
-    plt.close(fig)
+    if (s_cz is not None) and (s_dz is not None):
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+        # Paper note for Fig. 14 color mapping:
+        # commitment -> blue/orange, discretion -> green/red.
+        cols_cz = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"]
+        cols_dz = ["tab:green", "tab:red", "tab:olive", "tab:pink", "tab:cyan"]
+        _hist_by_regime(ax[0, 0], _ann(s_cz["pi"]), s_cz["s"], bins=60, alpha=0.45, colors=cols_cz, label_prefix="Commitment ZLB")
+        _hist_by_regime(ax[0, 0], _ann(s_dz["pi"]), s_dz["s"], bins=60, alpha=0.45, colors=cols_dz, label_prefix="Discretion ZLB")
+        ax[0, 0].set_title("(a) Inflation")
+        ax[0, 0].legend(fontsize=8)
+        _hist_by_regime(ax[0, 1], 100.0 * s_cz["x"], s_cz["s"], bins=60, alpha=0.45, colors=cols_cz)
+        _hist_by_regime(ax[0, 1], 100.0 * s_dz["x"], s_dz["s"], bins=60, alpha=0.45, colors=cols_dz)
+        ax[0, 1].set_title("(b) Output gap")
+        _hist_by_regime(ax[1, 0], _ann(s_cz["i"]), s_cz["s"], bins=60, alpha=0.45, colors=cols_cz)
+        _hist_by_regime(ax[1, 0], _ann(s_dz["i"]), s_dz["s"], bins=60, alpha=0.45, colors=cols_dz)
+        ax[1, 0].set_title("(c) Nominal interest rate")
+        _hist_by_regime(ax[1, 1], _ann(s_cz["r"]), s_cz["s_r"], bins=60, alpha=0.45, colors=cols_cz)
+        _hist_by_regime(ax[1, 1], _ann(s_dz["r"]), s_dz["s_r"], bins=60, alpha=0.45, colors=cols_dz)
+        ax[1, 1].set_title("(d) Real interest rate")
+        for a in ax.ravel():
+            a.set_xlabel("model units")
+        fig.suptitle("Figure 14: Ergodic distribution: optimal policy at the ZLB.", y=1.02)
+        plt.tight_layout()
+        _savefig(fig_dir, "figure14")
+        plt.close(fig)
+    else:
+        print("[skip] figure14 requires commitment_zlb + discretion_zlb postprocess artifacts.")
 
     note = os.path.join(fig_dir, "figure1_note.txt")
     with open(note, "w", encoding="utf-8") as f:
@@ -940,7 +1139,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--use-selected", type=str, default="true")
     ap.add_argument("--ensure-postprocess", type=str, default="true")
     ap.add_argument("--ensure-ir", type=str, default="true")
-    ap.add_argument("--cons-mode", type=str, default="paper", choices=["author", "paper"])
+    ap.add_argument("--cons-mode", type=str, default="author", choices=["author", "paper"])
     ap.add_argument("--force-rebuild-postprocess", type=str, default="false")
     ap.add_argument("--force-rebuild-ir", type=str, default="false")
     ap.add_argument("--pre", type=int, default=5)

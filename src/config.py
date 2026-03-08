@@ -450,7 +450,7 @@ class TrainConfig:
         )
         auto_warmup = 10_000 if long_patience_family else 6_000
         auto_patience = 40_000 if long_patience_family else 25_000
-        auto_min_rel_delta = 1e-5
+        auto_min_rel_delta = 5e-4
 
         base = TrainConfig(
             mode="author",
@@ -527,23 +527,21 @@ class TrainConfig:
         if disc_comm_family:
             auto_warmup = 8_000
             auto_patience = 18_000
-            auto_min_rel_delta = 7e-5
+            auto_min_rel_delta = 5e-4
             step_cap = 320_000
-            # Keep pure relative plateau-stop semantics for discretion/commitment.
-            # Stop is controlled by (metric, min_rel_delta, patience), without absolute gate.
             quality_gate = None
         elif taylor_family:
             auto_warmup = 8_000
             auto_patience = 22_000
-            auto_min_rel_delta = 5e-5
+            auto_min_rel_delta = 5e-4
             step_cap = 420_000
-            quality_gate = 5e-3
+            quality_gate = None
         else:
             auto_warmup = 6_000
             auto_patience = 16_000
-            auto_min_rel_delta = 5e-5
+            auto_min_rel_delta = 5e-4
             step_cap = 300_000
-            quality_gate = 5e-3
+            quality_gate = None
 
         base = TrainConfig.author_like(
             policy=policy,

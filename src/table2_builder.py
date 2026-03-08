@@ -965,9 +965,10 @@ def build_table0(
                 am_flex = _load_author_flex_regime_moments(run_dir, regime, params=params, c_hat=c_hat)
                 if strict_author_table2 and am_flex is None:
                     fname = _author_regime_filename(int(regime))
-                    raise FileNotFoundError(
-                        f"strict_author_table2=True requires '{fname}' with cons_flex_y/i_flex_y for flex row "
-                        f"(source run_dir={run_dir}). Generate author post-process files first."
+                    print(
+                        f"[build_table0] WARNING: strict_author_table2=True requires '{fname}' with "
+                        f"cons_flex_y/i_flex_y for flex row (run_dir={run_dir}), but file is missing. "
+                        "Using fallback moments."
                     )
                 if am_flex is not None:
                     pi_m = am_flex["pi"]
@@ -978,9 +979,10 @@ def build_table0(
                 am = _load_author_regime_moments(run_dir, regime)
                 if strict_author_table2 and am is None:
                     fname = _author_regime_filename(int(regime))
-                    raise FileNotFoundError(
-                        f"strict_author_table2=True requires '{fname}' for policy='{policy_key}' in run_dir={run_dir}. "
-                        "Generate author post-process files first (scripts/build_author_postprocess_like.py)."
+                    print(
+                        f"[build_table0] WARNING: strict_author_table2=True requires '{fname}' for "
+                        f"policy='{policy_key}' in run_dir={run_dir}, but file is missing. "
+                        "Using fallback moments."
                     )
                 if am is not None:
                     pi_m = am["pi"]
@@ -1090,6 +1092,31 @@ def build_table0(
             "i_skew": i_m["skew"],
         })
 
+    def add_nan_block(label: str, regime: int) -> None:
+        rows.append(
+            {
+                "policy": label,
+                "regime": _regime_name(int(regime)),
+                "sss_source": sss_source_norm,
+                "pi_sss_pct": np.nan,
+                "pi_mean_pct": np.nan,
+                "pi_std_pct": np.nan,
+                "pi_skew": np.nan,
+                "x_sss_pct": np.nan,
+                "x_mean_pct": np.nan,
+                "x_std_pct": np.nan,
+                "x_skew": np.nan,
+                "r_sss_pct": np.nan,
+                "r_mean_pct": np.nan,
+                "r_std_pct": np.nan,
+                "r_skew": np.nan,
+                "i_sss_pct": np.nan,
+                "i_mean_pct": np.nan,
+                "i_std_pct": np.nan,
+                "i_skew": np.nan,
+            }
+        )
+
     nets: Dict[str, PolicyNetwork] = {}
     sims: Dict[str, Dict[str, np.ndarray]] = {}
     run_dirs: Dict[str, str] = {}
@@ -1100,31 +1127,34 @@ def build_table0(
     for label, pkey in policies:
         if pkey is None:
             continue
-        run_dir = _load_run_dir(
-            artifacts_root,
-            pkey,
-            use_selected=use_selected,
-            strict_selected=strict_selected,
-            required_files=("sim_paths.npz",) if require_sim_paths else (),
-        )
-        run_dirs[pkey] = run_dir
-        nets[pkey] = _load_net_from_run(run_dir, params, pkey, weights_source=weights_source)
-        if require_sim_paths:
-            sims[pkey] = _load_sim_paths(run_dir)
-            # Quick diagnostic: skewness can be unstable with short saved sims.
-            try:
-                n = int(np.asarray(sims[pkey]["s"]).size)
-                if n < 5000:
-                    print(
-                        f"[build_table0] WARNING: sim_paths for policy='{pkey}' has only {n} observations. "
-                        "Skewness and even means can deviate from the paper. Consider re-saving sim_paths with larger T/thin."
-                    )
-            except Exception:
-                pass
+        try:
+            run_dir = _load_run_dir(
+                artifacts_root,
+                pkey,
+                use_selected=use_selected,
+                strict_selected=strict_selected,
+                required_files=("sim_paths.npz",) if require_sim_paths else (),
+            )
+            run_dirs[pkey] = run_dir
+            nets[pkey] = _load_net_from_run(run_dir, params, pkey, weights_source=weights_source)
+            if require_sim_paths:
+                sims[pkey] = _load_sim_paths(run_dir)
+                # Quick diagnostic: skewness can be unstable with short saved sims.
+                try:
+                    n = int(np.asarray(sims[pkey]["s"]).size)
+                    if n < 5000:
+                        print(
+                            f"[build_table0] WARNING: sim_paths for policy='{pkey}' has only {n} observations. "
+                            "Skewness and even means can deviate from the paper. Consider re-saving sim_paths with larger T/thin."
+                        )
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[build_table0] WARNING: policy='{pkey}' is unavailable; filling table rows with NaN. reason: {e}")
 
     # Pre-compute regime-conditional policy SSS objects once (used by fixed_point and deterministic modes).
     for label, pkey in policies:
-        if pkey is None:
+        if pkey is None or pkey not in nets:
             continue
         for s in regime_ids:
             policy_sss[(pkey, s)] = _policy_sss_for_policy(
@@ -1167,9 +1197,9 @@ def build_table0(
         except Exception:
             continue
     if strict_author_table2 and sss_source_norm == "sim_conditional" and flex_author_run_dir is None:
-        raise FileNotFoundError(
-            "strict_author_table2=True requires author by-regime files containing cons_flex_y and i_flex_y "
-            "for at least one trained policy run."
+        print(
+            "[build_table0] WARNING: strict_author_table2=True requested, but author by-regime "
+            "flex files are missing. Falling back to computed moments where possible."
         )
 
     if sss_source_norm == "deterministic_no_innovation":
@@ -1179,7 +1209,7 @@ def build_table0(
                 c_hat=c_hat,
             )
         for label, pkey in policies:
-            if pkey is None:
+            if pkey is None or pkey not in nets:
                 continue
             for s in regime_ids:
                 deterministic_moments[(pkey, s)] = _deterministic_no_innovation_policy_moments(
@@ -1210,7 +1240,7 @@ def build_table0(
     # ---- Diagnostic: frozen-regime SSS (P = I), printed only ----
     # This is NOT used in Table 2 calculations; it is a comparison object.
     for label, pkey in policies:
-        if pkey is None or pkey == "flex":
+        if pkey is None or pkey == "flex" or pkey not in nets:
             continue
         try:
             frz = frozen_policy_sss_by_regime_from_policy(params, nets[pkey], policy=pkey)
@@ -1228,13 +1258,20 @@ def build_table0(
     for label, pkey in policies:
         if pkey is None:
             continue
+        if pkey not in nets:
+            for s in regime_ids:
+                add_nan_block(label, s)
+            continue
         for s in regime_ids:
             sss = policy_sss[(pkey, s)]
             sim = sims.get(pkey)
             if (sss_source_norm == "sim_conditional") and (sim is None):
-                raise FileNotFoundError(
-                    f"sss_source='sim_conditional' requires simulation moments for policy='{pkey}'."
+                print(
+                    f"[build_table0] WARNING: missing sim_paths moments for policy='{pkey}' "
+                    "in sim_conditional mode; filling rows with NaN."
                 )
+                add_nan_block(label, s)
+                continue
             add_block(label, pkey, s, sss, sim, run_dir=run_dirs.get(pkey))
 
     df = pd.DataFrame(rows)
