@@ -103,7 +103,8 @@ def build_paper_tables_2_4(
     strict_selected: bool = False,
     weights_source: str = "auto",
     sss_source: str = "sim_conditional",
-    strict_author_table2: bool = True,
+    strict_author_table2: bool = False,
+    allow_missing_policies: bool = True,
 ) -> Dict[str, pd.DataFrame]:
     """
     Build paper-style Table 2/3/4 using the common table builder and reshape to article layout.
@@ -129,6 +130,7 @@ def build_paper_tables_2_4(
             include_zlb=True,
             sss_source=sss_source_used,
             strict_author_table2=strict_author_table2,
+            allow_missing_policies=allow_missing_policies,
         )
     except FileNotFoundError as e:
         msg = str(e).lower()
@@ -146,6 +148,7 @@ def build_paper_tables_2_4(
             include_zlb=False,
             sss_source=sss_source_used,
             strict_author_table2=strict_author_table2,
+            allow_missing_policies=allow_missing_policies,
         )
         cols = list(df.columns)
         extras = []
@@ -203,7 +206,8 @@ def build_taylor_para_robustness_table(
     strict_selected: bool = False,
     weights_source: str = "auto",
     sss_source: str = "sim_conditional",
-    strict_author_table2: bool = True,
+    strict_author_table2: bool = False,
+    allow_missing_policies: bool = True,
 ) -> pd.DataFrame:
     """
     Robustness-only table: compare Taylor variants, including taylor_para
@@ -226,6 +230,7 @@ def build_taylor_para_robustness_table(
         include_zlb=False,
         sss_source="sim_conditional",
         strict_author_table2=strict_author_table2,
+        allow_missing_policies=allow_missing_policies,
     )
     keep = ["taylor", "taylor_para", "mod_taylor"]
     out = df[df["policy"].isin(keep)].copy()

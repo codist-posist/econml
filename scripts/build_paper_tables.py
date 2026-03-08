@@ -53,8 +53,14 @@ def main() -> int:
     ap.add_argument(
         "--strict_author_table2",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Require author NT/SS simulation files for sim_conditional mode (no fallback).",
+    )
+    ap.add_argument(
+        "--allow_missing_policies",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep table rows for missing policies and fill unavailable values with NaN.",
     )
     ap.add_argument(
         "--include_taylor_para_robustness",
@@ -99,6 +105,7 @@ def main() -> int:
         weights_source=args.weights_source,
         sss_source=args.sss_source,
         strict_author_table2=bool(args.strict_author_table2),
+        allow_missing_policies=bool(args.allow_missing_policies),
     )
 
     for key, df in tables.items():
@@ -118,6 +125,7 @@ def main() -> int:
             weights_source=args.weights_source,
             sss_source=args.sss_source,
             strict_author_table2=bool(args.strict_author_table2),
+            allow_missing_policies=bool(args.allow_missing_policies),
         )
         out = os.path.join(args.artifacts_root, f"table_taylor_para_compare_{args.sss_source}.csv")
         rob.to_csv(out, index=False)

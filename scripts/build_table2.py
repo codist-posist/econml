@@ -72,8 +72,14 @@ def main():
     ap.add_argument(
         "--strict_author_table2",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Require author NT/SS simulation files for sim_conditional mode (no fallback).",
+    )
+    ap.add_argument(
+        "--allow_missing_policies",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep rows for missing policies and fill unavailable values with NaN.",
     )
     # Backward compatibility with previous CLI.
     ap.add_argument("--no_selected", action="store_true", help=argparse.SUPPRESS)
@@ -90,6 +96,7 @@ def main():
         strict_selected=bool(args.strict_selected),
         weights_source=args.weights_source,
         strict_author_table2=bool(args.strict_author_table2),
+        allow_missing_policies=bool(args.allow_missing_policies),
     )
     print(df.to_string(index=False))
     path = save_table0_csv(df, args.artifacts_root)
