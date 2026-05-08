@@ -9,6 +9,8 @@ import torch.nn as nn
 
 from .config import (
     BaselineParams,
+    COMMITMENT_OUTPUT_NAMES,
+    DISCRETION_OUTPUT_NAMES,
     NATURAL_OUTPUT_NAMES,
     RULE_OUTPUT_NAMES,
     NetworkConfig,
@@ -20,6 +22,7 @@ from .qmc import make_qmc_nodes
 from .residuals import natural_residuals, rule_residuals, stack_residuals
 from .sampling import natural_from_rule_states, sample_rule_states
 from .episode import simulate_rule_episode
+from .optimal import commitment_residuals, discretion_residuals, simulate_optimal_episode
 
 
 @dataclass
@@ -39,6 +42,14 @@ def make_rule_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cp
     """Build a rule-based DEQN network."""
 
     return MLP(7, len(RULE_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
+
+
+def make_discretion_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cpu", dtype: torch.dtype = torch.float64) -> MLP:
+    return MLP(7, len(DISCRETION_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
+
+
+def make_commitment_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cpu", dtype: torch.dtype = torch.float64) -> MLP:
+    return MLP(11, len(COMMITMENT_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
 
 
 def freeze(module: nn.Module) -> None:
@@ -293,6 +304,95 @@ def train_rule_episode(
     return net, log
 
 
+def _initial_optimal_states(
+    n: int,
+    *,
+    kind: str,
+    params: BaselineParams,
+    device: str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    z = sample_rule_states(n, params=params, device=device, dtype=dtype)
+    if kind == "commitment":
+        z = torch.cat([z, torch.zeros((z.shape[0], 4), device=z.device, dtype=z.dtype)], dim=-1)
+    return z
+
+
+def train_optimal_episode(
+    *,
+    kind: str,
+    params: BaselineParams = BaselineParams(),
+    net_cfg: NetworkConfig = NetworkConfig(),
+    qmc_cfg: QMCConfig = QMCConfig(),
+    train_cfg: TrainConfig = TrainConfig(),
+    episodes: int | None = None,
+    log_every: int = 10,
+) -> tuple[MLP, TrainLog]:
+    key = kind.lower()
+    if key == "discretion":
+        net = make_discretion_net(net_cfg, device=train_cfg.device, dtype=train_cfg.dtype)
+        residual_fn = discretion_residuals
+    elif key == "commitment":
+        net = make_commitment_net(net_cfg, device=train_cfg.device, dtype=train_cfg.dtype)
+        residual_fn = commitment_residuals
+    else:
+        raise ValueError("kind must be 'discretion' or 'commitment'.")
+
+    opt = torch.optim.Adam(net.parameters(), lr=float(train_cfg.lr))
+    nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=train_cfg.device, dtype=train_cfg.dtype)
+    n_episodes = int(train_cfg.steps if episodes is None else episodes)
+    log = TrainLog([], [], [])
+    current_state = _initial_optimal_states(
+        train_cfg.sim_batch_size,
+        kind=key,
+        params=params,
+        device=train_cfg.device,
+        dtype=train_cfg.dtype,
+    )
+
+    for episode in range(1, n_episodes + 1):
+        state_episode = simulate_optimal_episode(
+            current_state,
+            net,
+            kind=key,
+            params=params,
+            length=train_cfg.episode_length,
+        )
+        current_state = state_episode[-1].detach()
+        flat_states = state_episode.reshape(-1, state_episode.shape[-1]).detach()
+        order = torch.randperm(flat_states.shape[0], device=flat_states.device)
+        last_mat = None
+        last_loss = None
+        for start in range(0, flat_states.shape[0], int(train_cfg.batch_size)):
+            idx = order[start : start + int(train_cfg.batch_size)]
+            if idx.numel() == 0:
+                continue
+            z = flat_states[idx]
+            raw = net(z)
+            res, _ = residual_fn(
+                z,
+                raw,
+                net,
+                nodes,
+                params=params,
+                qmc_cfg=qmc_cfg,
+                fb_epsilon=train_cfg.fb_epsilon_start,
+            )
+            mat = stack_residuals(res)
+            loss = residual_loss(mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
+            opt.step()
+            last_mat = mat.detach()
+            last_loss = loss.detach()
+        if last_mat is not None and last_loss is not None and (
+            episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
+        ):
+            _log_metrics(episode, last_mat, log, last_loss)
+    return net, log
+
+
 def evaluate_natural(
     net: MLP,
     *,
@@ -358,3 +458,47 @@ def evaluate_rule(
             "max_abs": float(mat.abs().max().cpu()),
             **residual_diagnostics(res),
         }
+
+
+def evaluate_optimal(
+    net: MLP,
+    *,
+    kind: str,
+    params: BaselineParams = BaselineParams(),
+    qmc_cfg: QMCConfig = QMCConfig(n_train=4096),
+    train_cfg: TrainConfig = TrainConfig(),
+    n_states: int = 4096,
+) -> Dict[str, float]:
+    key = kind.lower()
+    if key == "discretion":
+        residual_fn = discretion_residuals
+    elif key == "commitment":
+        residual_fn = commitment_residuals
+    else:
+        raise ValueError("kind must be 'discretion' or 'commitment'.")
+
+    nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=train_cfg.device, dtype=train_cfg.dtype)
+    z = _initial_optimal_states(
+        n_states,
+        kind=key,
+        params=params,
+        device=train_cfg.device,
+        dtype=train_cfg.dtype,
+    )
+    raw = net(z)
+    res, _ = residual_fn(
+        z,
+        raw,
+        net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        fb_epsilon=train_cfg.fb_epsilon_final,
+    )
+    mat = stack_residuals(res)
+    return {
+        "loss": float(mat.pow(2).mean().detach().cpu()),
+        "rms": float(torch.sqrt(mat.pow(2).mean()).detach().cpu()),
+        "max_abs": float(mat.abs().max().detach().cpu()),
+        **residual_diagnostics(res),
+    }

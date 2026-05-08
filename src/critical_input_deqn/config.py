@@ -138,3 +138,43 @@ NATURAL_OUTPUT_NAMES = (
     "chi_n",
     "R_n_real",
 )
+
+PRIVATE_RESIDUAL_NAMES = (
+    "hh_euler",
+    "labor",
+    "resource",
+    "price_index",
+    "calvo_S",
+    "calvo_F",
+    "cap_fb",
+    "repair_fb",
+    "Q",
+)
+
+OPT_CONTROL_NAMES = (
+    "C",
+    "Y",
+    "N",
+    "R",
+    "Pi",
+    "chi",
+    "I_A",
+    "Q_A",
+    "S_p",
+    "F_p",
+)
+
+OPT_MULTIPLIER_NAMES = tuple(f"mu_{name}" for name in PRIVATE_RESIDUAL_NAMES)
+
+DISCRETION_OUTPUT_NAMES = OPT_CONTROL_NAMES + ("V",) + OPT_MULTIPLIER_NAMES
+
+COMMITMENT_PROMISE_NAMES = (
+    "promise_E",
+    "promise_S",
+    "promise_F",
+    "promise_Q",
+)
+
+COMMITMENT_OUTPUT_NAMES = OPT_CONTROL_NAMES + OPT_MULTIPLIER_NAMES + COMMITMENT_PROMISE_NAMES
+
+COMMITMENT_STATE_NAMES = RULE_STATE_NAMES + COMMITMENT_PROMISE_NAMES

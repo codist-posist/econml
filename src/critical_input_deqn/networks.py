@@ -49,3 +49,8 @@ class MLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
+
+def clone_mlp_config(source: MLP, d_in: int, d_out: int, cfg: NetworkConfig) -> MLP:
+    """Compatibility helper for scripts that need explicit network factories."""
+
+    return MLP(d_in, d_out, cfg)

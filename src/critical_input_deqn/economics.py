@@ -165,6 +165,61 @@ def derive_rule(
     }
 
 
+def derive_free(
+    st: State,
+    out: Dict[str, torch.Tensor],
+    p: BaselineParams,
+) -> Dict[str, torch.Tensor]:
+    """Derived objects when the gross policy rate is an implementability variable."""
+
+    C, Y, N = out["C"], out["Y"], out["N"]
+    R, Pi, chi, I = out["R"], out["Pi"], out["chi"], out["I_A"]
+    S_p, F_p = out["S_p"], out["F_p"]
+    pm, mbar = external_conditions(st, p)
+    p_m_eff = pm + chi
+    p_d = torch.full_like(C, float(p.p_d))
+    p_a = torch.full_like(C, float(p.p_a))
+    Z = torch.exp(st.log_Z)
+    Delta_prev = torch.exp(st.log_Delta_prev)
+
+    p_x = unit_intermediate_price(st.A, p_m_eff, p_d, p)
+    Lambda = C.pow(-float(p.sigma))
+    w = N.pow(float(p.varphi)) / Lambda
+    mc = marginal_cost(w, p_x, Z, p)
+    p_star = (float(p.epsilon) / (float(p.epsilon) - 1.0)) * S_p / F_p
+    Delta = (1.0 - float(p.theta)) * p_star.pow(-float(p.epsilon)) + float(p.theta) * Pi.pow(float(p.epsilon)) * Delta_prev
+
+    X_comp = float(p.alpha) * mc * Delta * Y / p_x
+    omega = omega_import(st.A, p)
+    M = X_comp * omega.pow(float(p.rho)) * (p_x / p_m_eff).pow(float(p.rho))
+    S = X_comp * (1.0 - omega).pow(float(p.rho)) * (p_x / p_d).pow(float(p.rho))
+    N_d = (1.0 - float(p.alpha)) * mc * Delta * Y / w
+    A_next = (1.0 - float(p.delta_A)) * st.A + I
+
+    return {
+        "pm": pm,
+        "mbar": mbar,
+        "p_m_eff": p_m_eff,
+        "p_d": p_d,
+        "p_a": p_a,
+        "Z": Z,
+        "Delta_prev": Delta_prev,
+        "p_x": p_x,
+        "Lambda": Lambda,
+        "w": w,
+        "mc": mc,
+        "p_star": p_star,
+        "Delta": Delta,
+        "X_comp": X_comp,
+        "M": M,
+        "S": S,
+        "N_d": N_d,
+        "A_next": A_next,
+        "R": R,
+        "Omega_A": omega_A_cost(R, p),
+    }
+
+
 def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -> Dict[str, torch.Tensor]:
     C, Y, N, chi = out["C_n"], out["Y_n"], out["N_n"], out["chi_n"]
     pm, mbar = external_conditions(st, p)
@@ -195,4 +250,3 @@ def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -
         "S": S,
         "N_d": N_d,
     }
-

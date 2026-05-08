@@ -77,7 +77,11 @@ The notebooks are experiment wrappers around the package code:
    Taylor rule using the frozen benchmark.
 3. `notebooks/critical_input_deqn_02_modified_taylor.ipynb` trains the
    bottleneck-adjusted Taylor rule using the frozen benchmark.
-4. `notebooks/critical_input_deqn_03_compare_rule_policies.ipynb` loads saved
-   diagnostics and writes a comparison table.
+4. `notebooks/critical_input_deqn_04_discretion.ipynb` trains the discretionary
+   optimal-policy network.
+5. `notebooks/critical_input_deqn_05_commitment.ipynb` trains the commitment
+   optimal-policy network with promise states.
+6. `notebooks/critical_input_deqn_03_compare_rule_policies.ipynb` loads saved
+   diagnostics from all four policy environments and writes a comparison table.
 
 All saved results go under `baseline_artifacts/critical_input_deqn/`.
