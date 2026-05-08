@@ -30,6 +30,17 @@ is replaced by the continuous/event-based external bottleneck state
 python -m src.critical_input_deqn.smoke
 ```
 
+## Preflight before long training
+
+```bash
+python -m src.critical_input_deqn.preflight
+```
+
+The preflight is not a convergence test.  It checks that the natural
+benchmark, fixed Taylor, bottleneck-adjusted Taylor, discretion, and commitment
+residual systems all build finite residual matrices with the current state and
+output architecture.
+
 ## Tiny training test
 
 ```bash
@@ -60,10 +71,18 @@ initialization, Adam updates, and Huber residual loss.  The implementation is
 PyTorch, but the numerical object remains the same: a neural approximation to
 recursive policy functions trained on equilibrium residuals.
 
-Training uses a maximum step/episode budget by default.  Optional stopping
-criteria can be supplied with `--target-rms` and `--target-max-abs`; early
-stopping is triggered only after the criteria hold for
-`--early-stop-patience` consecutive logged checks.
+Training uses a maximum step/episode budget and a validation-residual stopping
+profile by default.  The default profile is stricter for the natural and
+rule-based networks and looser for discretion and commitment.  Stopping is
+triggered only after the validation RMS and maximum absolute residual criteria
+hold for `--early-stop-patience` consecutive logged checks after the minimum
+step count.  Use `--no-auto-stop` to disable these defaults, or override them
+with `--target-rms`, `--target-max-abs`, `--early-stop-patience`, and
+`--min-steps-before-stop`.
+
+Progress is printed during training.  With `tqdm` installed, the progress bar
+shows `train_rms`, `val_rms`, `val_max`, and the current stopping-hit counter.
+Without `tqdm`, the launcher prints the same diagnostics at logged checks.
 
 For commitment, the inherited promise block is not initialized at zero.  The
 initialization follows the nonzero commitment-state values used in the local
