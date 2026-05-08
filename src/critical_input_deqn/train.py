@@ -30,6 +30,9 @@ class TrainLog:
     steps: list[int]
     losses: list[float]
     max_abs: list[float]
+    rms: list[float]
+    stopped_early: bool = False
+    stop_reason: str | None = None
 
 
 def make_natural_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cpu", dtype: torch.dtype = torch.float64) -> MLP:
@@ -50,6 +53,20 @@ def make_discretion_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str
 
 def make_commitment_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cpu", dtype: torch.dtype = torch.float64) -> MLP:
     return MLP(11, len(COMMITMENT_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
+
+
+def initialize_commitment_promises(net: MLP, *, scale: float) -> None:
+    """Avoid the degenerate all-zero promise initialization."""
+
+    if float(scale) == 0.0:
+        return
+    last = net.net[-1]
+    if not isinstance(last, nn.Linear):
+        return
+    start = len(COMMITMENT_OUTPUT_NAMES) - 4
+    offset = float(scale) * torch.tensor([1.0, -1.0, -1.0, 1.0], device=last.bias.device, dtype=last.bias.dtype)
+    with torch.no_grad():
+        last.bias[start : start + 4].copy_(offset)
 
 
 def freeze(module: nn.Module) -> None:
@@ -84,7 +101,29 @@ def _log_metrics(step: int, resid: torch.Tensor, log: TrainLog, objective: torch
         log.steps.append(int(step))
         logged_loss = resid.pow(2).mean() if objective is None else objective
         log.losses.append(float(logged_loss.detach().cpu()))
+        log.rms.append(float(torch.sqrt(resid.pow(2).mean()).detach().cpu()))
         log.max_abs.append(float(resid.abs().max().detach().cpu()))
+
+
+def _passes_stop_criteria(resid: torch.Tensor, cfg: TrainConfig, step: int) -> bool:
+    if cfg.target_rms is None and cfg.target_max_abs is None:
+        return False
+    if step < int(cfg.min_steps_before_stop):
+        return False
+    with torch.no_grad():
+        rms = float(torch.sqrt(resid.pow(2).mean()).detach().cpu())
+        max_abs = float(resid.abs().max().detach().cpu())
+    rms_ok = True if cfg.target_rms is None else rms <= float(cfg.target_rms)
+    max_ok = True if cfg.target_max_abs is None else max_abs <= float(cfg.target_max_abs)
+    return rms_ok and max_ok
+
+
+def _mark_stopped(log: TrainLog, step: int, cfg: TrainConfig) -> None:
+    log.stopped_early = True
+    log.stop_reason = (
+        f"residual criteria satisfied for {int(cfg.early_stop_patience)} consecutive checks "
+        f"at step/episode {int(step)}"
+    )
 
 
 def residual_diagnostics(residuals: Dict[str, torch.Tensor]) -> Dict[str, float]:
@@ -150,7 +189,8 @@ def train_natural(
     opt = torch.optim.Adam(net.parameters(), lr=float(train_cfg.lr))
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=device, dtype=dtype)
     n_steps = int(train_cfg.steps if steps is None else steps)
-    log = TrainLog([], [], [])
+    log = TrainLog([], [], [], [])
+    stop_hits = 0
 
     for step in range(1, n_steps + 1):
         z = sample_rule_states(train_cfg.batch_size, params=params, device=device, dtype=dtype)
@@ -173,6 +213,13 @@ def train_natural(
         opt.step()
         if step == 1 or step % int(log_every) == 0 or step == n_steps:
             _log_metrics(step, mat, log, loss)
+            if _passes_stop_criteria(mat, train_cfg, step):
+                stop_hits += 1
+                if stop_hits >= int(train_cfg.early_stop_patience):
+                    _mark_stopped(log, step, train_cfg)
+                    break
+            else:
+                stop_hits = 0
     return net, log
 
 
@@ -198,7 +245,8 @@ def train_rule(
     opt = torch.optim.Adam(net.parameters(), lr=float(train_cfg.lr))
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=device, dtype=dtype)
     n_steps = int(train_cfg.steps if steps is None else steps)
-    log = TrainLog([], [], [])
+    log = TrainLog([], [], [], [])
+    stop_hits = 0
 
     for step in range(1, n_steps + 1):
         z = sample_rule_states(train_cfg.batch_size, params=params, device=device, dtype=dtype)
@@ -222,6 +270,13 @@ def train_rule(
         opt.step()
         if step == 1 or step % int(log_every) == 0 or step == n_steps:
             _log_metrics(step, mat, log, loss)
+            if _passes_stop_criteria(mat, train_cfg, step):
+                stop_hits += 1
+                if stop_hits >= int(train_cfg.early_stop_patience):
+                    _mark_stopped(log, step, train_cfg)
+                    break
+            else:
+                stop_hits = 0
     return net, log
 
 
@@ -254,7 +309,8 @@ def train_rule_episode(
     opt = torch.optim.Adam(net.parameters(), lr=float(train_cfg.lr))
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=device, dtype=dtype)
     n_episodes = int(train_cfg.steps if episodes is None else episodes)
-    log = TrainLog([], [], [])
+    log = TrainLog([], [], [], [])
+    stop_hits = 0
 
     current_state = sample_rule_states(
         train_cfg.sim_batch_size,
@@ -301,6 +357,13 @@ def train_rule_episode(
             last_mat = mat.detach()
         if last_mat is not None and (episode == 1 or episode % int(log_every) == 0 or episode == n_episodes):
             _log_metrics(episode, last_mat, log, loss)
+            if _passes_stop_criteria(last_mat, train_cfg, episode):
+                stop_hits += 1
+                if stop_hits >= int(train_cfg.early_stop_patience):
+                    _mark_stopped(log, episode, train_cfg)
+                    break
+            else:
+                stop_hits = 0
     return net, log
 
 
@@ -311,10 +374,14 @@ def _initial_optimal_states(
     params: BaselineParams,
     device: str,
     dtype: torch.dtype,
+    promise_init_scale: float = 0.05,
 ) -> torch.Tensor:
     z = sample_rule_states(n, params=params, device=device, dtype=dtype)
     if kind == "commitment":
-        z = torch.cat([z, torch.zeros((z.shape[0], 4), device=z.device, dtype=z.dtype)], dim=-1)
+        scale = float(promise_init_scale)
+        offset = scale * torch.tensor([1.0, -1.0, -1.0, 1.0], device=z.device, dtype=z.dtype)
+        promises = offset[None, :] + scale * torch.randn((z.shape[0], 4), device=z.device, dtype=z.dtype)
+        z = torch.cat([z, promises], dim=-1)
     return z
 
 
@@ -334,6 +401,7 @@ def train_optimal_episode(
         residual_fn = discretion_residuals
     elif key == "commitment":
         net = make_commitment_net(net_cfg, device=train_cfg.device, dtype=train_cfg.dtype)
+        initialize_commitment_promises(net, scale=train_cfg.promise_init_scale)
         residual_fn = commitment_residuals
     else:
         raise ValueError("kind must be 'discretion' or 'commitment'.")
@@ -341,13 +409,15 @@ def train_optimal_episode(
     opt = torch.optim.Adam(net.parameters(), lr=float(train_cfg.lr))
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=train_cfg.device, dtype=train_cfg.dtype)
     n_episodes = int(train_cfg.steps if episodes is None else episodes)
-    log = TrainLog([], [], [])
+    log = TrainLog([], [], [], [])
+    stop_hits = 0
     current_state = _initial_optimal_states(
         train_cfg.sim_batch_size,
         kind=key,
         params=params,
         device=train_cfg.device,
         dtype=train_cfg.dtype,
+        promise_init_scale=train_cfg.promise_init_scale,
     )
 
     for episode in range(1, n_episodes + 1):
@@ -390,6 +460,13 @@ def train_optimal_episode(
             episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
         ):
             _log_metrics(episode, last_mat, log, last_loss)
+            if _passes_stop_criteria(last_mat, train_cfg, episode):
+                stop_hits += 1
+                if stop_hits >= int(train_cfg.early_stop_patience):
+                    _mark_stopped(log, episode, train_cfg)
+                    break
+            else:
+                stop_hits = 0
     return net, log
 
 
@@ -484,6 +561,7 @@ def evaluate_optimal(
         params=params,
         device=train_cfg.device,
         dtype=train_cfg.dtype,
+        promise_init_scale=train_cfg.promise_init_scale,
     )
     raw = net(z)
     res, _ = residual_fn(

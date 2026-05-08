@@ -94,6 +94,11 @@ class TrainConfig:
     steps: int = 50_000
     loss: str = "huber"
     huber_delta: float = 1.0
+    target_rms: float | None = None
+    target_max_abs: float | None = None
+    early_stop_patience: int = 5
+    min_steps_before_stop: int = 0
+    promise_init_scale: float = 0.05
     dtype: torch.dtype = torch.float64
     device: str = "cpu"
     fb_epsilon_start: float = 1e-4

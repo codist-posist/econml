@@ -53,6 +53,10 @@ def main() -> None:
     parser.add_argument("--rule-trainer", default="episode", choices=("episode", "iid"))
     parser.add_argument("--loss", default="huber", choices=("huber", "mse"))
     parser.add_argument("--huber-delta", type=float, default=1.0)
+    parser.add_argument("--target-rms", type=float, default=None)
+    parser.add_argument("--target-max-abs", type=float, default=None)
+    parser.add_argument("--early-stop-patience", type=int, default=5)
+    parser.add_argument("--min-steps-before-stop", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--sim-batch-size", type=int, default=1024)
     parser.add_argument("--episode-length", type=int, default=30)
@@ -77,6 +81,10 @@ def main() -> None:
         steps=args.natural_steps,
         loss=args.loss,
         huber_delta=args.huber_delta,
+        target_rms=args.target_rms,
+        target_max_abs=args.target_max_abs,
+        early_stop_patience=args.early_stop_patience,
+        min_steps_before_stop=args.min_steps_before_stop,
         dtype=dtype,
         device=args.device,
     )
@@ -95,6 +103,10 @@ def main() -> None:
             "rule_trainer": args.rule_trainer,
             "loss": args.loss,
             "huber_delta": args.huber_delta,
+            "target_rms": args.target_rms,
+            "target_max_abs": args.target_max_abs,
+            "early_stop_patience": args.early_stop_patience,
+            "min_steps_before_stop": args.min_steps_before_stop,
             "dtype": args.dtype,
             "device": args.device,
         },
@@ -136,6 +148,10 @@ def main() -> None:
             steps=args.rule_steps,
             loss=args.loss,
             huber_delta=args.huber_delta,
+            target_rms=args.target_rms,
+            target_max_abs=args.target_max_abs,
+            early_stop_patience=args.early_stop_patience,
+            min_steps_before_stop=args.min_steps_before_stop,
             dtype=dtype,
             device=args.device,
         )

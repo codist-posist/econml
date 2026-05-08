@@ -60,6 +60,15 @@ initialization, Adam updates, and Huber residual loss.  The implementation is
 PyTorch, but the numerical object remains the same: a neural approximation to
 recursive policy functions trained on equilibrium residuals.
 
+Training uses a maximum step/episode budget by default.  Optional stopping
+criteria can be supplied with `--target-rms` and `--target-max-abs`; early
+stopping is triggered only after the criteria hold for
+`--early-stop-patience` consecutive logged checks.
+
+For commitment, the promise block is not initialized at zero.  The launcher
+uses `--promise-init-scale` to seed a small nonzero cloud of inherited promise
+states and the initial promise-output bias.
+
 For debugging only, the rule networks can also be trained on independently
 sampled mixture states:
 

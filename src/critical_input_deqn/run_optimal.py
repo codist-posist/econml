@@ -36,6 +36,11 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--loss", default="huber", choices=("huber", "mse"))
     parser.add_argument("--huber-delta", type=float, default=1.0)
+    parser.add_argument("--target-rms", type=float, default=None)
+    parser.add_argument("--target-max-abs", type=float, default=None)
+    parser.add_argument("--early-stop-patience", type=int, default=5)
+    parser.add_argument("--min-steps-before-stop", type=int, default=0)
+    parser.add_argument("--promise-init-scale", type=float, default=0.05)
     parser.add_argument("--qmc-train", type=int, default=512)
     parser.add_argument("--qmc-val", type=int, default=4096)
     parser.add_argument("--n-val-states", type=int, default=4096)
@@ -58,6 +63,11 @@ def main() -> None:
         steps=args.steps,
         loss=args.loss,
         huber_delta=args.huber_delta,
+        target_rms=args.target_rms,
+        target_max_abs=args.target_max_abs,
+        early_stop_patience=args.early_stop_patience,
+        min_steps_before_stop=args.min_steps_before_stop,
+        promise_init_scale=args.promise_init_scale,
         dtype=dtype,
         device=args.device,
     )
@@ -74,6 +84,11 @@ def main() -> None:
             "steps": args.steps,
             "loss": args.loss,
             "huber_delta": args.huber_delta,
+            "target_rms": args.target_rms,
+            "target_max_abs": args.target_max_abs,
+            "early_stop_patience": args.early_stop_patience,
+            "min_steps_before_stop": args.min_steps_before_stop,
+            "promise_init_scale": args.promise_init_scale,
             "dtype": args.dtype,
             "device": args.device,
         },
