@@ -247,16 +247,41 @@ def discretion_residuals(
 
 
 def commitment_promise_term(z: torch.Tensor, out: TensorDict, drv: TensorDict, params: BaselineParams) -> torch.Tensor:
+    """Inherited scaled-promise term in the Ramsey stationarity conditions.
+
+    The promise states already contain the previous-period inverse marginal
+    utility normalizer.  Multiplying by current Lambda here gives the same
+    current-period scaling as a raw-promise implementation that separately
+    carried lagged consumption.
+    """
+
     pE, pS, pF, pQ = [z[..., 7 + i] for i in range(4)]
     st = unpack_rule_state(z[..., :7])
+    Lambda = drv["Lambda"]
     p_x_A = p_x_derivative_A(st.A, drv["p_m_eff"], drv["p_d"], params)
     mc_A = mc_derivative_A(drv["mc"], drv["p_x"], p_x_A, params)
     benefit_A = -(mc_A * drv["Delta"] * out["Y"])
     return (
-        pE * out["C"].pow(-float(params.sigma)) / out["Pi"]
-        + pS * out["Pi"].pow(float(params.epsilon)) * out["S_p"]
-        + pF * out["Pi"].pow(float(params.epsilon) - 1.0) * out["F_p"]
-        + pQ * (benefit_A + (1.0 - float(params.delta_A)) * out["Q_A"])
+        pE * Lambda / out["Pi"]
+        + pS * Lambda * out["Pi"].pow(float(params.epsilon)) * out["S_p"]
+        + pF * Lambda * out["Pi"].pow(float(params.epsilon) - 1.0) * out["F_p"]
+        + pQ * Lambda * (benefit_A + (1.0 - float(params.delta_A)) * out["Q_A"])
+    )
+
+
+def commitment_promise_map(out: TensorDict, drv: TensorDict, params: BaselineParams) -> torch.Tensor:
+    """Map current Ramsey multipliers into next-period scaled promise states."""
+
+    Lambda = drv["Lambda"]
+    inv_lambda = 1.0 / torch.clamp(Lambda, min=1e-12)
+    return torch.stack(
+        [
+            out["mu_hh_euler"] * out["R"] * inv_lambda,
+            out["mu_calvo_S"] * inv_lambda,
+            out["mu_calvo_F"] * inv_lambda,
+            out["mu_Q"] * inv_lambda,
+        ],
+        dim=-1,
     )
 
 
@@ -306,10 +331,7 @@ def commitment_residuals(
     lagrangian = U + promise_term + (mu * H).sum(dim=-1) + float(params.beta) * future_term
     stat = stationarity_from_lagrangian(lagrangian, out)
 
-    selected_mu = torch.stack(
-        [out["mu_hh_euler"], out["mu_calvo_S"], out["mu_calvo_F"], out["mu_Q"]],
-        dim=-1,
-    )
+    selected_mu = commitment_promise_map(out, drv, params)
     promised = torch.stack([out[name] for name in COMMITMENT_PROMISE_NAMES], dim=-1)
     promise_resid = promised - selected_mu
 

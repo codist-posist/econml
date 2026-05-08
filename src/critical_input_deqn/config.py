@@ -180,26 +180,28 @@ COMMITMENT_PROMISE_NAMES = (
     "promise_Q",
 )
 
-# Author-style commitment initialization.  Galo--Nuno, Renner, and
-# Scheidegger initialize inherited commitment states around nonzero values in
-# dsge_commitment/Hooks.py: vartheta_old=-0.019182, rho_old=0.016500, and
-# c_old=0.921336, with standard deviations 0.027, 0.023, and 0.052.  Our
-# promise vector is not one-for-one identical because the critical-input model
-# adds an adaptation promise, so the exact author values are used only for the
-# two Calvo-pricing promise analogues; the Euler and repair promises are seeded
-# as centered nonzero clouds.
+# Author-style commitment initialization for scaled promises.  The local
+# Galo--Nuno code initializes raw pricing promises at vartheta_old=-0.019182
+# and rho_old=0.016500, and separately carries c_old=0.921336.  Here we do not
+# carry c_old as a state; instead the inherited promises are scaled by the
+# inverse marginal utility normalizer, so the pricing means and standard
+# deviations below multiply the author raw values by c_old**gamma.
+_AUTHOR_C_OLD = 0.921336
+_AUTHOR_GAMMA = 2.0
+_AUTHOR_C_SCALE = _AUTHOR_C_OLD**_AUTHOR_GAMMA
+
 COMMITMENT_PROMISE_INIT_MEAN = (
-    0.0,        # promise_E: Euler-promise analogue; no direct author value
-    -0.019182,  # promise_S: pricing-promise analogue of vartheta_old
-    0.016500,   # promise_F: pricing-promise analogue of rho_old
-    0.0,        # promise_Q: repair promise; no analogue in Galo--Nuno
+    0.0,  # promise_E: Euler-promise analogue; no direct author value
+    -0.019182 * _AUTHOR_C_SCALE,  # scaled pricing-promise analogue of vartheta_old
+    0.016500 * _AUTHOR_C_SCALE,  # scaled pricing-promise analogue of rho_old
+    0.0,  # promise_Q: repair promise; no analogue in Galo--Nuno
 )
 
 COMMITMENT_PROMISE_INIT_STD = (
-    0.052,  # use the c_old dispersion scale for the Euler-promise cloud
-    0.027,
-    0.023,
-    0.010,  # small cloud for the new repair promise
+    0.010,  # centered cloud for the Euler promise
+    0.027 * _AUTHOR_C_SCALE,
+    0.023 * _AUTHOR_C_SCALE,
+    0.010,  # centered cloud for the new repair promise
 )
 
 COMMITMENT_OUTPUT_NAMES = OPT_CONTROL_NAMES + OPT_MULTIPLIER_NAMES + COMMITMENT_PROMISE_NAMES
