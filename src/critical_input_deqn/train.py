@@ -9,6 +9,8 @@ import torch.nn as nn
 
 from .config import (
     BaselineParams,
+    COMMITMENT_PROMISE_INIT_MEAN,
+    COMMITMENT_PROMISE_INIT_STD,
     COMMITMENT_OUTPUT_NAMES,
     DISCRETION_OUTPUT_NAMES,
     NATURAL_OUTPUT_NAMES,
@@ -55,18 +57,26 @@ def make_commitment_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str
     return MLP(11, len(COMMITMENT_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
 
 
-def initialize_commitment_promises(net: MLP, *, scale: float) -> None:
-    """Avoid the degenerate all-zero promise initialization."""
+def commitment_promise_init_tensors(
+    *, device: torch.device | str, dtype: torch.dtype, scale: float = 1.0
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return author-style commitment promise means and scaled standard deviations."""
 
-    if float(scale) == 0.0:
-        return
+    mean = torch.tensor(COMMITMENT_PROMISE_INIT_MEAN, device=device, dtype=dtype)
+    std = float(scale) * torch.tensor(COMMITMENT_PROMISE_INIT_STD, device=device, dtype=dtype)
+    return mean, std
+
+
+def initialize_commitment_promises(net: MLP, *, scale: float = 1.0) -> None:
+    """Seed inherited commitment promises away from the degenerate zero state."""
+
     last = net.net[-1]
     if not isinstance(last, nn.Linear):
         return
     start = len(COMMITMENT_OUTPUT_NAMES) - 4
-    offset = float(scale) * torch.tensor([1.0, -1.0, -1.0, 1.0], device=last.bias.device, dtype=last.bias.dtype)
+    mean, _ = commitment_promise_init_tensors(device=last.bias.device, dtype=last.bias.dtype, scale=scale)
     with torch.no_grad():
-        last.bias[start : start + 4].copy_(offset)
+        last.bias[start : start + 4].copy_(mean)
 
 
 def freeze(module: nn.Module) -> None:
@@ -374,13 +384,12 @@ def _initial_optimal_states(
     params: BaselineParams,
     device: str,
     dtype: torch.dtype,
-    promise_init_scale: float = 0.05,
+    promise_init_scale: float = 1.0,
 ) -> torch.Tensor:
     z = sample_rule_states(n, params=params, device=device, dtype=dtype)
     if kind == "commitment":
-        scale = float(promise_init_scale)
-        offset = scale * torch.tensor([1.0, -1.0, -1.0, 1.0], device=z.device, dtype=z.dtype)
-        promises = offset[None, :] + scale * torch.randn((z.shape[0], 4), device=z.device, dtype=z.dtype)
+        mean, std = commitment_promise_init_tensors(device=z.device, dtype=z.dtype, scale=promise_init_scale)
+        promises = mean[None, :] + std[None, :] * torch.randn((z.shape[0], 4), device=z.device, dtype=z.dtype)
         z = torch.cat([z, promises], dim=-1)
     return z
 

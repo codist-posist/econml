@@ -7,7 +7,13 @@ from pathlib import Path
 
 import torch
 
-from .config import NetworkConfig, QMCConfig, TrainConfig
+from .config import (
+    COMMITMENT_PROMISE_INIT_MEAN,
+    COMMITMENT_PROMISE_INIT_STD,
+    NetworkConfig,
+    QMCConfig,
+    TrainConfig,
+)
 from .train import evaluate_optimal, save_checkpoint, train_optimal_episode
 
 
@@ -40,7 +46,12 @@ def main() -> None:
     parser.add_argument("--target-max-abs", type=float, default=None)
     parser.add_argument("--early-stop-patience", type=int, default=5)
     parser.add_argument("--min-steps-before-stop", type=int, default=0)
-    parser.add_argument("--promise-init-scale", type=float, default=0.05)
+    parser.add_argument(
+        "--promise-init-scale",
+        type=float,
+        default=1.0,
+        help="Scale factor on the author-style commitment promise initialization standard deviations.",
+    )
     parser.add_argument("--qmc-train", type=int, default=512)
     parser.add_argument("--qmc-val", type=int, default=4096)
     parser.add_argument("--n-val-states", type=int, default=4096)
@@ -89,6 +100,8 @@ def main() -> None:
             "early_stop_patience": args.early_stop_patience,
             "min_steps_before_stop": args.min_steps_before_stop,
             "promise_init_scale": args.promise_init_scale,
+            "commitment_promise_init_mean": COMMITMENT_PROMISE_INIT_MEAN,
+            "commitment_promise_init_std": COMMITMENT_PROMISE_INIT_STD,
             "dtype": args.dtype,
             "device": args.device,
         },

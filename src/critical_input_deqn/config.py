@@ -98,7 +98,7 @@ class TrainConfig:
     target_max_abs: float | None = None
     early_stop_patience: int = 5
     min_steps_before_stop: int = 0
-    promise_init_scale: float = 0.05
+    promise_init_scale: float = 1.0
     dtype: torch.dtype = torch.float64
     device: str = "cpu"
     fb_epsilon_start: float = 1e-4
@@ -178,6 +178,28 @@ COMMITMENT_PROMISE_NAMES = (
     "promise_S",
     "promise_F",
     "promise_Q",
+)
+
+# Author-style commitment initialization.  Galo--Nuno, Renner, and
+# Scheidegger initialize inherited commitment states around nonzero values in
+# dsge_commitment/Hooks.py: vartheta_old=-0.019182, rho_old=0.016500, and
+# c_old=0.921336, with standard deviations 0.027, 0.023, and 0.052.  Our
+# promise vector is not one-for-one identical because the critical-input model
+# adds an adaptation promise, so the exact author values are used only for the
+# two Calvo-pricing promise analogues; the Euler and repair promises are seeded
+# as centered nonzero clouds.
+COMMITMENT_PROMISE_INIT_MEAN = (
+    0.0,        # promise_E: Euler-promise analogue; no direct author value
+    -0.019182,  # promise_S: pricing-promise analogue of vartheta_old
+    0.016500,   # promise_F: pricing-promise analogue of rho_old
+    0.0,        # promise_Q: repair promise; no analogue in Galo--Nuno
+)
+
+COMMITMENT_PROMISE_INIT_STD = (
+    0.052,  # use the c_old dispersion scale for the Euler-promise cloud
+    0.027,
+    0.023,
+    0.010,  # small cloud for the new repair promise
 )
 
 COMMITMENT_OUTPUT_NAMES = OPT_CONTROL_NAMES + OPT_MULTIPLIER_NAMES + COMMITMENT_PROMISE_NAMES

@@ -65,9 +65,13 @@ criteria can be supplied with `--target-rms` and `--target-max-abs`; early
 stopping is triggered only after the criteria hold for
 `--early-stop-patience` consecutive logged checks.
 
-For commitment, the promise block is not initialized at zero.  The launcher
-uses `--promise-init-scale` to seed a small nonzero cloud of inherited promise
-states and the initial promise-output bias.
+For commitment, the inherited promise block is not initialized at zero.  The
+initialization follows the nonzero commitment-state values used in the local
+Galo--Nuno code for the pricing-promise analogues
+(`vartheta_old=-0.019182`, `rho_old=0.016500`) and adds centered clouds for the
+Euler and repair promises, which have no exact analogue in the original model.
+The launcher option `--promise-init-scale` scales the standard deviations around
+these means; it no longer sets arbitrary promise means.
 
 For debugging only, the rule networks can also be trained on independently
 sampled mixture states:
