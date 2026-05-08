@@ -13,6 +13,7 @@ from .config import (
     NetworkConfig,
     QMCConfig,
     TrainConfig,
+    stop_profile,
 )
 from .train import evaluate_optimal, save_checkpoint, train_optimal_episode
 
@@ -31,6 +32,24 @@ def _write_json(path: Path, payload: object) -> None:
         json.dump(payload, fh, indent=2, sort_keys=True)
 
 
+def _resolved_stop(args: argparse.Namespace) -> dict[str, float | int | None]:
+    defaults = {} if args.no_auto_stop else stop_profile(args.kind)
+    return {
+        "target_rms": args.target_rms if args.target_rms is not None else defaults.get("target_rms"),
+        "target_max_abs": args.target_max_abs if args.target_max_abs is not None else defaults.get("target_max_abs"),
+        "early_stop_patience": (
+            args.early_stop_patience
+            if args.early_stop_patience is not None
+            else defaults.get("early_stop_patience", 5)
+        ),
+        "min_steps_before_stop": (
+            args.min_steps_before_stop
+            if args.min_steps_before_stop is not None
+            else defaults.get("min_steps_before_stop", 0)
+        ),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train optimal-policy DEQN networks.")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -44,8 +63,11 @@ def main() -> None:
     parser.add_argument("--huber-delta", type=float, default=1.0)
     parser.add_argument("--target-rms", type=float, default=None)
     parser.add_argument("--target-max-abs", type=float, default=None)
-    parser.add_argument("--early-stop-patience", type=int, default=5)
-    parser.add_argument("--min-steps-before-stop", type=int, default=0)
+    parser.add_argument("--early-stop-patience", type=int, default=None)
+    parser.add_argument("--min-steps-before-stop", type=int, default=None)
+    parser.add_argument("--no-auto-stop", action="store_true", help="Disable policy-specific validation stopping defaults.")
+    parser.add_argument("--stop-val-states", type=int, default=2048)
+    parser.add_argument("--no-progress", action="store_true")
     parser.add_argument(
         "--promise-init-scale",
         type=float,
@@ -66,6 +88,7 @@ def main() -> None:
     dtype = _dtype(args.dtype)
     net_cfg = NetworkConfig(hidden_width=args.hidden_width, hidden_depth=args.hidden_depth)
     qmc_cfg = QMCConfig(n_train=args.qmc_train, n_val=args.qmc_val, seed=args.seed)
+    stop = _resolved_stop(args)
     train_cfg = TrainConfig(
         batch_size=args.batch_size,
         sim_batch_size=args.sim_batch_size,
@@ -74,10 +97,12 @@ def main() -> None:
         steps=args.steps,
         loss=args.loss,
         huber_delta=args.huber_delta,
-        target_rms=args.target_rms,
-        target_max_abs=args.target_max_abs,
-        early_stop_patience=args.early_stop_patience,
-        min_steps_before_stop=args.min_steps_before_stop,
+        target_rms=stop["target_rms"],
+        target_max_abs=stop["target_max_abs"],
+        early_stop_patience=int(stop["early_stop_patience"]),
+        min_steps_before_stop=int(stop["min_steps_before_stop"]),
+        stop_val_states=args.stop_val_states,
+        show_progress=not args.no_progress,
         promise_init_scale=args.promise_init_scale,
         dtype=dtype,
         device=args.device,
@@ -95,10 +120,14 @@ def main() -> None:
             "steps": args.steps,
             "loss": args.loss,
             "huber_delta": args.huber_delta,
-            "target_rms": args.target_rms,
-            "target_max_abs": args.target_max_abs,
-            "early_stop_patience": args.early_stop_patience,
-            "min_steps_before_stop": args.min_steps_before_stop,
+            "stop": stop,
+            "target_rms_arg": args.target_rms,
+            "target_max_abs_arg": args.target_max_abs,
+            "early_stop_patience_arg": args.early_stop_patience,
+            "min_steps_before_stop_arg": args.min_steps_before_stop,
+            "no_auto_stop": args.no_auto_stop,
+            "stop_val_states": args.stop_val_states,
+            "show_progress": not args.no_progress,
             "promise_init_scale": args.promise_init_scale,
             "commitment_promise_init_mean": COMMITMENT_PROMISE_INIT_MEAN,
             "commitment_promise_init_std": COMMITMENT_PROMISE_INIT_STD,

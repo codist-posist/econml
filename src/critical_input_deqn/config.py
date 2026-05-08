@@ -98,11 +98,26 @@ class TrainConfig:
     target_max_abs: float | None = None
     early_stop_patience: int = 5
     min_steps_before_stop: int = 0
+    stop_val_states: int = 2048
+    show_progress: bool = True
     promise_init_scale: float = 1.0
     dtype: torch.dtype = torch.float64
     device: str = "cpu"
     fb_epsilon_start: float = 1e-4
     fb_epsilon_final: float = 1e-8
+
+
+STOP_PROFILES = {
+    "natural": {"target_rms": 1e-4, "target_max_abs": 1e-2, "min_steps_before_stop": 10_000, "early_stop_patience": 10},
+    "fixed": {"target_rms": 1e-4, "target_max_abs": 1e-2, "min_steps_before_stop": 10_000, "early_stop_patience": 10},
+    "ba": {"target_rms": 1e-4, "target_max_abs": 1e-2, "min_steps_before_stop": 10_000, "early_stop_patience": 10},
+    "discretion": {"target_rms": 5e-4, "target_max_abs": 2e-2, "min_steps_before_stop": 20_000, "early_stop_patience": 10},
+    "commitment": {"target_rms": 5e-4, "target_max_abs": 2e-2, "min_steps_before_stop": 20_000, "early_stop_patience": 10},
+}
+
+
+def stop_profile(kind: str) -> dict[str, float | int]:
+    return dict(STOP_PROFILES[kind.lower()])
 
 
 RULE_STATE_NAMES = (

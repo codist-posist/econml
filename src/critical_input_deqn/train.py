@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Iterable
 
@@ -29,10 +29,13 @@ from .optimal import commitment_residuals, discretion_residuals, simulate_optima
 
 @dataclass
 class TrainLog:
-    steps: list[int]
-    losses: list[float]
-    max_abs: list[float]
-    rms: list[float]
+    steps: list[int] = field(default_factory=list)
+    losses: list[float] = field(default_factory=list)
+    max_abs: list[float] = field(default_factory=list)
+    rms: list[float] = field(default_factory=list)
+    val_losses: list[float] = field(default_factory=list)
+    val_max_abs: list[float] = field(default_factory=list)
+    val_rms: list[float] = field(default_factory=list)
     stopped_early: bool = False
     stop_reason: str | None = None
 
@@ -106,13 +109,39 @@ def residual_loss(
     return (values * weights.view(1, -1)).mean()
 
 
-def _log_metrics(step: int, resid: torch.Tensor, log: TrainLog, objective: torch.Tensor | None = None) -> None:
+def _mse_rms_max(resid: torch.Tensor) -> tuple[float, float, float]:
     with torch.no_grad():
-        log.steps.append(int(step))
-        logged_loss = resid.pow(2).mean() if objective is None else objective
-        log.losses.append(float(logged_loss.detach().cpu()))
-        log.rms.append(float(torch.sqrt(resid.pow(2).mean()).detach().cpu()))
-        log.max_abs.append(float(resid.abs().max().detach().cpu()))
+        loss = float(resid.pow(2).mean().detach().cpu())
+        rms = float(torch.sqrt(resid.pow(2).mean()).detach().cpu())
+        max_abs = float(resid.abs().max().detach().cpu())
+    return loss, rms, max_abs
+
+
+def _log_metrics(
+    step: int,
+    resid: torch.Tensor,
+    log: TrainLog,
+    objective: torch.Tensor | None = None,
+    val_resid: torch.Tensor | None = None,
+) -> dict[str, float]:
+    log.steps.append(int(step))
+    if objective is None:
+        train_loss, train_rms, train_max = _mse_rms_max(resid)
+    else:
+        _, train_rms, train_max = _mse_rms_max(resid)
+        train_loss = float(objective.detach().cpu())
+    log.losses.append(train_loss)
+    log.rms.append(train_rms)
+    log.max_abs.append(train_max)
+
+    metrics = {"train_loss": train_loss, "train_rms": train_rms, "train_max_abs": train_max}
+    if val_resid is not None:
+        val_loss, val_rms, val_max = _mse_rms_max(val_resid)
+        log.val_losses.append(val_loss)
+        log.val_rms.append(val_rms)
+        log.val_max_abs.append(val_max)
+        metrics.update({"val_loss": val_loss, "val_rms": val_rms, "val_max_abs": val_max})
+    return metrics
 
 
 def _passes_stop_criteria(resid: torch.Tensor, cfg: TrainConfig, step: int) -> bool:
@@ -131,9 +160,45 @@ def _passes_stop_criteria(resid: torch.Tensor, cfg: TrainConfig, step: int) -> b
 def _mark_stopped(log: TrainLog, step: int, cfg: TrainConfig) -> None:
     log.stopped_early = True
     log.stop_reason = (
-        f"residual criteria satisfied for {int(cfg.early_stop_patience)} consecutive checks "
+        f"validation residual criteria satisfied for {int(cfg.early_stop_patience)} consecutive checks "
         f"at step/episode {int(step)}"
     )
+
+
+def _progress_range(total: int, *, desc: str, enabled: bool):
+    base = range(1, int(total) + 1)
+    if not enabled:
+        return base
+    try:
+        from tqdm.auto import tqdm
+
+        return tqdm(base, total=int(total), desc=desc, dynamic_ncols=True)
+    except Exception:
+        return base
+
+
+def _report_progress(progress, metrics: dict[str, float], *, step: int, total: int, stop_hits: int, enabled: bool) -> None:
+    if not enabled:
+        return
+    payload = {
+        "train_rms": f"{metrics['train_rms']:.2e}",
+        "val_rms": f"{metrics.get('val_rms', float('nan')):.2e}",
+        "val_max": f"{metrics.get('val_max_abs', float('nan')):.2e}",
+        "stop": int(stop_hits),
+    }
+    if hasattr(progress, "set_postfix"):
+        progress.set_postfix(payload)
+    else:
+        print(
+            f"[{step}/{total}] train_rms={payload['train_rms']} "
+            f"val_rms={payload['val_rms']} val_max={payload['val_max']} stop_hits={payload['stop']}",
+            flush=True,
+        )
+
+
+def _validation_nodes(qmc_cfg: QMCConfig, *, device: str, dtype: torch.dtype, seed_offset: int) -> QMCNodes:
+    cfg = replace(qmc_cfg, n_train=qmc_cfg.n_val, seed=int(qmc_cfg.seed) + int(seed_offset))
+    return make_qmc_nodes(cfg.n_train, cfg=cfg, device=device, dtype=dtype)
 
 
 def residual_diagnostics(residuals: Dict[str, torch.Tensor]) -> Dict[str, float]:
@@ -198,11 +263,21 @@ def train_natural(
     net = make_natural_net(net_cfg, device=device, dtype=dtype)
     opt = torch.optim.Adam(net.parameters(), lr=float(train_cfg.lr))
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=device, dtype=dtype)
+    val_nodes = _validation_nodes(qmc_cfg, device=device, dtype=dtype, seed_offset=10_001)
+    val_qmc_cfg = replace(qmc_cfg, n_train=qmc_cfg.n_val, seed=int(qmc_cfg.seed) + 10_001)
+    val_z = sample_rule_states(
+        train_cfg.stop_val_states,
+        params=params,
+        device=device,
+        dtype=dtype,
+    )
+    val_z_n = natural_from_rule_states(val_z)
     n_steps = int(train_cfg.steps if steps is None else steps)
-    log = TrainLog([], [], [], [])
+    log = TrainLog()
     stop_hits = 0
 
-    for step in range(1, n_steps + 1):
+    progress = _progress_range(n_steps, desc="natural", enabled=train_cfg.show_progress)
+    for step in progress:
         z = sample_rule_states(train_cfg.batch_size, params=params, device=device, dtype=dtype)
         z_n = natural_from_rule_states(z)
         raw = net(z_n)
@@ -222,14 +297,27 @@ def train_natural(
         torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
         opt.step()
         if step == 1 or step % int(log_every) == 0 or step == n_steps:
-            _log_metrics(step, mat, log, loss)
-            if _passes_stop_criteria(mat, train_cfg, step):
+            with torch.no_grad():
+                val_res, _ = natural_residuals(
+                    val_z_n,
+                    net(val_z_n),
+                    net,
+                    val_nodes,
+                    params=params,
+                    qmc_cfg=val_qmc_cfg,
+                    fb_epsilon=train_cfg.fb_epsilon_final,
+                )
+                val_mat = stack_residuals(val_res).detach()
+            metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
+            if _passes_stop_criteria(val_mat, train_cfg, step):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, step, train_cfg)
+                    _report_progress(progress, metrics, step=step, total=n_steps, stop_hits=stop_hits, enabled=train_cfg.show_progress)
                     break
             else:
                 stop_hits = 0
+            _report_progress(progress, metrics, step=step, total=n_steps, stop_hits=stop_hits, enabled=train_cfg.show_progress)
     return net, log
 
 
@@ -254,11 +342,20 @@ def train_rule(
     net = make_rule_net(net_cfg, device=device, dtype=dtype)
     opt = torch.optim.Adam(net.parameters(), lr=float(train_cfg.lr))
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=device, dtype=dtype)
+    val_nodes = _validation_nodes(qmc_cfg, device=device, dtype=dtype, seed_offset=10_101)
+    val_qmc_cfg = replace(qmc_cfg, n_train=qmc_cfg.n_val, seed=int(qmc_cfg.seed) + 10_101)
+    val_z = sample_rule_states(
+        train_cfg.stop_val_states,
+        params=params,
+        device=device,
+        dtype=dtype,
+    )
     n_steps = int(train_cfg.steps if steps is None else steps)
-    log = TrainLog([], [], [], [])
+    log = TrainLog()
     stop_hits = 0
 
-    for step in range(1, n_steps + 1):
+    progress = _progress_range(n_steps, desc=f"rule-{policy.lower()}", enabled=train_cfg.show_progress)
+    for step in progress:
         z = sample_rule_states(train_cfg.batch_size, params=params, device=device, dtype=dtype)
         raw = net(z)
         res, _ = rule_residuals(
@@ -279,14 +376,29 @@ def train_rule(
         torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
         opt.step()
         if step == 1 or step % int(log_every) == 0 or step == n_steps:
-            _log_metrics(step, mat, log, loss)
-            if _passes_stop_criteria(mat, train_cfg, step):
+            with torch.no_grad():
+                val_res, _ = rule_residuals(
+                    val_z,
+                    net(val_z),
+                    net,
+                    natural_net,
+                    val_nodes,
+                    params=params,
+                    qmc_cfg=val_qmc_cfg,
+                    fb_epsilon=train_cfg.fb_epsilon_final,
+                    policy=policy,
+                )
+                val_mat = stack_residuals(val_res).detach()
+            metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
+            if _passes_stop_criteria(val_mat, train_cfg, step):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, step, train_cfg)
+                    _report_progress(progress, metrics, step=step, total=n_steps, stop_hits=stop_hits, enabled=train_cfg.show_progress)
                     break
             else:
                 stop_hits = 0
+            _report_progress(progress, metrics, step=step, total=n_steps, stop_hits=stop_hits, enabled=train_cfg.show_progress)
     return net, log
 
 
@@ -318,8 +430,16 @@ def train_rule_episode(
     net = make_rule_net(net_cfg, device=device, dtype=dtype)
     opt = torch.optim.Adam(net.parameters(), lr=float(train_cfg.lr))
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=device, dtype=dtype)
+    val_nodes = _validation_nodes(qmc_cfg, device=device, dtype=dtype, seed_offset=10_201)
+    val_qmc_cfg = replace(qmc_cfg, n_train=qmc_cfg.n_val, seed=int(qmc_cfg.seed) + 10_201)
+    val_z = sample_rule_states(
+        train_cfg.stop_val_states,
+        params=params,
+        device=device,
+        dtype=dtype,
+    )
     n_episodes = int(train_cfg.steps if episodes is None else episodes)
-    log = TrainLog([], [], [], [])
+    log = TrainLog()
     stop_hits = 0
 
     current_state = sample_rule_states(
@@ -328,7 +448,8 @@ def train_rule_episode(
         device=device,
         dtype=dtype,
     )
-    for episode in range(1, n_episodes + 1):
+    progress = _progress_range(n_episodes, desc=f"rule-{policy.lower()}", enabled=train_cfg.show_progress)
+    for episode in progress:
         state_episode = simulate_rule_episode(
             current_state,
             net,
@@ -366,14 +487,29 @@ def train_rule_episode(
             opt.step()
             last_mat = mat.detach()
         if last_mat is not None and (episode == 1 or episode % int(log_every) == 0 or episode == n_episodes):
-            _log_metrics(episode, last_mat, log, loss)
-            if _passes_stop_criteria(last_mat, train_cfg, episode):
+            with torch.no_grad():
+                val_res, _ = rule_residuals(
+                    val_z,
+                    net(val_z),
+                    net,
+                    natural_net,
+                    val_nodes,
+                    params=params,
+                    qmc_cfg=val_qmc_cfg,
+                    fb_epsilon=train_cfg.fb_epsilon_final,
+                    policy=policy,
+                )
+                val_mat = stack_residuals(val_res).detach()
+            metrics = _log_metrics(episode, last_mat, log, loss.detach(), val_mat)
+            if _passes_stop_criteria(val_mat, train_cfg, episode):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, episode, train_cfg)
+                    _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
                     break
             else:
                 stop_hits = 0
+            _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
     return net, log
 
 
@@ -417,8 +553,10 @@ def train_optimal_episode(
 
     opt = torch.optim.Adam(net.parameters(), lr=float(train_cfg.lr))
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=train_cfg.device, dtype=train_cfg.dtype)
+    val_nodes = _validation_nodes(qmc_cfg, device=train_cfg.device, dtype=train_cfg.dtype, seed_offset=10_301)
+    val_qmc_cfg = replace(qmc_cfg, n_train=qmc_cfg.n_val, seed=int(qmc_cfg.seed) + 10_301)
     n_episodes = int(train_cfg.steps if episodes is None else episodes)
-    log = TrainLog([], [], [], [])
+    log = TrainLog()
     stop_hits = 0
     current_state = _initial_optimal_states(
         train_cfg.sim_batch_size,
@@ -428,8 +566,17 @@ def train_optimal_episode(
         dtype=train_cfg.dtype,
         promise_init_scale=train_cfg.promise_init_scale,
     )
+    val_state = _initial_optimal_states(
+        train_cfg.stop_val_states,
+        kind=key,
+        params=params,
+        device=train_cfg.device,
+        dtype=train_cfg.dtype,
+        promise_init_scale=train_cfg.promise_init_scale,
+    )
 
-    for episode in range(1, n_episodes + 1):
+    progress = _progress_range(n_episodes, desc=key, enabled=train_cfg.show_progress)
+    for episode in progress:
         state_episode = simulate_optimal_episode(
             current_state,
             net,
@@ -468,14 +615,27 @@ def train_optimal_episode(
         if last_mat is not None and last_loss is not None and (
             episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
         ):
-            _log_metrics(episode, last_mat, log, last_loss)
-            if _passes_stop_criteria(last_mat, train_cfg, episode):
+            val_raw = net(val_state)
+            val_res, _ = residual_fn(
+                val_state,
+                val_raw,
+                net,
+                val_nodes,
+                params=params,
+                qmc_cfg=val_qmc_cfg,
+                fb_epsilon=train_cfg.fb_epsilon_final,
+            )
+            val_mat = stack_residuals(val_res).detach()
+            metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
+            if _passes_stop_criteria(val_mat, train_cfg, episode):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, episode, train_cfg)
+                    _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
                     break
             else:
                 stop_hits = 0
+            _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
     return net, log
 
 

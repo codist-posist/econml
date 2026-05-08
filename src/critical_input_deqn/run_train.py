@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from .config import NetworkConfig, QMCConfig, TrainConfig
+from .config import NetworkConfig, QMCConfig, TrainConfig, stop_profile
 from .train import (
     evaluate_natural,
     evaluate_rule,
@@ -43,6 +43,24 @@ def _policies(raw: str) -> list[str]:
     return policies
 
 
+def _resolved_stop(args: argparse.Namespace, kind: str) -> dict[str, float | int | None]:
+    defaults = {} if args.no_auto_stop else stop_profile(kind)
+    return {
+        "target_rms": args.target_rms if args.target_rms is not None else defaults.get("target_rms"),
+        "target_max_abs": args.target_max_abs if args.target_max_abs is not None else defaults.get("target_max_abs"),
+        "early_stop_patience": (
+            args.early_stop_patience
+            if args.early_stop_patience is not None
+            else defaults.get("early_stop_patience", 5)
+        ),
+        "min_steps_before_stop": (
+            args.min_steps_before_stop
+            if args.min_steps_before_stop is not None
+            else defaults.get("min_steps_before_stop", 0)
+        ),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train the critical-input baseline DEQN.")
     parser.add_argument("--output-dir", type=Path, default=Path("baseline_artifacts/critical_input_deqn"))
@@ -55,8 +73,11 @@ def main() -> None:
     parser.add_argument("--huber-delta", type=float, default=1.0)
     parser.add_argument("--target-rms", type=float, default=None)
     parser.add_argument("--target-max-abs", type=float, default=None)
-    parser.add_argument("--early-stop-patience", type=int, default=5)
-    parser.add_argument("--min-steps-before-stop", type=int, default=0)
+    parser.add_argument("--early-stop-patience", type=int, default=None)
+    parser.add_argument("--min-steps-before-stop", type=int, default=None)
+    parser.add_argument("--no-auto-stop", action="store_true", help="Disable policy-specific validation stopping defaults.")
+    parser.add_argument("--stop-val-states", type=int, default=2048)
+    parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--sim-batch-size", type=int, default=1024)
     parser.add_argument("--episode-length", type=int, default=30)
@@ -75,16 +96,19 @@ def main() -> None:
     dtype = _dtype(args.dtype)
     net_cfg = NetworkConfig(hidden_width=args.hidden_width, hidden_depth=args.hidden_depth)
     qmc_cfg = QMCConfig(n_train=args.qmc_train, n_val=args.qmc_val, seed=args.seed)
+    natural_stop = _resolved_stop(args, "natural")
     train_cfg = TrainConfig(
         batch_size=args.batch_size,
         lr=args.lr,
         steps=args.natural_steps,
         loss=args.loss,
         huber_delta=args.huber_delta,
-        target_rms=args.target_rms,
-        target_max_abs=args.target_max_abs,
-        early_stop_patience=args.early_stop_patience,
-        min_steps_before_stop=args.min_steps_before_stop,
+        target_rms=natural_stop["target_rms"],
+        target_max_abs=natural_stop["target_max_abs"],
+        early_stop_patience=int(natural_stop["early_stop_patience"]),
+        min_steps_before_stop=int(natural_stop["min_steps_before_stop"]),
+        stop_val_states=args.stop_val_states,
+        show_progress=not args.no_progress,
         dtype=dtype,
         device=args.device,
     )
@@ -103,14 +127,19 @@ def main() -> None:
             "rule_trainer": args.rule_trainer,
             "loss": args.loss,
             "huber_delta": args.huber_delta,
-            "target_rms": args.target_rms,
-            "target_max_abs": args.target_max_abs,
-            "early_stop_patience": args.early_stop_patience,
-            "min_steps_before_stop": args.min_steps_before_stop,
+            "natural_stop": natural_stop,
+            "target_rms_arg": args.target_rms,
+            "target_max_abs_arg": args.target_max_abs,
+            "early_stop_patience_arg": args.early_stop_patience,
+            "min_steps_before_stop_arg": args.min_steps_before_stop,
+            "no_auto_stop": args.no_auto_stop,
+            "stop_val_states": args.stop_val_states,
+            "show_progress": not args.no_progress,
             "dtype": args.dtype,
             "device": args.device,
         },
         "policies": _policies(args.policies),
+        "policy_stop": {policy: _resolved_stop(args, policy) for policy in _policies(args.policies)},
     }
     _write_json(args.output_dir / "run_config.json", run_config)
 
@@ -140,6 +169,7 @@ def main() -> None:
     _write_json(args.output_dir / "natural_eval.json", natural_eval)
 
     for policy in _policies(args.policies):
+        rule_stop = _resolved_stop(args, policy)
         rule_cfg = TrainConfig(
             batch_size=args.batch_size,
             sim_batch_size=args.sim_batch_size,
@@ -148,10 +178,12 @@ def main() -> None:
             steps=args.rule_steps,
             loss=args.loss,
             huber_delta=args.huber_delta,
-            target_rms=args.target_rms,
-            target_max_abs=args.target_max_abs,
-            early_stop_patience=args.early_stop_patience,
-            min_steps_before_stop=args.min_steps_before_stop,
+            target_rms=rule_stop["target_rms"],
+            target_max_abs=rule_stop["target_max_abs"],
+            early_stop_patience=int(rule_stop["early_stop_patience"]),
+            min_steps_before_stop=int(rule_stop["min_steps_before_stop"]),
+            stop_val_states=args.stop_val_states,
+            show_progress=not args.no_progress,
             dtype=dtype,
             device=args.device,
         )
