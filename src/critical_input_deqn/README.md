@@ -66,3 +66,18 @@ sampled mixture states:
 ```bash
 python -m src.critical_input_deqn.run_train --rule-trainer iid
 ```
+
+## Notebook workflow
+
+The notebooks are experiment wrappers around the package code:
+
+1. `notebooks/critical_input_deqn_00_natural_benchmark.ipynb` trains and saves
+   the auxiliary natural benchmark.
+2. `notebooks/critical_input_deqn_01_fixed_taylor.ipynb` trains the fixed
+   Taylor rule using the frozen benchmark.
+3. `notebooks/critical_input_deqn_02_modified_taylor.ipynb` trains the
+   bottleneck-adjusted Taylor rule using the frozen benchmark.
+4. `notebooks/critical_input_deqn_03_compare_rule_policies.ipynb` loads saved
+   diagnostics and writes a comparison table.
+
+All saved results go under `baseline_artifacts/critical_input_deqn/`.
