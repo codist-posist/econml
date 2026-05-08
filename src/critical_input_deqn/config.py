@@ -101,6 +101,10 @@ class TrainConfig:
     stop_val_states: int = 2048
     show_progress: bool = True
     promise_init_scale: float = 1.0
+    checkpoint_dir: str | None = None
+    checkpoint_name: str = "train"
+    checkpoint_every: int = 5_000
+    checkpoint_keep: int = 3
     dtype: torch.dtype = torch.float64
     device: str = "cpu"
     fb_epsilon_start: float = 1e-4

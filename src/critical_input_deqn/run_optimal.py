@@ -68,6 +68,9 @@ def main() -> None:
     parser.add_argument("--no-auto-stop", action="store_true", help="Disable policy-specific validation stopping defaults.")
     parser.add_argument("--stop-val-states", type=int, default=2048)
     parser.add_argument("--no-progress", action="store_true")
+    parser.add_argument("--checkpoint-every", type=int, default=5000)
+    parser.add_argument("--checkpoint-keep", type=int, default=3)
+    parser.add_argument("--no-checkpoints", action="store_true")
     parser.add_argument(
         "--promise-init-scale",
         type=float,
@@ -104,6 +107,10 @@ def main() -> None:
         stop_val_states=args.stop_val_states,
         show_progress=not args.no_progress,
         promise_init_scale=args.promise_init_scale,
+        checkpoint_dir=None if args.no_checkpoints else str(args.output_dir / "checkpoints"),
+        checkpoint_name=args.kind,
+        checkpoint_every=args.checkpoint_every,
+        checkpoint_keep=args.checkpoint_keep,
         dtype=dtype,
         device=args.device,
     )
@@ -129,6 +136,9 @@ def main() -> None:
             "stop_val_states": args.stop_val_states,
             "show_progress": not args.no_progress,
             "promise_init_scale": args.promise_init_scale,
+            "checkpoint_every": args.checkpoint_every,
+            "checkpoint_keep": args.checkpoint_keep,
+            "no_checkpoints": args.no_checkpoints,
             "commitment_promise_init_mean": COMMITMENT_PROMISE_INIT_MEAN,
             "commitment_promise_init_std": COMMITMENT_PROMISE_INIT_STD,
             "dtype": args.dtype,

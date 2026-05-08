@@ -78,6 +78,9 @@ def main() -> None:
     parser.add_argument("--no-auto-stop", action="store_true", help="Disable policy-specific validation stopping defaults.")
     parser.add_argument("--stop-val-states", type=int, default=2048)
     parser.add_argument("--no-progress", action="store_true")
+    parser.add_argument("--checkpoint-every", type=int, default=5000)
+    parser.add_argument("--checkpoint-keep", type=int, default=3)
+    parser.add_argument("--no-checkpoints", action="store_true")
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--sim-batch-size", type=int, default=1024)
     parser.add_argument("--episode-length", type=int, default=30)
@@ -109,6 +112,10 @@ def main() -> None:
         min_steps_before_stop=int(natural_stop["min_steps_before_stop"]),
         stop_val_states=args.stop_val_states,
         show_progress=not args.no_progress,
+        checkpoint_dir=None if args.no_checkpoints else str(args.output_dir / "checkpoints"),
+        checkpoint_name="natural",
+        checkpoint_every=args.checkpoint_every,
+        checkpoint_keep=args.checkpoint_keep,
         dtype=dtype,
         device=args.device,
     )
@@ -135,6 +142,9 @@ def main() -> None:
             "no_auto_stop": args.no_auto_stop,
             "stop_val_states": args.stop_val_states,
             "show_progress": not args.no_progress,
+            "checkpoint_every": args.checkpoint_every,
+            "checkpoint_keep": args.checkpoint_keep,
+            "no_checkpoints": args.no_checkpoints,
             "dtype": args.dtype,
             "device": args.device,
         },
@@ -184,6 +194,10 @@ def main() -> None:
             min_steps_before_stop=int(rule_stop["min_steps_before_stop"]),
             stop_val_states=args.stop_val_states,
             show_progress=not args.no_progress,
+            checkpoint_dir=None if args.no_checkpoints else str(args.output_dir / "checkpoints"),
+            checkpoint_name=policy,
+            checkpoint_every=args.checkpoint_every,
+            checkpoint_keep=args.checkpoint_keep,
             dtype=dtype,
             device=args.device,
         )

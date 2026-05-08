@@ -116,7 +116,36 @@ The notebooks are experiment wrappers around the package code:
    optimal-policy network.
 5. `notebooks/critical_input_deqn_05_commitment.ipynb` trains the commitment
    optimal-policy network with promise states.
-6. `notebooks/critical_input_deqn_03_compare_all_policies.ipynb` loads saved
+6. `notebooks/critical_input_deqn_06_postprocess_artifacts.ipynb` loads all
+   trained checkpoints and saves simulated states, definitions, and summary
+   statistics for downstream figures.
+7. `notebooks/critical_input_deqn_03_compare_all_policies.ipynb` loads saved
    diagnostics from all four policy environments and writes a comparison table.
 
 All saved results go under `baseline_artifacts/critical_input_deqn/`.
+
+## Saved artifacts
+
+Training writes the objects needed to restart analysis without retraining:
+
+- `run_config.json`: calibration, network architecture, QMC settings, stopping
+  rules, and launcher arguments.
+- `*.pt`: PyTorch model checkpoints with network weights and metadata.
+- `checkpoints/*_step_*.pt`: periodic training-state checkpoints with network
+  weights, optimizer state, RNG state, current simulated state when applicable,
+  and the current step/episode.  These mirror the role of the author-code
+  checkpoint folders and protect long runs from losing all progress.
+- `*_train_log.json`: training and validation residual paths.
+- `*_eval.json`: equation-level out-of-sample residual diagnostics.
+
+Post-processing writes the objects needed for figures and quantitative tables:
+
+- `postprocess/*_states.npz`: simulated state paths.
+- `postprocess/*_definitions.npz`: decoded controls and derived economic
+  variables, including output gaps, scarcity rents, imported-input use,
+  adaptation investment, next-period adaptation, marginal costs, price
+  dispersion, and natural-benchmark objects.
+- `postprocess/*_summary.json`: mean, standard deviation, quantiles, minimum,
+  and maximum for each saved variable.
+- `postprocess/postprocess_manifest.json`: run metadata for the generated
+  artifacts.

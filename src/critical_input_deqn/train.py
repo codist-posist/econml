@@ -238,6 +238,49 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
+def _cpu_detached(value):
+    if torch.is_tensor(value):
+        return value.detach().cpu()
+    if isinstance(value, dict):
+        return {k: _cpu_detached(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_cpu_detached(v) for v in value)
+    return value
+
+
+def _maybe_save_training_state(
+    *,
+    step: int,
+    net: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    cfg: TrainConfig,
+    extra: Dict[str, object] | None = None,
+) -> None:
+    if cfg.checkpoint_dir is None or int(cfg.checkpoint_every) <= 0:
+        return
+    if int(step) % int(cfg.checkpoint_every) != 0:
+        return
+    directory = Path(cfg.checkpoint_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    name = str(cfg.checkpoint_name)
+    path = directory / f"{name}_step_{int(step):08d}.pt"
+    payload = {
+        "step": int(step),
+        "state_dict": net.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "torch_rng_state": torch.get_rng_state(),
+        "cuda_rng_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "extra": _cpu_detached(extra or {}),
+    }
+    torch.save(payload, path)
+
+    keep = int(cfg.checkpoint_keep)
+    if keep > 0:
+        checkpoints = sorted(directory.glob(f"{name}_step_*.pt"))
+        for old in checkpoints[:-keep]:
+            old.unlink(missing_ok=True)
+
+
 def load_checkpoint(path: str | Path, net: nn.Module, *, map_location: str | torch.device = "cpu") -> Dict[str, object]:
     """Load a checkpoint into an already constructed network."""
 
@@ -309,6 +352,13 @@ def train_natural(
                 )
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
+            _maybe_save_training_state(
+                step=step,
+                net=net,
+                optimizer=opt,
+                cfg=train_cfg,
+                extra={"kind": "natural"},
+            )
             if _passes_stop_criteria(val_mat, train_cfg, step):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
@@ -390,6 +440,13 @@ def train_rule(
                 )
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
+            _maybe_save_training_state(
+                step=step,
+                net=net,
+                optimizer=opt,
+                cfg=train_cfg,
+                extra={"kind": "rule", "policy": policy.lower()},
+            )
             if _passes_stop_criteria(val_mat, train_cfg, step):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
@@ -501,6 +558,13 @@ def train_rule_episode(
                 )
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(episode, last_mat, log, loss.detach(), val_mat)
+            _maybe_save_training_state(
+                step=episode,
+                net=net,
+                optimizer=opt,
+                cfg=train_cfg,
+                extra={"kind": "rule", "policy": policy.lower(), "current_state": current_state},
+            )
             if _passes_stop_criteria(val_mat, train_cfg, episode):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
@@ -627,6 +691,13 @@ def train_optimal_episode(
             )
             val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
+            _maybe_save_training_state(
+                step=episode,
+                net=net,
+                optimizer=opt,
+                cfg=train_cfg,
+                extra={"kind": key, "current_state": current_state},
+            )
             if _passes_stop_criteria(val_mat, train_cfg, episode):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
