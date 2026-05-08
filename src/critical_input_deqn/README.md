@@ -117,8 +117,8 @@ The notebooks are experiment wrappers around the package code:
 5. `notebooks/critical_input_deqn_05_commitment.ipynb` trains the commitment
    optimal-policy network with promise states.
 6. `notebooks/critical_input_deqn_06_postprocess_artifacts.ipynb` loads all
-   trained checkpoints and saves simulated states, definitions, and summary
-   statistics for downstream figures.
+   trained checkpoints and saves simulated states, deterministic scenario
+   responses, definitions, and summary statistics for downstream figures.
 7. `notebooks/critical_input_deqn_03_compare_all_policies.ipynb` loads saved
    diagnostics from all four policy environments and writes a comparison table.
 
@@ -145,6 +145,11 @@ Post-processing writes the objects needed for figures and quantitative tables:
   variables, including output gaps, scarcity rents, imported-input use,
   adaptation investment, next-period adaptation, marginal costs, price
   dispersion, and natural-benchmark objects.
+- `postprocess/IR_*_states.npz` and `postprocess/IR_*_definitions.npz`:
+  author-style conditional scenario paths.  Since the new model has no binary
+  Markov regime, these files replace regime-switch IRs with controlled
+  external-access scenarios: no event, one disruption event, severe disruption,
+  one relief event, and delayed-relief paths after disruption.
 - `postprocess/*_summary.json`: mean, standard deviation, quantiles, minimum,
   and maximum for each saved variable.
 - `postprocess/postprocess_manifest.json`: run metadata for the generated

@@ -11,6 +11,7 @@ import torch
 
 from .config import (
     COMMITMENT_OUTPUT_NAMES,
+    COMMITMENT_PROMISE_INIT_MEAN,
     COMMITMENT_STATE_NAMES,
     DISCRETION_OUTPUT_NAMES,
     NATURAL_OUTPUT_NAMES,
@@ -155,6 +156,181 @@ def _add_common_ratios(data: TensorDict) -> TensorDict:
     return data
 
 
+def _normal_initial_rule_state(
+    batch_size: int,
+    *,
+    params: BaselineParams,
+    device: str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    D = torch.zeros(batch_size, device=device, dtype=dtype)
+    X = torch.zeros_like(D)
+    ell_D = torch.full_like(D, float(params.log_bar_lambda_D))
+    ell_X = torch.full_like(D, float(params.log_bar_lambda_X))
+    log_Z = torch.full_like(D, float(-0.5 * params.sigma_z**2))
+    A = torch.zeros_like(D)
+    log_Delta = torch.zeros_like(D)
+    return torch.stack([D, X, ell_D, ell_X, log_Z, A, log_Delta], dim=-1)
+
+
+def _deterministic_physical_step(
+    z_phys: torch.Tensor,
+    *,
+    A_next: torch.Tensor,
+    Delta_next: torch.Tensor,
+    add_D: torch.Tensor,
+    add_X: torch.Tensor,
+    params: BaselineParams,
+) -> torch.Tensor:
+    st = unpack_rule_state(z_phys)
+    D_next = (1.0 - float(params.delta_D)) * st.D + add_D
+    X_next = (1.0 - float(params.delta_X)) * st.X + add_X
+    ell_D_next = (
+        (1.0 - float(params.rho_lambda_D)) * float(params.log_bar_lambda_D)
+        + float(params.rho_lambda_D) * st.ell_D
+        + float(params.kappa_D_lambda) * st.D
+    )
+    ell_X_next = (
+        (1.0 - float(params.rho_lambda_X)) * float(params.log_bar_lambda_X)
+        + float(params.rho_lambda_X) * st.ell_X
+        + float(params.beta_X) * st.D
+    )
+    log_Z_next = float(params.rho_z) * st.log_Z
+    log_Delta_next = torch.log(torch.clamp(Delta_next, min=1e-12))
+    return torch.stack([D_next, X_next, ell_D_next, ell_X_next, log_Z_next, A_next, log_Delta_next], dim=-1)
+
+
+def _default_ir_scenarios(params: BaselineParams, *, pulse: int, relief_lag: int) -> dict[str, dict[int, tuple[float, float]]]:
+    return {
+        "no_event": {},
+        "D_1x": {pulse: (float(params.mark_D), 0.0)},
+        "D_3x": {pulse: (3.0 * float(params.mark_D), 0.0)},
+        "X_1x": {pulse: (0.0, float(params.mark_X))},
+        "D_1x_X_lag": {
+            pulse: (float(params.mark_D), 0.0),
+            pulse + int(relief_lag): (0.0, float(params.mark_X)),
+        },
+        "D_3x_X_lag": {
+            pulse: (3.0 * float(params.mark_D), 0.0),
+            pulse + int(relief_lag): (0.0, float(params.mark_X)),
+        },
+    }
+
+
+def _scenario_additions(
+    scenarios: Mapping[str, Mapping[int, tuple[float, float]]],
+    *,
+    t: int,
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    add_D = []
+    add_X = []
+    for spec in scenarios.values():
+        d, x = spec.get(int(t), (0.0, 0.0))
+        add_D.append(float(d))
+        add_X.append(float(x))
+    return (
+        torch.tensor(add_D, device=device, dtype=dtype),
+        torch.tensor(add_X, device=device, dtype=dtype),
+    )
+
+
+def simulate_rule_ir_scenarios(
+    *,
+    policy: str,
+    rule_net,
+    natural_net,
+    params: BaselineParams,
+    burnin: int,
+    horizon: int,
+    presteps: int,
+    relief_lag: int,
+    device: str,
+    dtype: torch.dtype,
+) -> tuple[list[str], torch.Tensor]:
+    pulse = int(burnin)
+    scenarios = _default_ir_scenarios(params, pulse=pulse, relief_lag=relief_lag)
+    labels = list(scenarios.keys())
+    z = _normal_initial_rule_state(len(labels), params=params, device=device, dtype=dtype)
+    states = [z]
+    total = int(burnin) + int(horizon)
+    with torch.no_grad():
+        for t in range(1, total):
+            st = unpack_rule_state(z)
+            out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES)
+            out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES)
+            drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
+            add_D, add_X = _scenario_additions(scenarios, t=t, device=z.device, dtype=z.dtype)
+            z = _deterministic_physical_step(
+                z,
+                A_next=drv["A_next"],
+                Delta_next=drv["Delta"],
+                add_D=add_D,
+                add_X=add_X,
+                params=params,
+            )
+            states.append(z)
+    start = max(0, int(burnin) - int(presteps))
+    return labels, torch.stack(states, dim=0)[start:]
+
+
+def simulate_optimal_ir_scenarios(
+    *,
+    kind: str,
+    policy_net,
+    params: BaselineParams,
+    burnin: int,
+    horizon: int,
+    presteps: int,
+    relief_lag: int,
+    device: str,
+    dtype: torch.dtype,
+) -> tuple[list[str], torch.Tensor]:
+    pulse = int(burnin)
+    scenarios = _default_ir_scenarios(params, pulse=pulse, relief_lag=relief_lag)
+    labels = list(scenarios.keys())
+    z_phys = _normal_initial_rule_state(len(labels), params=params, device=device, dtype=dtype)
+    if kind == "commitment":
+        promises = torch.tensor(COMMITMENT_PROMISE_INIT_MEAN, device=device, dtype=dtype)[None, :].expand(len(labels), 4)
+        z = torch.cat([z_phys, promises], dim=-1)
+    elif kind == "discretion":
+        z = z_phys
+    else:
+        raise ValueError("kind must be discretion or commitment.")
+    states = [z]
+    total = int(burnin) + int(horizon)
+    with torch.no_grad():
+        for t in range(1, total):
+            z_phys = z[..., :7]
+            st = unpack_rule_state(z_phys)
+            if kind == "commitment":
+                out = decode_commitment(policy_net(z))
+            else:
+                out = decode_discretion(policy_net(z))
+            drv = derive_free(st, out, params)
+            add_D, add_X = _scenario_additions(scenarios, t=t, device=z.device, dtype=z.dtype)
+            z_phys_next = _deterministic_physical_step(
+                z_phys,
+                A_next=drv["A_next"],
+                Delta_next=drv["Delta"],
+                add_D=add_D,
+                add_X=add_X,
+                params=params,
+            )
+            if kind == "commitment":
+                promises_next = torch.stack(
+                    [out["promise_E"], out["promise_S"], out["promise_F"], out["promise_Q"]],
+                    dim=-1,
+                )
+                z = torch.cat([z_phys_next, promises_next], dim=-1)
+            else:
+                z = z_phys_next
+            states.append(z)
+    start = max(0, int(burnin) - int(presteps))
+    return labels, torch.stack(states, dim=0)[start:]
+
+
 def evaluate_rule_path(
     states: torch.Tensor,
     *,
@@ -230,6 +406,26 @@ def save_policy_artifacts(
         json.dump(_summary_stats(outputs_np), fh, indent=2, sort_keys=True)
 
 
+def save_ir_artifacts(
+    *,
+    policy: str,
+    labels: list[str],
+    states_np: dict[str, np.ndarray],
+    outputs_np: dict[str, np.ndarray],
+    out_dir: Path,
+) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    flat_states: dict[str, np.ndarray] = {"labels": np.asarray(labels)}
+    flat_defs: dict[str, np.ndarray] = {"labels": np.asarray(labels)}
+    for i, label in enumerate(labels):
+        for name, arr in states_np.items():
+            flat_states[f"{label}__{name}"] = arr[:, i]
+        for name, arr in outputs_np.items():
+            flat_defs[f"{label}__{name}"] = arr[:, i]
+    np.savez_compressed(out_dir / f"IR_{policy}_states.npz", **flat_states)
+    np.savez_compressed(out_dir / f"IR_{policy}_definitions.npz", **flat_defs)
+
+
 def run_postprocess(
     *,
     artifact_root: Path,
@@ -237,6 +433,11 @@ def run_postprocess(
     length: int,
     batch_size: int,
     seed: int,
+    ir_burnin: int,
+    ir_horizon: int,
+    ir_presteps: int,
+    ir_relief_lag: int,
+    save_ir: bool,
     device: str,
     dtype: torch.dtype,
 ) -> None:
@@ -296,6 +497,50 @@ def run_postprocess(
         )
         save_policy_artifacts(policy="commitment", states_np=states_np, outputs_np=outputs_np, out_dir=output_dir)
 
+        if save_ir:
+            for policy, loaded in (("fixed", fixed), ("ba", ba)):
+                labels, ir_states = simulate_rule_ir_scenarios(
+                    policy=policy,
+                    rule_net=loaded.net,
+                    natural_net=natural.net,
+                    params=params,
+                    burnin=ir_burnin,
+                    horizon=ir_horizon,
+                    presteps=ir_presteps,
+                    relief_lag=ir_relief_lag,
+                    device=device,
+                    dtype=dtype,
+                )
+                states_np, outputs_np = evaluate_rule_path(
+                    ir_states,
+                    policy=policy,
+                    rule_net=loaded.net,
+                    natural_net=natural.net,
+                    params=params,
+                )
+                save_ir_artifacts(policy=policy, labels=labels, states_np=states_np, outputs_np=outputs_np, out_dir=output_dir)
+
+            for kind, loaded in (("discretion", discretion), ("commitment", commitment)):
+                labels, ir_states = simulate_optimal_ir_scenarios(
+                    kind=kind,
+                    policy_net=loaded.net,
+                    params=params,
+                    burnin=ir_burnin,
+                    horizon=ir_horizon,
+                    presteps=ir_presteps,
+                    relief_lag=ir_relief_lag,
+                    device=device,
+                    dtype=dtype,
+                )
+                states_np, outputs_np = evaluate_optimal_path(
+                    ir_states,
+                    kind=kind,
+                    policy_net=loaded.net,
+                    natural_net=natural.net,
+                    params=params,
+                )
+                save_ir_artifacts(policy=kind, labels=labels, states_np=states_np, outputs_np=outputs_np, out_dir=output_dir)
+
     manifest = {
         "artifact_root": str(artifact_root),
         "output_dir": str(output_dir),
@@ -303,6 +548,14 @@ def run_postprocess(
         "batch_size": int(batch_size),
         "seed": int(seed),
         "policies": ["fixed", "ba", "discretion", "commitment"],
+        "ir": {
+            "saved": bool(save_ir),
+            "burnin": int(ir_burnin),
+            "horizon": int(ir_horizon),
+            "presteps": int(ir_presteps),
+            "relief_lag": int(ir_relief_lag),
+            "scenarios": list(_default_ir_scenarios(params, pulse=int(ir_burnin), relief_lag=int(ir_relief_lag)).keys()),
+        },
         "files": sorted(str(p.name) for p in output_dir.glob("*")),
     }
     with (output_dir / "postprocess_manifest.json").open("w", encoding="utf-8") as fh:
@@ -316,6 +569,11 @@ def main() -> None:
     parser.add_argument("--length", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=777)
+    parser.add_argument("--ir-burnin", type=int, default=400)
+    parser.add_argument("--ir-horizon", type=int, default=200)
+    parser.add_argument("--ir-presteps", type=int, default=5)
+    parser.add_argument("--ir-relief-lag", type=int, default=8)
+    parser.add_argument("--no-ir", action="store_true")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--dtype", default="float64", choices=("float64", "float32"))
     args = parser.parse_args()
@@ -327,6 +585,11 @@ def main() -> None:
         length=args.length,
         batch_size=args.batch_size,
         seed=args.seed,
+        ir_burnin=args.ir_burnin,
+        ir_horizon=args.ir_horizon,
+        ir_presteps=args.ir_presteps,
+        ir_relief_lag=args.ir_relief_lag,
+        save_ir=not args.no_ir,
         device=args.device,
         dtype=_dtype(args.dtype),
     )
