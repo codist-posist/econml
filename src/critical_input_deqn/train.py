@@ -38,6 +38,10 @@ class TrainLog:
     val_rms: list[float] = field(default_factory=list)
     stopped_early: bool = False
     stop_reason: str | None = None
+    best_step: int | None = None
+    best_val_rms: float | None = None
+    best_val_max_abs: float | None = None
+    best_train_rms: float | None = None
 
 
 def make_natural_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cpu", dtype: torch.dtype = torch.float64) -> MLP:
@@ -195,6 +199,8 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     val_top = metrics.get("val_top")
     if val_top:
         message += f" top_val={val_top}"
+    if metrics.get("new_best"):
+        message += " best=*"
     print(message, flush=True)
 
 
@@ -228,6 +234,48 @@ def _top_residual_summary(residuals: Dict[str, torch.Tensor], *, limit: int = 3)
             items.append((float(rms.cpu()), name))
     items.sort(reverse=True)
     return ", ".join(f"{name}:{rms:.2e}" for rms, name in items[: int(limit)])
+
+
+def _copy_state_dict_to_cpu(net: nn.Module) -> dict[str, torch.Tensor]:
+    return {name: value.detach().cpu().clone() for name, value in net.state_dict().items()}
+
+
+def _maybe_update_best_state(
+    net: nn.Module,
+    log: TrainLog,
+    metrics: dict[str, float],
+    step: int,
+    best_state: dict[str, torch.Tensor] | None,
+) -> dict[str, torch.Tensor] | None:
+    """Track the best validation checkpoint by val_rms, breaking ties by val_max."""
+
+    if "val_rms" not in metrics:
+        return best_state
+    val_rms = float(metrics["val_rms"])
+    val_max = float(metrics.get("val_max_abs", float("inf")))
+    train_rms = float(metrics.get("train_rms", float("nan")))
+    is_better = log.best_val_rms is None
+    if log.best_val_rms is not None:
+        tol = 1e-12
+        is_better = val_rms < float(log.best_val_rms) - tol or (
+            abs(val_rms - float(log.best_val_rms)) <= tol
+            and (log.best_val_max_abs is None or val_max < float(log.best_val_max_abs))
+        )
+    if not is_better:
+        metrics["new_best"] = False
+        return best_state
+
+    log.best_step = int(step)
+    log.best_val_rms = val_rms
+    log.best_val_max_abs = val_max
+    log.best_train_rms = train_rms
+    metrics["new_best"] = True
+    return _copy_state_dict_to_cpu(net)
+
+
+def _restore_best_state(net: nn.Module, best_state: dict[str, torch.Tensor] | None) -> None:
+    if best_state is not None:
+        net.load_state_dict(best_state)
 
 
 def _validation_nodes(qmc_cfg: QMCConfig, *, device: str, dtype: torch.dtype, seed_offset: int) -> QMCNodes:
@@ -352,6 +400,7 @@ def train_natural(
     n_steps = int(train_cfg.steps if steps is None else steps)
     log = TrainLog()
     stop_hits = 0
+    best_state = None
 
     _announce_training(kind="natural", total=n_steps, train_cfg=train_cfg, qmc_cfg=qmc_cfg, log_every=log_every)
     progress = _progress_range(n_steps, desc="natural", enabled=train_cfg.show_progress)
@@ -388,6 +437,7 @@ def train_natural(
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
+            best_state = _maybe_update_best_state(net, log, metrics, step, best_state)
             _maybe_save_training_state(
                 step=step,
                 net=net,
@@ -404,6 +454,7 @@ def train_natural(
             else:
                 stop_hits = 0
             _report_progress(progress, metrics, step=step, total=n_steps, stop_hits=stop_hits, enabled=train_cfg.show_progress)
+    _restore_best_state(net, best_state)
     return net, log
 
 
@@ -439,6 +490,7 @@ def train_rule(
     n_steps = int(train_cfg.steps if steps is None else steps)
     log = TrainLog()
     stop_hits = 0
+    best_state = None
 
     _announce_training(kind=f"rule-{policy.lower()}", total=n_steps, train_cfg=train_cfg, qmc_cfg=qmc_cfg, log_every=log_every)
     progress = _progress_range(n_steps, desc=f"rule-{policy.lower()}", enabled=train_cfg.show_progress)
@@ -478,6 +530,7 @@ def train_rule(
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
+            best_state = _maybe_update_best_state(net, log, metrics, step, best_state)
             _maybe_save_training_state(
                 step=step,
                 net=net,
@@ -494,6 +547,7 @@ def train_rule(
             else:
                 stop_hits = 0
             _report_progress(progress, metrics, step=step, total=n_steps, stop_hits=stop_hits, enabled=train_cfg.show_progress)
+    _restore_best_state(net, best_state)
     return net, log
 
 
@@ -536,6 +590,7 @@ def train_rule_episode(
     n_episodes = int(train_cfg.steps if episodes is None else episodes)
     log = TrainLog()
     stop_hits = 0
+    best_state = None
 
     current_state = sample_rule_states(
         train_cfg.sim_batch_size,
@@ -615,6 +670,7 @@ def train_rule_episode(
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
+            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state)
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -638,6 +694,7 @@ def train_rule_episode(
             else:
                 stop_hits = 0
             _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
+    _restore_best_state(net, best_state)
     return net, log
 
 
@@ -686,6 +743,7 @@ def train_optimal_episode(
     n_episodes = int(train_cfg.steps if episodes is None else episodes)
     log = TrainLog()
     stop_hits = 0
+    best_state = None
     current_state = _initial_optimal_states(
         train_cfg.sim_batch_size,
         kind=key,
@@ -773,6 +831,7 @@ def train_optimal_episode(
             val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
+            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state)
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -789,6 +848,7 @@ def train_optimal_episode(
             else:
                 stop_hits = 0
             _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
+    _restore_best_state(net, best_state)
     return net, log
 
 

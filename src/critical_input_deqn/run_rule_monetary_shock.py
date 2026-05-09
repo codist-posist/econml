@@ -34,6 +34,16 @@ def _write_json(path: Path, payload: object) -> None:
         json.dump(payload, fh, indent=2, sort_keys=True)
 
 
+def _selection_metadata(log) -> dict[str, object]:
+    return {
+        "criterion": "min_val_rms_then_val_max_abs",
+        "best_step": log.best_step,
+        "best_val_rms": log.best_val_rms,
+        "best_val_max_abs": log.best_val_max_abs,
+        "best_train_rms": log.best_train_rms,
+    }
+
+
 def _policies(raw: str) -> list[str]:
     policies = [p.strip().lower() for p in raw.split(",") if p.strip()]
     valid = {"fixed", "ba"}
@@ -215,7 +225,12 @@ def main() -> None:
         save_checkpoint(
             args.output_dir / f"{policy}_monetary_shock.pt",
             rule_net,
-            metadata=checkpoint_metadata(policy=policy, run_config=run_config, shock_cfg=shock_cfg),
+            metadata=checkpoint_metadata(
+                policy=policy,
+                run_config=run_config,
+                shock_cfg=shock_cfg,
+                selection=_selection_metadata(rule_log),
+            ),
         )
         _write_json(args.output_dir / f"{policy}_monetary_shock_train_log.json", asdict(rule_log))
         rule_eval = evaluate_rule_shock(

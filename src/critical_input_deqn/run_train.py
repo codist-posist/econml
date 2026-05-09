@@ -35,6 +35,16 @@ def _write_json(path: Path, payload: object) -> None:
         json.dump(payload, fh, indent=2, sort_keys=True)
 
 
+def _selection_metadata(log) -> dict[str, object]:
+    return {
+        "criterion": "min_val_rms_then_val_max_abs",
+        "best_step": log.best_step,
+        "best_val_rms": log.best_val_rms,
+        "best_val_max_abs": log.best_val_max_abs,
+        "best_train_rms": log.best_train_rms,
+    }
+
+
 def _policies(raw: str) -> list[str]:
     policies = [p.strip().lower() for p in raw.split(",") if p.strip()]
     valid = {"fixed", "ba"}
@@ -192,7 +202,7 @@ def main() -> None:
         save_checkpoint(
             args.output_dir / "natural.pt",
             natural_net,
-            metadata={"kind": "natural", "config": run_config},
+            metadata={"kind": "natural", "config": run_config, "selection": _selection_metadata(natural_log)},
         )
         _write_json(args.output_dir / "natural_train_log.json", asdict(natural_log))
     else:
@@ -260,7 +270,12 @@ def main() -> None:
         save_checkpoint(
             args.output_dir / f"{policy}.pt",
             rule_net,
-            metadata={"kind": "rule", "policy": policy, "config": run_config},
+            metadata={
+                "kind": "rule",
+                "policy": policy,
+                "config": run_config,
+                "selection": _selection_metadata(rule_log),
+            },
         )
         _write_json(args.output_dir / f"{policy}_train_log.json", asdict(rule_log))
         rule_eval = evaluate_rule(

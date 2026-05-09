@@ -38,9 +38,11 @@ from .train import (
     _log_metrics,
     _mark_stopped,
     _maybe_save_training_state,
+    _maybe_update_best_state,
     _passes_stop_criteria,
     _progress_range,
     _report_progress,
+    _restore_best_state,
     _top_residual_summary,
     _validation_nodes,
     freeze,
@@ -400,6 +402,7 @@ def train_rule_shock_episode(
     n_episodes = int(train_cfg.steps if episodes is None else episodes)
     log = TrainLog()
     stop_hits = 0
+    best_state = None
 
     current_state = sample_rule_shock_states(
         train_cfg.sim_batch_size,
@@ -491,6 +494,7 @@ def train_rule_shock_episode(
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
+            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state)
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -521,6 +525,7 @@ def train_rule_shock_episode(
                 stop_hits=stop_hits,
                 enabled=train_cfg.show_progress,
             )
+    _restore_best_state(net, best_state)
     return net, log
 
 
@@ -768,6 +773,7 @@ def checkpoint_metadata(
     policy: str,
     run_config: Mapping[str, object],
     shock_cfg: MonetaryShockConfig,
+    selection: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "kind": "rule_monetary_shock",
@@ -775,4 +781,5 @@ def checkpoint_metadata(
         "state_names": RULE_SHOCK_STATE_NAMES,
         "shock_config": asdict(shock_cfg),
         "config": dict(run_config),
+        "selection": dict(selection or {}),
     }

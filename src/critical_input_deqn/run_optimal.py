@@ -33,6 +33,16 @@ def _write_json(path: Path, payload: object) -> None:
         json.dump(payload, fh, indent=2, sort_keys=True)
 
 
+def _selection_metadata(log) -> dict[str, object]:
+    return {
+        "criterion": "min_val_rms_then_val_max_abs",
+        "best_step": log.best_step,
+        "best_val_rms": log.best_val_rms,
+        "best_val_max_abs": log.best_val_max_abs,
+        "best_train_rms": log.best_train_rms,
+    }
+
+
 def _resolved_stop(args: argparse.Namespace) -> dict[str, float | int | None]:
     defaults = {} if args.no_auto_stop else stop_profile(args.kind)
     return {
@@ -184,7 +194,11 @@ def main() -> None:
         episodes=args.steps,
         log_every=args.log_every,
     )
-    save_checkpoint(args.output_dir / f"{args.kind}.pt", net, metadata=run_config)
+    save_checkpoint(
+        args.output_dir / f"{args.kind}.pt",
+        net,
+        metadata={"kind": args.kind, "config": run_config, "selection": _selection_metadata(log)},
+    )
     _write_json(args.output_dir / f"{args.kind}_train_log.json", asdict(log))
     eval_metrics = evaluate_optimal(
         net,
