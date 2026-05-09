@@ -352,6 +352,9 @@ def evaluate_rule_path(
         data[k if k not in data else f"out_{k}"] = v
     data.update({k: v for k, v in out_n.items() if k not in data})
     data.update({k: v for k, v in drv.items() if k not in data})
+    if "I_A_effective" in data:
+        data["I_A_raw"] = out["I_A"]
+        data["I_A"] = data["I_A_effective"]
     data["Y_n"] = out_n["Y_n"]
     data["R_n_real"] = out_n["R_n_real"]
     data = _add_common_ratios(data)
@@ -386,6 +389,9 @@ def evaluate_optimal_path(
     data.update(out)
     data.update({k: v for k, v in out_n.items() if k not in data})
     data.update({k: v for k, v in drv.items() if k not in data})
+    if "I_A_effective" in data:
+        data["I_A_raw"] = out["I_A"]
+        data["I_A"] = data["I_A_effective"]
     data["Y_n"] = out_n["Y_n"]
     data["R_n_real"] = out_n["R_n_real"]
     data = _add_common_ratios(data)

@@ -35,6 +35,13 @@ def _load_npz(path: Path) -> dict[str, np.ndarray] | None:
         return {key: data[key] for key in data.files}
 
 
+def _load_json(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def _ir_series(data: dict[str, np.ndarray], scenario: str, variable: str) -> np.ndarray | None:
     value = data.get(f"{scenario}__{variable}")
     if value is None:
@@ -298,6 +305,102 @@ def plot_distribution_panels(*, root: Path, policy: str, output: Path) -> bool:
     return True
 
 
+def plot_complementarity_diagnostics(*, root: Path, policy: str, output: Path) -> bool:
+    data = _load_npz(root / f"{policy}_definitions.npz")
+    if data is None:
+        return False
+    chi = data.get("chi")
+    mbar = data.get("mbar")
+    M = data.get("M")
+    if chi is None or mbar is None or M is None:
+        return False
+    chi = np.asarray(chi, dtype=float).reshape(-1)
+    slack = (np.asarray(mbar, dtype=float).reshape(-1) - np.asarray(M, dtype=float).reshape(-1)) / np.maximum(
+        np.asarray(mbar, dtype=float).reshape(-1), 1e-12
+    )
+    product = chi * slack
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
+    axes[0].hist(chi, bins=50, alpha=0.8)
+    axes[0].set_title(r"$\chi_t$")
+    axes[1].hist(slack, bins=50, alpha=0.8)
+    axes[1].set_title("relative cap slack")
+    axes[2].hist(product, bins=50, alpha=0.8)
+    axes[2].set_title(r"$\chi_t \times$ slack")
+    for ax in axes:
+        ax.grid(alpha=0.2)
+    fig.suptitle(f"Complementarity diagnostics: {policy}")
+    _save(fig, output)
+    return True
+
+
+def plot_training_diagnostics(*, base_root: Path, output: Path) -> bool:
+    specs = {
+        "natural": base_root / "natural" / "natural_train_log.json",
+        "fixed": base_root / "fixed_taylor" / "fixed_train_log.json",
+        "ba": base_root / "modified_taylor" / "ba_train_log.json",
+        "discretion": base_root / "discretion" / "discretion_train_log.json",
+        "commitment": base_root / "commitment" / "commitment_train_log.json",
+    }
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    any_series = False
+    for label, path in specs.items():
+        data = _load_json(path)
+        if not data:
+            continue
+        steps = np.asarray(data.get("steps", []), dtype=float)
+        if steps.size == 0:
+            continue
+        train = np.asarray(data.get("rms", []), dtype=float)
+        val = np.asarray(data.get("val_rms", []), dtype=float)
+        if train.size:
+            axes[0].plot(steps[: train.size], train, label=label, linewidth=1.4)
+            any_series = True
+        if val.size:
+            axes[1].plot(steps[: val.size], val, label=label, linewidth=1.4)
+            any_series = True
+    if not any_series:
+        plt.close(fig)
+        return False
+    axes[0].set_title("Training RMS residual")
+    axes[1].set_title("Validation RMS residual")
+    for ax in axes:
+        ax.set_yscale("log")
+        ax.grid(alpha=0.25)
+        ax.legend()
+    fig.suptitle("DEQN convergence diagnostics")
+    _save(fig, output)
+    return True
+
+
+def plot_eval_residual_bars(*, base_root: Path, output: Path) -> bool:
+    specs = {
+        "natural": base_root / "natural" / "natural_eval.json",
+        "fixed": base_root / "fixed_taylor" / "fixed_eval.json",
+        "ba": base_root / "modified_taylor" / "ba_eval.json",
+        "discretion": base_root / "discretion" / "discretion_eval.json",
+        "commitment": base_root / "commitment" / "commitment_eval.json",
+    }
+    labels = []
+    values = []
+    for label, path in specs.items():
+        data = _load_json(path)
+        if not data:
+            continue
+        overall = data.get("overall.rms")
+        if isinstance(overall, (int, float)):
+            labels.append(label)
+            values.append(float(overall))
+    if not values:
+        return False
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(labels, values)
+    ax.set_yscale("log")
+    ax.set_title("Out-of-sample overall residual RMS")
+    ax.grid(axis="y", alpha=0.25)
+    _save(fig, output)
+    return True
+
+
 def make_figures(base_root: Path, output_dir: Path, *, policy: str = "ba") -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, str] = {}
@@ -386,9 +489,47 @@ def make_figures(base_root: Path, output_dir: Path, *, policy: str = "ba") -> di
         ):
             written[filename] = str(path)
 
+    policy_sensitivity_path = output_dir / "figure_11_policy_aggressiveness.png"
+    if plot_experiment_ir_grid_comparison(
+        base_root=base_root,
+        experiments=("dovish_policy", "baseline", "hawkish_policy"),
+        policy=policy,
+        scenario="D_1x",
+        variables=policy_grid_vars,
+        output=policy_sensitivity_path,
+        title="Policy aggressiveness sensitivity",
+        min_series=3,
+    ):
+        written["figure_11"] = str(policy_sensitivity_path)
+
+    output_gap_rule_path = output_dir / "figure_12_output_gap_policy.png"
+    if plot_experiment_ir_grid_comparison(
+        base_root=base_root,
+        experiments=("baseline", "output_gap_policy"),
+        policy=policy,
+        scenario="D_1x",
+        variables=policy_grid_vars,
+        output=output_gap_rule_path,
+        title="Output-gap response in the policy rule",
+        min_series=2,
+    ):
+        written["figure_12"] = str(output_gap_rule_path)
+
     dist_path = output_dir / f"figure_10_distribution_{policy}.png"
     if plot_distribution_panels(root=baseline_root, policy=policy, output=dist_path):
         written["figure_10"] = str(dist_path)
+
+    comp_path = output_dir / f"diagnostic_complementarity_{policy}.png"
+    if plot_complementarity_diagnostics(root=baseline_root, policy=policy, output=comp_path):
+        written["diagnostic_complementarity"] = str(comp_path)
+
+    training_path = output_dir / "diagnostic_training_residuals.png"
+    if plot_training_diagnostics(base_root=base_root, output=training_path):
+        written["diagnostic_training"] = str(training_path)
+
+    eval_path = output_dir / "diagnostic_eval_residuals.png"
+    if plot_eval_residual_bars(base_root=base_root, output=eval_path):
+        written["diagnostic_eval"] = str(eval_path)
     return written
 
 

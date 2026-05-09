@@ -137,12 +137,11 @@ registered variants include:
 - core mechanism variants: `price_only`, `quantity_only`;
 - counterfactuals: `no_cap`, `no_adaptation`, `no_financing`, `no_relief`;
 - sensitivity variants: `deep_crisis`, `persistent_crisis`, `fast_relief`,
-  `fragile_relief`, `low_substitutability`, `high_substitutability`,
-  `high_import_exposure`, `low_import_exposure`,
-  `high_adaptation_effectiveness`, `low_adaptation_effectiveness`,
-  `high_repair_cost`, `low_repair_cost`, `high_repair_depreciation`,
-  `low_repair_depreciation`, `high_financing_sensitivity`,
-  `hawkish_policy`, `dovish_policy`, and `output_gap_policy`.
+  `fragile_relief`, granular crisis-depth/persistence variants, granular
+  relief-arrival/relief-durability variants, bottleneck-tightness variants,
+  technology variants, repair-cost variants, financing-sensitivity variants,
+  and policy-rule variants such as `hawkish_policy`, `dovish_policy`, and
+  `output_gap_policy`.
 
 One structured experiment can be run with:
 
@@ -160,6 +159,13 @@ An experiment suite can be launched with:
 
 ```bash
 python -m src.critical_input_deqn.run_suite --suite all_registered
+```
+
+Numerical robustness checks change approximation settings rather than model
+primitives:
+
+```bash
+python -m src.critical_input_deqn.run_numerical_robustness --dry-run
 ```
 
 Training dimensions can be forwarded to each experiment, for example:
@@ -209,9 +215,12 @@ The table builder writes:
 - `tables/table_2_ergodic_moments_by_policy.csv`;
 - `tables/table_3_counterfactual_decomposition_<policy>.csv`;
 - `tables/table_4_sensitivity_summary_<policy>.csv`;
+- `tables/table_5_irf_peak_responses_<policy>.csv`;
+- `tables/table_6_numerical_diagnostics.csv`;
+- `tables/table_7_numerical_robustness_<policy>.csv`;
 - `tables/experiment_registry.json` and `tables/experiment_overrides.csv`.
 
 The figure builder writes the main mechanism, policy-comparison,
-counterfactual, sensitivity, and distribution figures when the required
-postprocess files are present.  Missing variants are skipped rather than
-failing the whole build.
+counterfactual, sensitivity, distribution, convergence, residual, and
+complementarity-diagnostic figures when the required postprocess files are
+present.  Missing variants are skipped rather than failing the whole build.

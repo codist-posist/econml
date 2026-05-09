@@ -18,6 +18,7 @@ from .economics import (
     State,
     derive_free,
     fischer_burmeister,
+    adaptation_enabled,
     mc_derivative_A,
     p_x_derivative_A,
     psi,
@@ -117,7 +118,7 @@ def private_residuals_free(
         - out["C"]
         - drv["pm"] * drv["M"]
         - float(params.p_d) * drv["S"]
-        - float(params.p_a) * psi(out["I_A"], params)
+        - float(params.p_a) * psi(drv["I_A_effective"], params)
     ) / out["Y"]
     res["price_index"] = (
         1.0
@@ -136,12 +137,16 @@ def private_residuals_free(
     ) / out["F_p"]
     cap_slack = (drv["mbar"] - drv["M"]) / torch.clamp(drv["mbar"], min=1e-12)
     res["cap_fb"] = fischer_burmeister(out["chi"], cap_slack, fb_epsilon)
-    repair_gap = drv["Omega_A"] * float(params.p_a) * psi_prime(out["I_A"], params) - out["Q_A"]
-    res["repair_fb"] = fischer_burmeister(out["I_A"], repair_gap, fb_epsilon)
-    res["Q"] = (
-        out["Q_A"]
-        - _mean_over_nodes(Mdisc * (benefit_A_next + (1.0 - float(params.delta_A)) * Q_next))
-    ) / out["Q_A"]
+    if adaptation_enabled(params):
+        repair_gap = drv["Omega_A"] * float(params.p_a) * psi_prime(out["I_A"], params) - out["Q_A"]
+        res["repair_fb"] = fischer_burmeister(out["I_A"], repair_gap, fb_epsilon)
+        res["Q"] = (
+            out["Q_A"]
+            - _mean_over_nodes(Mdisc * (benefit_A_next + (1.0 - float(params.delta_A)) * Q_next))
+        ) / out["Q_A"]
+    else:
+        res["repair_fb"] = out["I_A"]
+        res["Q"] = out["Q_A"]
     return res, {**out, **drv, "z_next": z_next, "out_next": out_next}
 
 

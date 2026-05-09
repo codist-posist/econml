@@ -90,6 +90,16 @@ def psi_prime(I: torch.Tensor, p: BaselineParams) -> torch.Tensor:
     return 1.0 + float(p.phi_A) * I
 
 
+def adaptation_enabled(p: BaselineParams) -> bool:
+    return float(p.adaptation_enabled) > 0.5
+
+
+def effective_repair_investment(I: torch.Tensor, p: BaselineParams) -> torch.Tensor:
+    if adaptation_enabled(p):
+        return I
+    return torch.zeros_like(I)
+
+
 def omega_A_cost(R: torch.Tensor, p: BaselineParams) -> torch.Tensor:
     return (1.0 - float(p.vartheta_A)) + float(p.vartheta_A) * R
 
@@ -108,7 +118,7 @@ def derive_rule(
     policy: str,
 ) -> Dict[str, torch.Tensor]:
     C, Y, N = out["C"], out["Y"], out["N"]
-    Pi, chi, I = out["Pi"], out["chi"], out["I_A"]
+    Pi, chi, I = out["Pi"], out["chi"], effective_repair_investment(out["I_A"], p)
     S_p, F_p = out["S_p"], out["F_p"]
     pm, mbar = external_conditions(st, p)
     p_m_eff = pm + chi
@@ -159,6 +169,7 @@ def derive_rule(
         "M": M,
         "S": S,
         "N_d": N_d,
+        "I_A_effective": I,
         "A_next": A_next,
         "R": R,
         "Omega_A": omega_A_cost(R, p),
@@ -173,7 +184,7 @@ def derive_free(
     """Derived objects when the gross policy rate is an implementability variable."""
 
     C, Y, N = out["C"], out["Y"], out["N"]
-    R, Pi, chi, I = out["R"], out["Pi"], out["chi"], out["I_A"]
+    R, Pi, chi, I = out["R"], out["Pi"], out["chi"], effective_repair_investment(out["I_A"], p)
     S_p, F_p = out["S_p"], out["F_p"]
     pm, mbar = external_conditions(st, p)
     p_m_eff = pm + chi
@@ -214,6 +225,7 @@ def derive_free(
         "M": M,
         "S": S,
         "N_d": N_d,
+        "I_A_effective": I,
         "A_next": A_next,
         "R": R,
         "Omega_A": omega_A_cost(R, p),

@@ -54,6 +54,7 @@ class BaselineParams:
     sigma_z: float = 0.009
 
     # Adaptation
+    adaptation_enabled: float = 1.0
     delta_A: float = 0.035
     phi_A: float = 3.0
     vartheta_A: float = 0.50
