@@ -65,6 +65,32 @@ def marginal_cost(w: torch.Tensor, p_x: torch.Tensor, Z: torch.Tensor, p: Baseli
     return (1.0 / Z) * (w / (1.0 - alpha)).pow(1.0 - alpha) * (p_x / alpha).pow(alpha)
 
 
+def implied_labor(
+    C: torch.Tensor,
+    Y: torch.Tensor,
+    p_x: torch.Tensor,
+    Z: torch.Tensor,
+    Delta: torch.Tensor,
+    p: BaselineParams,
+) -> torch.Tensor:
+    """Labor implied by household intratemporal optimality and firm labor demand.
+
+    Combining w=N^varphi C^sigma with Cobb-Douglas labor demand and unit cost gives
+    N^{1+alpha varphi} = Delta Y Z^{-1} C^{-alpha sigma}
+    [((1-alpha) p_x)/alpha]^alpha.
+    """
+
+    alpha = float(p.alpha)
+    base = (
+        Delta
+        * Y
+        / Z
+        * C.pow(-alpha * float(p.sigma))
+        * (((1.0 - alpha) * p_x) / alpha).pow(alpha)
+    )
+    return torch.clamp(base, min=1e-16).pow(1.0 / (1.0 + alpha * float(p.varphi)))
+
+
 def p_x_derivative_A(A: torch.Tensor, p_m_eff: torch.Tensor, p_d: torch.Tensor, p: BaselineParams) -> torch.Tensor:
     rho = float(p.rho)
     omega = omega_import(A, p)
@@ -117,7 +143,7 @@ def derive_rule(
     R_n: torch.Tensor | None,
     policy: str,
 ) -> Dict[str, torch.Tensor]:
-    C, Y, N = out["C"], out["Y"], out["N"]
+    C, Y = out["C"], out["Y"]
     Pi, chi, I = out["Pi"], out["chi"], effective_repair_investment(out["I_A"], p)
     S_p, F_p = out["S_p"], out["F_p"]
     pm, mbar = external_conditions(st, p)
@@ -128,11 +154,12 @@ def derive_rule(
     Delta_prev = torch.exp(st.log_Delta_prev)
 
     p_x = unit_intermediate_price(st.A, p_m_eff, p_d, p)
+    p_star = (float(p.epsilon) / (float(p.epsilon) - 1.0)) * S_p / F_p
+    Delta = (1.0 - float(p.theta)) * p_star.pow(-float(p.epsilon)) + float(p.theta) * Pi.pow(float(p.epsilon)) * Delta_prev
+    N = implied_labor(C, Y, p_x, Z, Delta, p)
     Lambda = C.pow(-float(p.sigma))
     w = N.pow(float(p.varphi)) / Lambda
     mc = marginal_cost(w, p_x, Z, p)
-    p_star = (float(p.epsilon) / (float(p.epsilon) - 1.0)) * S_p / F_p
-    Delta = (1.0 - float(p.theta)) * p_star.pow(-float(p.epsilon)) + float(p.theta) * Pi.pow(float(p.epsilon)) * Delta_prev
 
     X_comp = float(p.alpha) * mc * Delta * Y / p_x
     omega = omega_import(st.A, p)
@@ -163,6 +190,7 @@ def derive_rule(
         "Lambda": Lambda,
         "w": w,
         "mc": mc,
+        "N": N,
         "p_star": p_star,
         "Delta": Delta,
         "X_comp": X_comp,
@@ -183,7 +211,7 @@ def derive_free(
 ) -> Dict[str, torch.Tensor]:
     """Derived objects when the gross policy rate is an implementability variable."""
 
-    C, Y, N = out["C"], out["Y"], out["N"]
+    C, Y = out["C"], out["Y"]
     R, Pi, chi, I = out["R"], out["Pi"], out["chi"], effective_repair_investment(out["I_A"], p)
     S_p, F_p = out["S_p"], out["F_p"]
     pm, mbar = external_conditions(st, p)
@@ -194,11 +222,12 @@ def derive_free(
     Delta_prev = torch.exp(st.log_Delta_prev)
 
     p_x = unit_intermediate_price(st.A, p_m_eff, p_d, p)
+    p_star = (float(p.epsilon) / (float(p.epsilon) - 1.0)) * S_p / F_p
+    Delta = (1.0 - float(p.theta)) * p_star.pow(-float(p.epsilon)) + float(p.theta) * Pi.pow(float(p.epsilon)) * Delta_prev
+    N = implied_labor(C, Y, p_x, Z, Delta, p)
     Lambda = C.pow(-float(p.sigma))
     w = N.pow(float(p.varphi)) / Lambda
     mc = marginal_cost(w, p_x, Z, p)
-    p_star = (float(p.epsilon) / (float(p.epsilon) - 1.0)) * S_p / F_p
-    Delta = (1.0 - float(p.theta)) * p_star.pow(-float(p.epsilon)) + float(p.theta) * Pi.pow(float(p.epsilon)) * Delta_prev
 
     X_comp = float(p.alpha) * mc * Delta * Y / p_x
     omega = omega_import(st.A, p)
@@ -219,6 +248,7 @@ def derive_free(
         "Lambda": Lambda,
         "w": w,
         "mc": mc,
+        "N": N,
         "p_star": p_star,
         "Delta": Delta,
         "X_comp": X_comp,
@@ -233,12 +263,14 @@ def derive_free(
 
 
 def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -> Dict[str, torch.Tensor]:
-    C, Y, N, chi = out["C_n"], out["Y_n"], out["N_n"], out["chi_n"]
+    C, Y, chi = out["C_n"], out["Y_n"], out["chi_n"]
     pm, mbar = external_conditions(st, p)
     p_m_eff = pm + chi
     p_d = torch.full_like(C, float(p.p_d))
     Z = torch.exp(st.log_Z)
     p_x = unit_intermediate_price(st.A, p_m_eff, p_d, p)
+    Delta = torch.ones_like(C)
+    N = implied_labor(C, Y, p_x, Z, Delta, p)
     Lambda = C.pow(-float(p.sigma))
     w = N.pow(float(p.varphi)) / Lambda
     mc = marginal_cost(w, p_x, Z, p)
@@ -257,6 +289,7 @@ def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -
         "Lambda": Lambda,
         "w": w,
         "mc": mc,
+        "N": N,
         "X_comp": X_comp,
         "M": M,
         "S": S,

@@ -112,7 +112,6 @@ def private_residuals_free(
             min=1e-12,
         )
     )
-    res["labor"] = (out["N"] - drv["N_d"]) / out["N"]
     res["resource"] = (
         out["Y"]
         - out["C"]
@@ -239,7 +238,7 @@ def discretion_residuals(
     B, S, K = z_next.shape
     out_next = decode_discretion(policy_net(z_next.reshape(B * S, K)))
     V_next = out_next["V"].reshape(B, S)
-    U = period_utility(out["C"], out["N"], params)
+    U = period_utility(out["C"], drv["N"], params)
     H = private_residual_matrix(priv)
     mu = multipliers(out)
     bellman = out["V"] - U - float(params.beta) * _mean_over_nodes(V_next)
@@ -313,7 +312,7 @@ def commitment_residuals(
     )
     H = private_residual_matrix(priv)
     mu = multipliers(out)
-    U = period_utility(out["C"], out["N"], params)
+    U = period_utility(out["C"], drv["N"], params)
     promise_term = commitment_promise_term(zc, out, drv, params)
 
     z_next = drv["z_next"]

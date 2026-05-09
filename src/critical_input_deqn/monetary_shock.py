@@ -245,7 +245,6 @@ def rule_shock_residuals(
             min=1e-12,
         )
     )
-    res["labor"] = (out["N"] - drv["N_d"]) / out["N"]
     res["resource"] = (
         out["Y"]
         - out["C"]

@@ -149,7 +149,6 @@ NATURAL_STATE_NAMES = (
 RULE_OUTPUT_NAMES = (
     "C",
     "Y",
-    "N",
     "Pi",
     "chi",
     "I_A",
@@ -161,14 +160,12 @@ RULE_OUTPUT_NAMES = (
 NATURAL_OUTPUT_NAMES = (
     "C_n",
     "Y_n",
-    "N_n",
     "chi_n",
     "R_n_real",
 )
 
 PRIVATE_RESIDUAL_NAMES = (
     "hh_euler",
-    "labor",
     "resource",
     "price_index",
     "calvo_S",
@@ -181,7 +178,6 @@ PRIVATE_RESIDUAL_NAMES = (
 OPT_CONTROL_NAMES = (
     "C",
     "Y",
-    "N",
     "R",
     "Pi",
     "chi",
