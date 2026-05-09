@@ -78,7 +78,7 @@ def main() -> None:
     parser.add_argument("--policies", default="fixed,ba", help="Comma-separated list: fixed,ba")
     parser.add_argument("--experiment", default="baseline")
     parser.add_argument("--params-json", type=Path, default=None)
-    parser.add_argument("--rule-steps", type=int, default=50_000)
+    parser.add_argument("--rule-steps", type=int, default=5_000)
     parser.add_argument("--loss", default="huber", choices=("huber", "mse"))
     parser.add_argument("--huber-delta", type=float, default=1.0)
     parser.add_argument("--target-rms", type=float, default=None)
@@ -92,12 +92,14 @@ def main() -> None:
     parser.add_argument("--checkpoint-keep", type=int, default=3)
     parser.add_argument("--no-checkpoints", action="store_true")
     parser.add_argument("--batch-size", type=int, default=2048)
-    parser.add_argument("--sim-batch-size", type=int, default=1024)
-    parser.add_argument("--episode-length", type=int, default=30)
+    parser.add_argument("--sim-batch-size", type=int, default=512)
+    parser.add_argument("--episode-length", type=int, default=20)
+    parser.add_argument("--episode-updates-per-episode", type=int, default=2)
+    parser.add_argument("--episode-broad-share", type=float, default=0.50)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--qmc-train", type=int, default=512)
-    parser.add_argument("--qmc-val", type=int, default=4096)
-    parser.add_argument("--n-val-states", type=int, default=4096)
+    parser.add_argument("--qmc-train", type=int, default=256)
+    parser.add_argument("--qmc-val", type=int, default=512)
+    parser.add_argument("--n-val-states", type=int, default=1024)
     parser.add_argument("--hidden-width", type=int, default=192)
     parser.add_argument("--hidden-depth", type=int, default=2)
     parser.add_argument("--rho-R-shock", type=float, default=0.50)
@@ -108,7 +110,7 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--dtype", default="float64", choices=("float64", "float32"))
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--log-every", type=int, default=500)
+    parser.add_argument("--log-every", type=int, default=100)
     args = parser.parse_args()
 
     params, experiment_meta = resolve_params(args.experiment, args.params_json)
@@ -140,6 +142,8 @@ def main() -> None:
             "batch_size": args.batch_size,
             "sim_batch_size": args.sim_batch_size,
             "episode_length": args.episode_length,
+            "episode_updates_per_episode": args.episode_updates_per_episode,
+            "episode_broad_share": args.episode_broad_share,
             "lr": args.lr,
             "rule_steps": args.rule_steps,
             "loss": args.loss,
@@ -163,13 +167,23 @@ def main() -> None:
         "policy_stop": {policy: _resolved_stop(args, policy) for policy in _policies(args.policies)},
     }
     _write_json(args.output_dir / "run_config.json", run_config)
+    print(
+        f"Configured run_rule_monetary_shock: output_dir={args.output_dir}, policies={_policies(args.policies)}, "
+        f"device={args.device}, dtype={args.dtype}, rule_steps={args.rule_steps}, "
+        f"qmc_train={args.qmc_train}, qmc_val={args.qmc_val}, "
+        f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}",
+        flush=True,
+    )
 
     for policy in _policies(args.policies):
+        print(f"Training monetary-shock Taylor network: {policy}.", flush=True)
         rule_stop = _resolved_stop(args, policy)
         rule_cfg = TrainConfig(
             batch_size=args.batch_size,
             sim_batch_size=args.sim_batch_size,
             episode_length=args.episode_length,
+            episode_updates_per_episode=args.episode_updates_per_episode,
+            episode_broad_share=args.episode_broad_share,
             lr=args.lr,
             steps=args.rule_steps,
             loss=args.loss,
@@ -219,4 +233,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

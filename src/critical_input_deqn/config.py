@@ -91,6 +91,8 @@ class TrainConfig:
     batch_size: int = 2048
     sim_batch_size: int = 1024
     episode_length: int = 30
+    episode_updates_per_episode: int = 2
+    episode_broad_share: float = 0.50
     lr: float = 1e-4
     steps: int = 50_000
     loss: str = "huber"

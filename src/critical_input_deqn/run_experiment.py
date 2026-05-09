@@ -9,7 +9,7 @@ from .experiments import EXPERIMENTS, experiment_root
 
 
 def _base_cmd() -> list[str]:
-    return [sys.executable, "-m"]
+    return [sys.executable, "-u", "-m"]
 
 
 def _append_common_training_args(cmd: list[str], args: argparse.Namespace) -> list[str]:
@@ -34,6 +34,10 @@ def _append_common_training_args(cmd: list[str], args: argparse.Namespace) -> li
         str(args.sim_batch_size),
         "--episode-length",
         str(args.episode_length),
+        "--episode-updates-per-episode",
+        str(args.episode_updates_per_episode),
+        "--episode-broad-share",
+        str(args.episode_broad_share),
         "--lr",
         str(args.lr),
         "--checkpoint-every",
@@ -169,22 +173,24 @@ def main() -> None:
     )
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--natural-steps", type=int, default=50_000)
-    parser.add_argument("--rule-steps", type=int, default=50_000)
-    parser.add_argument("--optimal-steps", type=int, default=50_000)
-    parser.add_argument("--qmc-train", type=int, default=512)
-    parser.add_argument("--qmc-val", type=int, default=4096)
-    parser.add_argument("--n-val-states", type=int, default=4096)
-    parser.add_argument("--stop-val-states", type=int, default=2048)
+    parser.add_argument("--natural-steps", type=int, default=20_000)
+    parser.add_argument("--rule-steps", type=int, default=8_000)
+    parser.add_argument("--optimal-steps", type=int, default=8_000)
+    parser.add_argument("--qmc-train", type=int, default=256)
+    parser.add_argument("--qmc-val", type=int, default=512)
+    parser.add_argument("--n-val-states", type=int, default=1024)
+    parser.add_argument("--stop-val-states", type=int, default=512)
     parser.add_argument("--hidden-width", type=int, default=192)
     parser.add_argument("--hidden-depth", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=2048)
-    parser.add_argument("--sim-batch-size", type=int, default=1024)
-    parser.add_argument("--episode-length", type=int, default=30)
+    parser.add_argument("--sim-batch-size", type=int, default=512)
+    parser.add_argument("--episode-length", type=int, default=20)
+    parser.add_argument("--episode-updates-per-episode", type=int, default=2)
+    parser.add_argument("--episode-broad-share", type=float, default=0.50)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--checkpoint-every", type=int, default=5000)
+    parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--checkpoint-keep", type=int, default=3)
-    parser.add_argument("--log-every", type=int, default=500)
+    parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--promise-init-scale", type=float, default=1.0)
     parser.add_argument("--postprocess-length", type=int, default=2000)
     parser.add_argument("--postprocess-batch-size", type=int, default=64)

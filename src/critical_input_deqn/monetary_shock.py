@@ -34,12 +34,14 @@ from .residuals import _mean_over_nodes, stack_residuals
 from .sampling import sample_rule_states
 from .train import (
     TrainLog,
+    _announce_training,
     _log_metrics,
     _mark_stopped,
     _maybe_save_training_state,
     _passes_stop_criteria,
     _progress_range,
     _report_progress,
+    _top_residual_summary,
     _validation_nodes,
     freeze,
     residual_diagnostics,
@@ -406,6 +408,13 @@ def train_rule_shock_episode(
         device=device,
         dtype=dtype,
     )
+    _announce_training(
+        kind=f"rule-{policy.lower()}-monetary-shock",
+        total=n_episodes,
+        train_cfg=train_cfg,
+        qmc_cfg=qmc_cfg,
+        log_every=log_every,
+    )
     progress = _progress_range(n_episodes, desc=f"rule-{policy.lower()}-mp", enabled=train_cfg.show_progress)
     for episode in progress:
         state_episode = simulate_rule_shock_episode(
@@ -419,14 +428,29 @@ def train_rule_shock_episode(
         )
         current_state = state_episode[-1].detach()
         flat_states = state_episode.reshape(-1, state_episode.shape[-1]).detach()
-        order = torch.randperm(flat_states.shape[0], device=flat_states.device)
         last_mat = None
         last_loss = None
-        for start in range(0, flat_states.shape[0], int(train_cfg.batch_size)):
-            idx = order[start : start + int(train_cfg.batch_size)]
-            if idx.numel() == 0:
-                continue
-            z = flat_states[idx]
+        batch_size = int(train_cfg.batch_size)
+        broad_n = int(round(batch_size * float(train_cfg.episode_broad_share)))
+        broad_n = min(max(broad_n, 0), batch_size)
+        episode_n = batch_size - broad_n
+        updates = max(1, int(train_cfg.episode_updates_per_episode))
+        for _ in range(updates):
+            pieces = []
+            if episode_n > 0:
+                idx = torch.randint(flat_states.shape[0], (episode_n,), device=flat_states.device)
+                pieces.append(flat_states[idx])
+            if broad_n > 0:
+                pieces.append(
+                    sample_rule_shock_states(
+                        broad_n,
+                        params=params,
+                        shock_cfg=shock_cfg,
+                        device=device,
+                        dtype=dtype,
+                    )
+                )
+            z = torch.cat(pieces, dim=0) if len(pieces) > 1 else pieces[0]
             raw = net(z)
             res, _ = rule_shock_residuals(
                 z,
@@ -466,6 +490,7 @@ def train_rule_shock_episode(
                 )
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
+            metrics["val_top"] = _top_residual_summary(val_res)
             _maybe_save_training_state(
                 step=episode,
                 net=net,

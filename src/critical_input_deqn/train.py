@@ -188,11 +188,14 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     }
     if hasattr(progress, "set_postfix"):
         progress.set_postfix(payload)
-    print(
+    message = (
         f"[{step}/{total}] train_rms={payload['train_rms']} "
-        f"val_rms={payload['val_rms']} val_max={payload['val_max']} stop_hits={payload['stop']}",
-        flush=True,
+        f"val_rms={payload['val_rms']} val_max={payload['val_max']} stop_hits={payload['stop']}"
     )
+    val_top = metrics.get("val_top")
+    if val_top:
+        message += f" top_val={val_top}"
+    print(message, flush=True)
 
 
 def _announce_training(
@@ -207,11 +210,24 @@ def _announce_training(
         return
     print(
         f"Starting {kind}: total={int(total)}, batch_size={int(train_cfg.batch_size)}, "
+        f"sim_batch_size={int(train_cfg.sim_batch_size)}, episode_length={int(train_cfg.episode_length)}, "
+        f"updates_per_episode={int(train_cfg.episode_updates_per_episode)}, "
+        f"broad_share={float(train_cfg.episode_broad_share):.2f}, "
         f"qmc_train={int(qmc_cfg.n_train)}, qmc_val={int(qmc_cfg.n_val)}, "
         f"stop_val_states={int(train_cfg.stop_val_states)}, log_every={int(log_every)}, "
         f"device={train_cfg.device}, dtype={train_cfg.dtype}",
         flush=True,
     )
+
+
+def _top_residual_summary(residuals: Dict[str, torch.Tensor], *, limit: int = 3) -> str:
+    with torch.no_grad():
+        items = []
+        for name, value in residuals.items():
+            rms = torch.sqrt(value.detach().pow(2).mean())
+            items.append((float(rms.cpu()), name))
+    items.sort(reverse=True)
+    return ", ".join(f"{name}:{rms:.2e}" for rms, name in items[: int(limit)])
 
 
 def _validation_nodes(qmc_cfg: QMCConfig, *, device: str, dtype: torch.dtype, seed_offset: int) -> QMCNodes:
@@ -371,6 +387,7 @@ def train_natural(
                 )
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
+            metrics["val_top"] = _top_residual_summary(val_res)
             _maybe_save_training_state(
                 step=step,
                 net=net,
@@ -460,6 +477,7 @@ def train_rule(
                 )
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
+            metrics["val_top"] = _top_residual_summary(val_res)
             _maybe_save_training_state(
                 step=step,
                 net=net,
@@ -544,13 +562,21 @@ def train_rule_episode(
         )
         current_state = state_episode[-1].detach()
         flat_states = state_episode.reshape(-1, state_episode.shape[-1]).detach()
-        order = torch.randperm(flat_states.shape[0], device=flat_states.device)
         last_mat = None
-        for start in range(0, flat_states.shape[0], int(train_cfg.batch_size)):
-            idx = order[start : start + int(train_cfg.batch_size)]
-            if idx.numel() == 0:
-                continue
-            z = flat_states[idx]
+        last_loss = None
+        batch_size = int(train_cfg.batch_size)
+        broad_n = int(round(batch_size * float(train_cfg.episode_broad_share)))
+        broad_n = min(max(broad_n, 0), batch_size)
+        episode_n = batch_size - broad_n
+        updates = max(1, int(train_cfg.episode_updates_per_episode))
+        for _ in range(updates):
+            pieces = []
+            if episode_n > 0:
+                idx = torch.randint(flat_states.shape[0], (episode_n,), device=flat_states.device)
+                pieces.append(flat_states[idx])
+            if broad_n > 0:
+                pieces.append(sample_rule_states(broad_n, params=params, device=device, dtype=dtype))
+            z = torch.cat(pieces, dim=0) if len(pieces) > 1 else pieces[0]
             raw = net(z)
             res, _ = rule_residuals(
                 z,
@@ -570,7 +596,10 @@ def train_rule_episode(
             torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
             opt.step()
             last_mat = mat.detach()
-        if last_mat is not None and (episode == 1 or episode % int(log_every) == 0 or episode == n_episodes):
+            last_loss = loss.detach()
+        if last_mat is not None and last_loss is not None and (
+            episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
+        ):
             with torch.no_grad():
                 val_res, _ = rule_residuals(
                     val_z,
@@ -584,7 +613,8 @@ def train_rule_episode(
                     policy=policy,
                 )
                 val_mat = stack_residuals(val_res).detach()
-            metrics = _log_metrics(episode, last_mat, log, loss.detach(), val_mat)
+            metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
+            metrics["val_top"] = _top_residual_summary(val_res)
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -596,7 +626,14 @@ def train_rule_episode(
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, episode, train_cfg)
-                    _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
+                    _report_progress(
+                        progress,
+                        metrics,
+                        step=episode,
+                        total=n_episodes,
+                        stop_hits=stop_hits,
+                        enabled=train_cfg.show_progress,
+                    )
                     break
             else:
                 stop_hits = 0
@@ -678,14 +715,30 @@ def train_optimal_episode(
         )
         current_state = state_episode[-1].detach()
         flat_states = state_episode.reshape(-1, state_episode.shape[-1]).detach()
-        order = torch.randperm(flat_states.shape[0], device=flat_states.device)
         last_mat = None
         last_loss = None
-        for start in range(0, flat_states.shape[0], int(train_cfg.batch_size)):
-            idx = order[start : start + int(train_cfg.batch_size)]
-            if idx.numel() == 0:
-                continue
-            z = flat_states[idx]
+        batch_size = int(train_cfg.batch_size)
+        broad_n = int(round(batch_size * float(train_cfg.episode_broad_share)))
+        broad_n = min(max(broad_n, 0), batch_size)
+        episode_n = batch_size - broad_n
+        updates = max(1, int(train_cfg.episode_updates_per_episode))
+        for _ in range(updates):
+            pieces = []
+            if episode_n > 0:
+                idx = torch.randint(flat_states.shape[0], (episode_n,), device=flat_states.device)
+                pieces.append(flat_states[idx])
+            if broad_n > 0:
+                pieces.append(
+                    _initial_optimal_states(
+                        broad_n,
+                        kind=key,
+                        params=params,
+                        device=train_cfg.device,
+                        dtype=train_cfg.dtype,
+                        promise_init_scale=train_cfg.promise_init_scale,
+                    )
+                )
+            z = torch.cat(pieces, dim=0) if len(pieces) > 1 else pieces[0]
             raw = net(z)
             res, _ = residual_fn(
                 z,
@@ -719,6 +772,7 @@ def train_optimal_episode(
             )
             val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
+            metrics["val_top"] = _top_residual_summary(val_res)
             _maybe_save_training_state(
                 step=episode,
                 net=net,

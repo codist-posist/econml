@@ -71,6 +71,7 @@ def main() -> None:
     for experiment in experiments:
         cmd = [
             sys.executable,
+            "-u",
             "-m",
             "src.critical_input_deqn.run_experiment",
             "--base-root",
@@ -88,6 +89,7 @@ def main() -> None:
     if args.stage in {"postprocess", "all"} and not args.skip_tables:
         cmd = [
             sys.executable,
+            "-u",
             "-m",
             "src.critical_input_deqn.make_tables",
             "--base-root",
@@ -102,6 +104,7 @@ def main() -> None:
     if args.stage in {"postprocess", "all"} and not args.skip_figures:
         cmd = [
             sys.executable,
+            "-u",
             "-m",
             "src.critical_input_deqn.make_figures",
             "--base-root",
