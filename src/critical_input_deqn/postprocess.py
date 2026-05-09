@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping
 
@@ -20,6 +20,7 @@ from .config import (
     BaselineParams,
     NetworkConfig,
 )
+from .experiments import params_from_metadata, resolve_params
 from .economics import derive_free, derive_rule, unpack_rule_state
 from .episode import simulate_rule_episode
 from .optimal import decode_commitment, decode_discretion, simulate_optimal_episode
@@ -430,6 +431,8 @@ def run_postprocess(
     *,
     artifact_root: Path,
     output_dir: Path,
+    experiment: str,
+    params_json: Path | None,
     length: int,
     batch_size: int,
     seed: int,
@@ -441,7 +444,7 @@ def run_postprocess(
     device: str,
     dtype: torch.dtype,
 ) -> None:
-    params = BaselineParams()
+    params, experiment_meta = resolve_params(experiment, params_json)
     natural_path = _first_existing([artifact_root / "natural" / "natural.pt", artifact_root / "natural.pt"])
     fixed_path = _first_existing([artifact_root / "fixed_taylor" / "fixed.pt", artifact_root / "fixed.pt"])
     ba_path = _first_existing([artifact_root / "modified_taylor" / "ba.pt", artifact_root / "ba.pt"])
@@ -449,6 +452,9 @@ def run_postprocess(
     commitment_path = _first_existing([artifact_root / "commitment" / "commitment.pt"])
 
     natural = load_natural(natural_path, device=device, dtype=dtype)
+    if params_json is None:
+        params = params_from_metadata(natural.metadata, fallback=params)
+        experiment_meta["params"] = asdict(params)
     fixed = load_rule(fixed_path, policy="fixed", device=device, dtype=dtype)
     ba = load_rule(ba_path, policy="ba", device=device, dtype=dtype)
     discretion = load_optimal(discretion_path, kind="discretion", device=device, dtype=dtype)
@@ -544,6 +550,8 @@ def run_postprocess(
     manifest = {
         "artifact_root": str(artifact_root),
         "output_dir": str(output_dir),
+        "experiment": experiment_meta,
+        "params": asdict(params),
         "length": int(length),
         "batch_size": int(batch_size),
         "seed": int(seed),
@@ -566,6 +574,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate simulation artifacts from trained critical-input DEQN checkpoints.")
     parser.add_argument("--artifact-root", type=Path, default=Path("baseline_artifacts/critical_input_deqn"))
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--experiment", default="baseline")
+    parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--length", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=777)
@@ -582,6 +592,8 @@ def main() -> None:
     run_postprocess(
         artifact_root=args.artifact_root,
         output_dir=output_dir,
+        experiment=args.experiment,
+        params_json=args.params_json,
         length=args.length,
         batch_size=args.batch_size,
         seed=args.seed,

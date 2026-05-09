@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import torch
 
 from .config import BaselineParams, NetworkConfig, QMCConfig
+from .experiments import resolve_params
 from .optimal import commitment_residuals, discretion_residuals
 from .qmc import make_qmc_nodes
 from .residuals import natural_residuals, rule_residuals, stack_residuals
@@ -45,6 +47,7 @@ def run_preflight(
     hidden_depth: int = 2,
     device: str = "cpu",
     dtype: torch.dtype = torch.float64,
+    params: BaselineParams | None = None,
 ) -> dict[str, dict[str, float]]:
     """Check all DEQN residual systems before a long training run.
 
@@ -54,7 +57,7 @@ def run_preflight(
     matrices with the current code.
     """
 
-    params = BaselineParams()
+    params = params or BaselineParams()
     net_cfg = NetworkConfig(hidden_width=int(hidden_width), hidden_depth=int(hidden_depth))
     qmc_cfg = QMCConfig(n_train=int(qmc_nodes), n_val=int(qmc_nodes), seed=11)
     nodes = make_qmc_nodes(int(qmc_nodes), cfg=qmc_cfg, device=device, dtype=dtype)
@@ -128,6 +131,8 @@ def run_preflight(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Preflight all critical-input DEQN residual systems.")
+    parser.add_argument("--experiment", default="baseline")
+    parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--n-states", type=int, default=8)
     parser.add_argument("--qmc-nodes", type=int, default=16)
     parser.add_argument("--hidden-width", type=int, default=32)
@@ -136,6 +141,7 @@ def main() -> None:
     parser.add_argument("--dtype", default="float64", choices=("float64", "float32"))
     args = parser.parse_args()
 
+    params, experiment_meta = resolve_params(args.experiment, args.params_json)
     diagnostics = run_preflight(
         n_states=args.n_states,
         qmc_nodes=args.qmc_nodes,
@@ -143,8 +149,10 @@ def main() -> None:
         hidden_depth=args.hidden_depth,
         device=args.device,
         dtype=_dtype(args.dtype),
+        params=params,
     )
     payload = {
+        "experiment": experiment_meta,
         "config": {
             "n_states": args.n_states,
             "qmc_nodes": args.qmc_nodes,

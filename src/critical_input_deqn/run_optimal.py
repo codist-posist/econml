@@ -15,6 +15,7 @@ from .config import (
     TrainConfig,
     stop_profile,
 )
+from .experiments import resolve_params
 from .train import evaluate_optimal, save_checkpoint, train_optimal_episode
 
 
@@ -54,6 +55,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train optimal-policy DEQN networks.")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--kind", choices=("discretion", "commitment"), required=True)
+    parser.add_argument("--experiment", default="baseline")
+    parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--steps", type=int, default=50_000)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--sim-batch-size", type=int, default=1024)
@@ -88,6 +91,7 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=500)
     args = parser.parse_args()
 
+    params, experiment_meta = resolve_params(args.experiment, args.params_json)
     dtype = _dtype(args.dtype)
     net_cfg = NetworkConfig(hidden_width=args.hidden_width, hidden_depth=args.hidden_depth)
     qmc_cfg = QMCConfig(n_train=args.qmc_train, n_val=args.qmc_val, seed=args.seed)
@@ -117,6 +121,8 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     run_config = {
         "kind": args.kind,
+        "experiment": experiment_meta,
+        "params": experiment_meta["params"],
         "network": asdict(net_cfg),
         "qmc": asdict(qmc_cfg),
         "train": {
@@ -148,6 +154,7 @@ def main() -> None:
     _write_json(args.output_dir / "run_config.json", run_config)
     net, log = train_optimal_episode(
         kind=args.kind,
+        params=params,
         net_cfg=net_cfg,
         qmc_cfg=qmc_cfg,
         train_cfg=train_cfg,
@@ -159,6 +166,7 @@ def main() -> None:
     eval_metrics = evaluate_optimal(
         net,
         kind=args.kind,
+        params=params,
         qmc_cfg=QMCConfig(n_train=args.qmc_val, seed=args.seed + 303),
         train_cfg=train_cfg,
         n_states=args.n_val_states,

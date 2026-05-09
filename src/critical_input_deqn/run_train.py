@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 
 from .config import NetworkConfig, QMCConfig, TrainConfig, stop_profile
+from .experiments import resolve_params
 from .train import (
     evaluate_natural,
     evaluate_rule,
@@ -65,6 +66,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train the critical-input baseline DEQN.")
     parser.add_argument("--output-dir", type=Path, default=Path("baseline_artifacts/critical_input_deqn"))
     parser.add_argument("--policies", default="fixed,ba", help="Comma-separated list: fixed,ba")
+    parser.add_argument("--experiment", default="baseline")
+    parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--natural-checkpoint", type=Path, default=None)
     parser.add_argument("--natural-steps", type=int, default=50_000)
     parser.add_argument("--rule-steps", type=int, default=50_000)
@@ -96,6 +99,7 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=500)
     args = parser.parse_args()
 
+    params, experiment_meta = resolve_params(args.experiment, args.params_json)
     dtype = _dtype(args.dtype)
     net_cfg = NetworkConfig(hidden_width=args.hidden_width, hidden_depth=args.hidden_depth)
     qmc_cfg = QMCConfig(n_train=args.qmc_train, n_val=args.qmc_val, seed=args.seed)
@@ -122,6 +126,8 @@ def main() -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     run_config = {
+        "experiment": experiment_meta,
+        "params": experiment_meta["params"],
         "network": asdict(net_cfg),
         "qmc": asdict(qmc_cfg),
         "train": {
@@ -158,6 +164,7 @@ def main() -> None:
             net_cfg=net_cfg,
             qmc_cfg=qmc_cfg,
             train_cfg=train_cfg,
+            params=params,
             log_every=args.log_every,
         )
         save_checkpoint(
@@ -172,6 +179,7 @@ def main() -> None:
 
     natural_eval = evaluate_natural(
         natural_net,
+        params=params,
         qmc_cfg=QMCConfig(n_train=args.qmc_val, seed=args.seed + 101),
         train_cfg=train_cfg,
         n_states=args.n_val_states,
@@ -205,6 +213,7 @@ def main() -> None:
             rule_net, rule_log = train_rule_episode(
                 natural_net,
                 policy=policy,
+                params=params,
                 net_cfg=net_cfg,
                 qmc_cfg=qmc_cfg,
                 train_cfg=rule_cfg,
@@ -215,6 +224,7 @@ def main() -> None:
             rule_net, rule_log = train_rule(
                 natural_net,
                 policy=policy,
+                params=params,
                 net_cfg=net_cfg,
                 qmc_cfg=qmc_cfg,
                 train_cfg=rule_cfg,
@@ -230,6 +240,7 @@ def main() -> None:
             rule_net,
             natural_net,
             policy=policy,
+            params=params,
             qmc_cfg=QMCConfig(n_train=args.qmc_val, seed=args.seed + 202),
             train_cfg=rule_cfg,
             n_states=args.n_val_states,

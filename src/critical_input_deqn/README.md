@@ -121,8 +121,56 @@ The notebooks are experiment wrappers around the package code:
    responses, definitions, and summary statistics for downstream figures.
 7. `notebooks/critical_input_deqn_03_compare_all_policies.ipynb` loads saved
    diagnostics from all four policy environments and writes a comparison table.
+8. `notebooks/critical_input_deqn_07_tables_and_figures.ipynb` builds the
+   benchmark moments, counterfactual/sensitivity tables, and main figure files
+   from the postprocessed arrays that already exist.
 
 All saved results go under `baseline_artifacts/critical_input_deqn/`.
+
+## Experiment variants
+
+The calculation plan is encoded in `src.critical_input_deqn.experiments`.
+Each non-baseline variant changes model primitives and therefore should be
+solved as its own DEQN economy, not evaluated only with baseline weights.  The
+registered variants include:
+
+- core mechanism variants: `price_only`, `quantity_only`;
+- counterfactuals: `no_cap`, `no_adaptation`, `no_financing`, `no_relief`;
+- sensitivity variants: `deep_crisis`, `persistent_crisis`, `fast_relief`,
+  `fragile_relief`, `low_substitutability`, `high_substitutability`,
+  `high_import_exposure`, `low_import_exposure`,
+  `high_adaptation_effectiveness`, `low_adaptation_effectiveness`,
+  `high_repair_cost`, `low_repair_cost`, `high_repair_depreciation`,
+  `low_repair_depreciation`, `high_financing_sensitivity`,
+  `hawkish_policy`, `dovish_policy`, and `output_gap_policy`.
+
+One structured experiment can be run with:
+
+```bash
+python -m src.critical_input_deqn.run_experiment --experiment baseline
+```
+
+For a dry run that only prints the commands:
+
+```bash
+python -m src.critical_input_deqn.run_experiment --experiment quantity_only --dry-run
+```
+
+An experiment suite can be launched with:
+
+```bash
+python -m src.critical_input_deqn.run_suite --suite all_registered
+```
+
+Training dimensions can be forwarded to each experiment, for example:
+
+```bash
+python -m src.critical_input_deqn.run_suite --suite counterfactual -- --natural-steps 50000 --rule-steps 50000 --optimal-steps 50000
+```
+
+Baseline artifacts are written directly under
+`baseline_artifacts/critical_input_deqn/`.  Non-baseline variants are written
+under `baseline_artifacts/critical_input_deqn/experiments/<experiment>/`.
 
 ## Saved artifacts
 
@@ -154,3 +202,16 @@ Post-processing writes the objects needed for figures and quantitative tables:
   and maximum for each saved variable.
 - `postprocess/postprocess_manifest.json`: run metadata for the generated
   artifacts.
+
+The table builder writes:
+
+- `tables/table_1_calibration.csv`;
+- `tables/table_2_ergodic_moments_by_policy.csv`;
+- `tables/table_3_counterfactual_decomposition_<policy>.csv`;
+- `tables/table_4_sensitivity_summary_<policy>.csv`;
+- `tables/experiment_registry.json` and `tables/experiment_overrides.csv`.
+
+The figure builder writes the main mechanism, policy-comparison,
+counterfactual, sensitivity, and distribution figures when the required
+postprocess files are present.  Missing variants are skipped rather than
+failing the whole build.
