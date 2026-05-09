@@ -195,6 +195,25 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     )
 
 
+def _announce_training(
+    *,
+    kind: str,
+    total: int,
+    train_cfg: TrainConfig,
+    qmc_cfg: QMCConfig,
+    log_every: int,
+) -> None:
+    if not train_cfg.show_progress:
+        return
+    print(
+        f"Starting {kind}: total={int(total)}, batch_size={int(train_cfg.batch_size)}, "
+        f"qmc_train={int(qmc_cfg.n_train)}, qmc_val={int(qmc_cfg.n_val)}, "
+        f"stop_val_states={int(train_cfg.stop_val_states)}, log_every={int(log_every)}, "
+        f"device={train_cfg.device}, dtype={train_cfg.dtype}",
+        flush=True,
+    )
+
+
 def _validation_nodes(qmc_cfg: QMCConfig, *, device: str, dtype: torch.dtype, seed_offset: int) -> QMCNodes:
     cfg = replace(qmc_cfg, n_train=qmc_cfg.n_val, seed=int(qmc_cfg.seed) + int(seed_offset))
     return make_qmc_nodes(cfg.n_train, cfg=cfg, device=device, dtype=dtype)
@@ -318,6 +337,7 @@ def train_natural(
     log = TrainLog()
     stop_hits = 0
 
+    _announce_training(kind="natural", total=n_steps, train_cfg=train_cfg, qmc_cfg=qmc_cfg, log_every=log_every)
     progress = _progress_range(n_steps, desc="natural", enabled=train_cfg.show_progress)
     for step in progress:
         z = sample_rule_states(train_cfg.batch_size, params=params, device=device, dtype=dtype)
@@ -403,6 +423,7 @@ def train_rule(
     log = TrainLog()
     stop_hits = 0
 
+    _announce_training(kind=f"rule-{policy.lower()}", total=n_steps, train_cfg=train_cfg, qmc_cfg=qmc_cfg, log_every=log_every)
     progress = _progress_range(n_steps, desc=f"rule-{policy.lower()}", enabled=train_cfg.show_progress)
     for step in progress:
         z = sample_rule_states(train_cfg.batch_size, params=params, device=device, dtype=dtype)
@@ -503,6 +524,13 @@ def train_rule_episode(
         params=params,
         device=device,
         dtype=dtype,
+    )
+    _announce_training(
+        kind=f"rule-{policy.lower()}-episode",
+        total=n_episodes,
+        train_cfg=train_cfg,
+        qmc_cfg=qmc_cfg,
+        log_every=log_every,
     )
     progress = _progress_range(n_episodes, desc=f"rule-{policy.lower()}", enabled=train_cfg.show_progress)
     for episode in progress:
@@ -638,6 +666,7 @@ def train_optimal_episode(
         promise_init_scale=train_cfg.promise_init_scale,
     )
 
+    _announce_training(kind=key, total=n_episodes, train_cfg=train_cfg, qmc_cfg=qmc_cfg, log_every=log_every)
     progress = _progress_range(n_episodes, desc=key, enabled=train_cfg.show_progress)
     for episode in progress:
         state_episode = simulate_optimal_episode(

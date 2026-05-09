@@ -158,8 +158,15 @@ def main() -> None:
         "policy_stop": {policy: _resolved_stop(args, policy) for policy in _policies(args.policies)},
     }
     _write_json(args.output_dir / "run_config.json", run_config)
+    print(
+        f"Configured run_train: output_dir={args.output_dir}, policies={_policies(args.policies)}, "
+        f"device={args.device}, dtype={args.dtype}, natural_steps={args.natural_steps}, "
+        f"rule_steps={args.rule_steps}, qmc_train={args.qmc_train}, qmc_val={args.qmc_val}",
+        flush=True,
+    )
 
     if args.natural_checkpoint is None:
+        print("Training auxiliary flexible-price benchmark network.", flush=True)
         natural_net, natural_log = train_natural(
             net_cfg=net_cfg,
             qmc_cfg=qmc_cfg,
@@ -174,9 +181,11 @@ def main() -> None:
         )
         _write_json(args.output_dir / "natural_train_log.json", asdict(natural_log))
     else:
+        print(f"Loading auxiliary flexible-price benchmark network from {args.natural_checkpoint}.", flush=True)
         natural_net = make_natural_net(net_cfg, device=args.device, dtype=dtype)
         load_checkpoint(args.natural_checkpoint, natural_net, map_location=args.device)
 
+    print("Evaluating auxiliary flexible-price benchmark network.", flush=True)
     natural_eval = evaluate_natural(
         natural_net,
         params=params,
@@ -187,6 +196,7 @@ def main() -> None:
     _write_json(args.output_dir / "natural_eval.json", natural_eval)
 
     for policy in _policies(args.policies):
+        print(f"Training rule-based policy network: {policy}.", flush=True)
         rule_stop = _resolved_stop(args, policy)
         rule_cfg = TrainConfig(
             batch_size=args.batch_size,
