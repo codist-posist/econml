@@ -188,12 +188,11 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     }
     if hasattr(progress, "set_postfix"):
         progress.set_postfix(payload)
-    else:
-        print(
-            f"[{step}/{total}] train_rms={payload['train_rms']} "
-            f"val_rms={payload['val_rms']} val_max={payload['val_max']} stop_hits={payload['stop']}",
-            flush=True,
-        )
+    print(
+        f"[{step}/{total}] train_rms={payload['train_rms']} "
+        f"val_rms={payload['val_rms']} val_max={payload['val_max']} stop_hits={payload['stop']}",
+        flush=True,
+    )
 
 
 def _validation_nodes(qmc_cfg: QMCConfig, *, device: str, dtype: torch.dtype, seed_offset: int) -> QMCNodes:
