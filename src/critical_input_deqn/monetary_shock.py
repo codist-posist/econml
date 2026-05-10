@@ -698,7 +698,9 @@ def _state_dict(z: torch.Tensor) -> Dict[str, torch.Tensor]:
 
 def _add_common_ratios(data: Dict[str, torch.Tensor], params: BaselineParams) -> Dict[str, torch.Tensor]:
     if "Y" in data and "Y_n" in data:
-        data["output_gap"] = data["Y"] / torch.clamp(data["Y_n"], min=1e-12) - 1.0
+        y_ratio = data["Y"] / torch.clamp(data["Y_n"], min=1e-12)
+        data["output_gap"] = torch.log(torch.clamp(y_ratio, min=1e-12))
+        data["output_gap_level"] = y_ratio - 1.0
     if "M" in data and "mbar" in data:
         data["cap_gap"] = data["mbar"] - data["M"]
         data["cap_slack"] = data["cap_gap"] / torch.clamp(data["mbar"], min=1e-12)

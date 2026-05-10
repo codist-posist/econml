@@ -78,7 +78,7 @@ def plot_ir_grid(
             ylabel = "annualized pp"
         elif var == "output_gap":
             y = 100.0 * y
-            ylabel = "percent"
+            ylabel = "log percent"
         else:
             ylabel = ""
         ax.plot(np.arange(y.shape[0]), y, linewidth=1.8)
@@ -131,7 +131,7 @@ def _transform_plot_variable(variable: str, y: np.ndarray) -> tuple[np.ndarray, 
     if variable == "Pi":
         return 400.0 * (y - 1.0), "annualized pp"
     if variable == "output_gap":
-        return 100.0 * y, "percent"
+        return 100.0 * y, "log percent"
     return y, ""
 
 
