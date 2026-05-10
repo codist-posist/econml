@@ -318,24 +318,11 @@ def commitment_residuals(
     U = period_utility(out["C"], drv["N"], params)
     promise_term = commitment_promise_term(zc, out, drv, params)
 
-    z_next = drv["z_next"]
-    B, S, K = z_next.shape
-    raw_next = policy_net(z_next.reshape(B * S, K))
-    out_next = decode_commitment(raw_next)
-    priv_next, _ = private_residuals_free(
-        z_next.reshape(B * S, K),
-        out_next,
-        policy_net,
-        nodes,
-        params=params,
-        qmc_cfg=qmc_cfg,
-        fb_epsilon=fb_epsilon,
-        commitment=True,
-    )
-    H_next = private_residual_matrix(priv_next).reshape(B, S, len(PRIVATE_RESIDUAL_NAMES))
-    mu_next = multipliers(out_next).reshape(B, S, len(PRIVATE_RESIDUAL_NAMES))
-    future_term = _mean_over_nodes((mu_next * H_next).sum(dim=-1))
-    lagrangian = U + promise_term + (mu * H).sum(dim=-1) + float(params.beta) * future_term
+    # The recursive commitment state carries selected current multipliers as
+    # promises.  Re-evaluating the full next-period private residual block here
+    # would create a nested B x S x S expectation tensor and double-count that
+    # promise recursion.
+    lagrangian = U + promise_term + (mu * H).sum(dim=-1)
     stat = stationarity_from_lagrangian(lagrangian, out)
 
     selected_mu = commitment_promise_map(out, drv, params)
