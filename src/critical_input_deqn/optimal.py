@@ -238,9 +238,8 @@ def discretion_residuals(
         commitment=False,
     )
     z_next = drv["z_next"]
-    B, S, K = z_next.shape
-    out_next = decode_discretion(policy_net(z_next.reshape(B * S, K)))
-    V_next = out_next["V"].reshape(B, S)
+    B, S, _ = z_next.shape
+    V_next = drv["out_next"]["V"].reshape(B, S)
     U = period_utility(out["C"], drv["N"], params)
     H = private_residual_matrix(priv)
     mu = multipliers(out)
