@@ -704,12 +704,19 @@ def _add_common_ratios(data: Dict[str, torch.Tensor], params: BaselineParams) ->
     if "M" in data and "mbar" in data:
         data["cap_gap"] = data["mbar"] - data["M"]
         data["cap_slack"] = data["cap_gap"] / torch.clamp(data["mbar"], min=1e-12)
+        pressure_source = data.get("M_zero_rent", data["M"])
+        data["cap_pressure_ratio"] = pressure_source / torch.clamp(data["mbar"], min=1e-12)
+        if "M_zero_rent" in data:
+            data["cap_gap_zero_rent"] = data["mbar"] - data["M_zero_rent"]
         if "chi" in data:
             data["cap_product"] = data["chi"] * data["cap_gap"]
             if "pm" in data:
                 data["cap_product_scaled"] = (
                     data["chi"] / torch.clamp(data["pm"], min=1e-12)
                 ) * data["cap_slack"]
+            data["cap_binding_indicator"] = (
+                (data["cap_slack"].abs() <= 1e-3) & (data["chi"] > 1e-5)
+            ).to(data["M"].dtype)
     if "I_A" in data and "A_next" in data and "A" in data:
         data["A_growth"] = data["A_next"] - data["A"]
     if adaptation_enabled(params) and {"I_A", "Q_A", "Omega_A", "p_a"}.issubset(data):
@@ -717,6 +724,12 @@ def _add_common_ratios(data: Dict[str, torch.Tensor], params: BaselineParams) ->
         data["repair_product"] = data["I_A"] * data["repair_gap"]
         data["repair_gap_scaled"] = data["repair_gap"] / torch.clamp(data["Omega_A"] * data["p_a"], min=1e-12)
         data["repair_product_scaled"] = (data["I_A"] / (1.0 + data["I_A"])) * data["repair_gap_scaled"]
+        data["repair_activation_ratio"] = data["Q_A"] / torch.clamp(
+            data["Omega_A"] * data["p_a"] * float(params.psi_A), min=1e-12
+        )
+        data["repair_active_indicator"] = (
+            (data["I_A"] > 1e-5) & (data["repair_gap_scaled"].abs() <= 1e-3)
+        ).to(data["I_A"].dtype)
     if "R" in data and "Pi" in data:
         data["real_rate_ex_post_proxy"] = data["R"] / torch.clamp(data["Pi"], min=1e-12)
     if "R" in data and "R_rule" in data:

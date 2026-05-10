@@ -108,12 +108,34 @@ def mc_derivative_A(mc: torch.Tensor, p_x: torch.Tensor, p_x_A: torch.Tensor, p:
     return mc * float(p.alpha) * p_x_A / p_x
 
 
+def desired_import_at_zero_rent(
+    st: State,
+    C: torch.Tensor,
+    Y: torch.Tensor,
+    Delta: torch.Tensor,
+    pm: torch.Tensor,
+    p_d: torch.Tensor,
+    p: BaselineParams,
+) -> torch.Tensor:
+    """Desired imported-input demand at chi=0, holding aggregate C,Y,Delta fixed."""
+
+    Z = torch.exp(st.log_Z)
+    p_x0 = unit_intermediate_price(st.A, pm, p_d, p)
+    N0 = implied_labor(C, Y, p_x0, Z, Delta, p)
+    Lambda = C.pow(-float(p.sigma))
+    w0 = N0.pow(float(p.varphi)) / Lambda
+    mc0 = marginal_cost(w0, p_x0, Z, p)
+    X0 = float(p.alpha) * mc0 * Delta * Y / p_x0
+    omega = omega_import(st.A, p)
+    return X0 * omega.pow(float(p.rho)) * (p_x0 / pm).pow(float(p.rho))
+
+
 def psi(I: torch.Tensor, p: BaselineParams) -> torch.Tensor:
-    return I + 0.5 * float(p.phi_A) * I.pow(2)
+    return float(p.psi_A) * I + 0.5 * float(p.phi_A) * I.pow(2)
 
 
 def psi_prime(I: torch.Tensor, p: BaselineParams) -> torch.Tensor:
-    return 1.0 + float(p.phi_A) * I
+    return float(p.psi_A) + float(p.phi_A) * I
 
 
 def adaptation_enabled(p: BaselineParams) -> bool:
@@ -167,6 +189,7 @@ def derive_rule(
     S = X_comp * (1.0 - omega).pow(float(p.rho)) * (p_x / p_d).pow(float(p.rho))
     N_d = (1.0 - float(p.alpha)) * mc * Delta * Y / w
     A_next = (1.0 - float(p.delta_A)) * st.A + I
+    M_zero_rent = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
 
     if policy.lower() == "fixed":
         intercept = torch.full_like(C, float(p.bar_R))
@@ -195,6 +218,7 @@ def derive_rule(
         "Delta": Delta,
         "X_comp": X_comp,
         "M": M,
+        "M_zero_rent": M_zero_rent,
         "S": S,
         "N_d": N_d,
         "I_A_effective": I,
@@ -235,6 +259,7 @@ def derive_free(
     S = X_comp * (1.0 - omega).pow(float(p.rho)) * (p_x / p_d).pow(float(p.rho))
     N_d = (1.0 - float(p.alpha)) * mc * Delta * Y / w
     A_next = (1.0 - float(p.delta_A)) * st.A + I
+    M_zero_rent = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
 
     return {
         "pm": pm,
@@ -253,6 +278,7 @@ def derive_free(
         "Delta": Delta,
         "X_comp": X_comp,
         "M": M,
+        "M_zero_rent": M_zero_rent,
         "S": S,
         "N_d": N_d,
         "I_A_effective": I,
@@ -279,6 +305,7 @@ def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -
     M = X_comp * omega.pow(float(p.rho)) * (p_x / p_m_eff).pow(float(p.rho))
     S = X_comp * (1.0 - omega).pow(float(p.rho)) * (p_x / p_d).pow(float(p.rho))
     N_d = (1.0 - float(p.alpha)) * mc * Y / w
+    M_zero_rent = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
     return {
         "pm": pm,
         "mbar": mbar,
@@ -292,6 +319,7 @@ def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -
         "N": N,
         "X_comp": X_comp,
         "M": M,
+        "M_zero_rent": M_zero_rent,
         "S": S,
         "N_d": N_d,
     }

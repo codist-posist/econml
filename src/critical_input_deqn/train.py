@@ -331,8 +331,11 @@ def exact_condition_diagnostics(data: Dict[str, torch.Tensor], params: BaselineP
             chi = data[chi_name]
             cap_gap = data["mbar"] - data["M"]
             cap_gap_rel = cap_gap / torch.clamp(data["mbar"], min=1e-12)
+            pressure_source = data.get("M_zero_rent", data["M"])
+            cap_pressure = pressure_source / torch.clamp(data["mbar"], min=1e-12)
             _add_tensor_diagnostics(diag, "exact_cap_gap", cap_gap)
             _add_tensor_diagnostics(diag, "exact_cap_gap_rel", cap_gap_rel)
+            _add_tensor_diagnostics(diag, "exact_cap_pressure_ratio", cap_pressure)
             _add_tensor_diagnostics(diag, "exact_cap_product", chi * cap_gap)
             if "pm" in data:
                 cap_rent_scaled = chi / torch.clamp(data["pm"], min=1e-12)
@@ -345,8 +348,12 @@ def exact_condition_diagnostics(data: Dict[str, torch.Tensor], params: BaselineP
             repair_gap = data["Omega_A"] * data["p_a"] * psi_prime(I, params) - data["Q_A"]
             repair_gap_scaled = repair_gap / torch.clamp(data["Omega_A"] * data["p_a"], min=1e-12)
             repair_quantity_scaled = I / (1.0 + I)
+            repair_activation = data["Q_A"] / torch.clamp(
+                data["Omega_A"] * data["p_a"] * float(params.psi_A), min=1e-12
+            )
             _add_tensor_diagnostics(diag, "exact_repair_gap", repair_gap)
             _add_tensor_diagnostics(diag, "exact_repair_gap_scaled", repair_gap_scaled)
+            _add_tensor_diagnostics(diag, "exact_repair_activation_ratio", repair_activation)
             _add_tensor_diagnostics(diag, "exact_repair_product", I * repair_gap)
             _add_tensor_diagnostics(diag, "exact_repair_product_scaled", repair_quantity_scaled * repair_gap_scaled)
             _add_tensor_diagnostics(diag, "exact_repair_I_negative", torch.relu(-I))

@@ -22,6 +22,58 @@ def _half_life_delta(quarters: float) -> float:
     return 1.0 - 2.0 ** (-1.0 / float(quarters))
 
 
+def _omega_from_import_share(share: float, rho: float) -> float:
+    share = min(max(float(share), 1e-8), 1.0 - 1e-8)
+    ratio = (share / (1.0 - share)) ** (1.0 / float(rho))
+    return ratio / (1.0 + ratio)
+
+
+def _steady_import_demand(params: BaselineParams) -> float:
+    """No-shock desired import use used to discipline normal capacity.
+
+    The target share is the imported-input cost share within the composite
+    intermediate bundle at equal input prices.  Steady intermediate spending is
+    alpha times desired real marginal cost times the target output scale.
+    """
+
+    desired_mc = (float(params.epsilon) - 1.0) / float(params.epsilon)
+    return (
+        float(params.target_import_cost_share)
+        * float(params.alpha)
+        * desired_mc
+        * float(params.steady_state_output)
+        / float(params.bar_p_m)
+    )
+
+
+def _calibrated_params(params: BaselineParams, overrides: Mapping[str, Any]) -> BaselineParams:
+    """Apply internally consistent baseline calibrations unless overridden."""
+
+    override_keys = set(overrides)
+    updates: dict[str, float] = {}
+    if "omega0" not in override_keys:
+        updates["omega0"] = _omega_from_import_share(params.target_import_cost_share, params.rho)
+
+    a10 = -math.log(0.90)
+    psi_A = float(params.psi_A)
+    if "psi_A" not in override_keys:
+        psi_A = float(params.repair_cost_share_10pct) * float(params.steady_state_output) / a10
+        updates["psi_A"] = psi_A
+    if "phi_A" not in override_keys:
+        updates["phi_A"] = (
+            2.0
+            * float(params.repair_convex_share_10pct)
+            * float(params.repair_horizon_quarters)
+            * psi_A
+            / a10
+        )
+    if "bar_m" not in override_keys:
+        updates["bar_m"] = (1.0 + float(params.normal_capacity_slack)) * _steady_import_demand(
+            replace(params, **updates) if updates else params
+        )
+    return replace(params, **updates) if updates else params
+
+
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     "baseline": ExperimentSpec(
         name="baseline",
@@ -183,25 +235,25 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         name="low_slack",
         group="sensitivity",
         description="Tighter normal imported-input availability.",
-        overrides={"bar_m": 0.20},
+        overrides={"normal_capacity_slack": 0.03},
     ),
     "high_slack": ExperimentSpec(
         name="high_slack",
         group="sensitivity",
         description="Looser normal imported-input availability.",
-        overrides={"bar_m": 0.45},
+        overrides={"normal_capacity_slack": 0.25},
     ),
     "very_low_capacity": ExperimentSpec(
         name="very_low_capacity",
         group="sensitivity",
         description="Lower absolute imported-input capacity.",
-        overrides={"bar_m": 0.20},
+        overrides={"bar_m": 0.040},
     ),
     "very_high_capacity": ExperimentSpec(
         name="very_high_capacity",
         group="sensitivity",
         description="Higher absolute imported-input capacity.",
-        overrides={"bar_m": 0.45},
+        overrides={"bar_m": 0.080},
     ),
     "low_substitutability": ExperimentSpec(
         name="low_substitutability",
@@ -219,37 +271,37 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         name="high_import_exposure",
         group="sensitivity",
         description="Firms initially rely more heavily on the critical imported input.",
-        overrides={"omega0": 0.45},
+        overrides={"target_import_cost_share": 0.45},
     ),
     "low_import_exposure": ExperimentSpec(
         name="low_import_exposure",
         group="sensitivity",
         description="Firms initially rely less heavily on the critical imported input.",
-        overrides={"omega0": 0.15},
+        overrides={"target_import_cost_share": 0.15},
     ),
     "high_adaptation_effectiveness": ExperimentSpec(
         name="high_adaptation_effectiveness",
         group="sensitivity",
         description="Installed adaptation reduces import dependence more effectively.",
-        overrides={"kappa_a": 0.30},
+        overrides={"kappa_a": 1.50},
     ),
     "low_adaptation_effectiveness": ExperimentSpec(
         name="low_adaptation_effectiveness",
         group="sensitivity",
         description="Installed adaptation reduces import dependence less effectively.",
-        overrides={"kappa_a": 0.075},
+        overrides={"kappa_a": 0.50},
     ),
     "high_repair_cost": ExperimentSpec(
         name="high_repair_cost",
         group="sensitivity",
         description="Adaptation investment is more convex and costly.",
-        overrides={"phi_A": 6.0},
+        overrides={"repair_cost_share_10pct": 0.10},
     ),
     "low_repair_cost": ExperimentSpec(
         name="low_repair_cost",
         group="sensitivity",
         description="Adaptation investment is less costly.",
-        overrides={"phi_A": 1.5},
+        overrides={"repair_cost_share_10pct": 0.02},
     ),
     "high_repair_depreciation": ExperimentSpec(
         name="high_repair_depreciation",
@@ -349,7 +401,8 @@ def _validate_overrides(overrides: Mapping[str, Any]) -> dict[str, float]:
 
 
 def params_from_overrides(overrides: Mapping[str, Any] | None = None) -> BaselineParams:
-    return replace(BaselineParams(), **_validate_overrides(overrides or {}))
+    checked = _validate_overrides(overrides or {})
+    return _calibrated_params(replace(BaselineParams(), **checked), checked)
 
 
 def params_from_dict(data: Mapping[str, Any]) -> BaselineParams:

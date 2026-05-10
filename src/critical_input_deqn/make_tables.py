@@ -89,6 +89,12 @@ def _freq_positive(arr: np.ndarray | None, tol: float = 1e-6) -> float:
     return float(np.nanmean(np.asarray(arr, dtype=float) > float(tol)))
 
 
+def _indicator_mean(arr: np.ndarray | None) -> float:
+    if arr is None:
+        return float("nan")
+    return float(np.nanmean(np.asarray(arr, dtype=float)))
+
+
 def _utility_mean(defs: dict[str, np.ndarray], params: BaselineParams) -> float:
     C = _safe(defs, "C")
     N = _safe(defs, "N")
@@ -198,6 +204,11 @@ def policy_moment_row(
     I_A = _safe(defs, "I_A")
     A = _safe(defs, "A")
     cap_slack = _safe(defs, "cap_slack")
+    cap_pressure = _safe(defs, "cap_pressure_ratio")
+    cap_product_scaled = _safe(defs, "cap_product_scaled")
+    repair_gap_scaled = _safe(defs, "repair_gap_scaled")
+    repair_product_scaled = _safe(defs, "repair_product_scaled")
+    repair_activation = _safe(defs, "repair_activation_ratio")
     utility_parts = _utility_parts(defs, params)
     return {
         "experiment": experiment,
@@ -207,15 +218,22 @@ def policy_moment_row(
         "std_inflation_ann_pp": _std(inflation_ann),
         "mean_output_gap_log_pct": 100.0 * _mean(output_gap),
         "std_output_gap_log_pct": 100.0 * _std(output_gap),
-        "binding_frequency": _freq_positive(chi),
+        "binding_frequency": _indicator_mean(_safe(defs, "cap_binding_indicator")),
+        "scarcity_rent_positive_frequency": _freq_positive(chi, tol=1e-5),
         "mean_scarcity_rent": _mean(chi),
         "std_scarcity_rent": _std(chi),
-        "active_repair_frequency": _freq_positive(I_A),
+        "active_repair_frequency": _indicator_mean(_safe(defs, "repair_active_indicator")),
+        "repair_investment_positive_frequency": _freq_positive(I_A, tol=1e-5),
         "mean_repair_investment": _mean(I_A),
         "std_repair_investment": _std(I_A),
         "mean_adaptation_stock": _mean(A),
         "std_adaptation_stock": _std(A),
         "mean_cap_slack": _mean(cap_slack),
+        "mean_cap_pressure_ratio": _mean(cap_pressure),
+        "mean_cap_product_scaled": _mean(cap_product_scaled),
+        "mean_repair_gap_scaled": _mean(repair_gap_scaled),
+        "mean_repair_product_scaled": _mean(repair_product_scaled),
+        "mean_repair_activation_ratio": _mean(repair_activation),
         "mean_utility_flow": _utility_mean(defs, params),
         **utility_parts,
     }
@@ -260,7 +278,7 @@ def _write_json(path: Path, payload: object) -> None:
 
 
 def calibration_rows() -> list[dict[str, str | float]]:
-    params = asdict(BaselineParams())
+    params = asdict(params_from_overrides({}))
     return [{"parameter": key, "baseline_value": value} for key, value in params.items()]
 
 
