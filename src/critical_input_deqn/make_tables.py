@@ -205,8 +205,8 @@ def policy_moment_row(
         "policy_label": POLICY_LABELS.get(policy, policy),
         "mean_inflation_ann_pp": _mean(inflation_ann),
         "std_inflation_ann_pp": _std(inflation_ann),
-        "mean_output_gap_pct": 100.0 * _mean(output_gap),
-        "std_output_gap_pct": 100.0 * _std(output_gap),
+        "mean_output_gap_log_pct": 100.0 * _mean(output_gap),
+        "std_output_gap_log_pct": 100.0 * _std(output_gap),
         "binding_frequency": _freq_positive(chi),
         "mean_scarcity_rent": _mean(chi),
         "std_scarcity_rent": _std(chi),
@@ -338,7 +338,7 @@ def ir_peak_rows(base_root: Path, experiments: Iterable[str], *, policy: str) ->
                 "peak_scarcity_rent_response": (
                     float(np.nanmax(chi_response)) if chi_response is not None else float("nan")
                 ),
-                "trough_output_gap_response_pct": (
+                "trough_output_gap_response_log_pct": (
                     float(np.nanmin(100.0 * (gap - gap0))) if gap is not None and gap0 is not None else float("nan")
                 ),
                 "cumulative_repair_response": (
