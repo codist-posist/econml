@@ -21,7 +21,7 @@ from .config import (
     NetworkConfig,
 )
 from .experiments import params_from_metadata, resolve_params
-from .economics import derive_free, derive_rule, unpack_rule_state
+from .economics import adaptation_enabled, derive_free, derive_rule, psi_prime, unpack_rule_state
 from .episode import simulate_rule_episode
 from .optimal import decode_commitment, decode_discretion, simulate_optimal_episode
 from .sampling import sample_rule_states
@@ -145,13 +145,25 @@ def _summary_stats(data: Mapping[str, np.ndarray]) -> dict[str, dict[str, float]
     return out
 
 
-def _add_common_ratios(data: TensorDict) -> TensorDict:
+def _add_common_ratios(data: TensorDict, params: BaselineParams) -> TensorDict:
     if "Y" in data and "Y_n" in data:
         data["output_gap"] = data["Y"] / torch.clamp(data["Y_n"], min=1e-12) - 1.0
     if "M" in data and "mbar" in data:
-        data["cap_slack"] = (data["mbar"] - data["M"]) / torch.clamp(data["mbar"], min=1e-12)
+        data["cap_gap"] = data["mbar"] - data["M"]
+        data["cap_slack"] = data["cap_gap"] / torch.clamp(data["mbar"], min=1e-12)
+        if "chi" in data:
+            data["cap_product"] = data["chi"] * data["cap_gap"]
+            if "pm" in data:
+                data["cap_product_scaled"] = (
+                    data["chi"] / torch.clamp(data["pm"], min=1e-12)
+                ) * data["cap_slack"]
     if "I_A" in data and "A_next" in data and "A" in data:
         data["A_growth"] = data["A_next"] - data["A"]
+    if adaptation_enabled(params) and {"I_A", "Q_A", "Omega_A", "p_a"}.issubset(data):
+        data["repair_gap"] = data["Omega_A"] * data["p_a"] * psi_prime(data["I_A"], params) - data["Q_A"]
+        data["repair_product"] = data["I_A"] * data["repair_gap"]
+        data["repair_gap_scaled"] = data["repair_gap"] / torch.clamp(data["Omega_A"] * data["p_a"], min=1e-12)
+        data["repair_product_scaled"] = (data["I_A"] / (1.0 + data["I_A"])) * data["repair_gap_scaled"]
     if "R" in data and "Pi" in data:
         data["real_rate_ex_post_proxy"] = data["R"] / torch.clamp(data["Pi"], min=1e-12)
     return data
@@ -357,7 +369,7 @@ def evaluate_rule_path(
         data["I_A"] = data["I_A_effective"]
     data["Y_n"] = out_n["Y_n"]
     data["R_n_real"] = out_n["R_n_real"]
-    data = _add_common_ratios(data)
+    data = _add_common_ratios(data, params)
     shaped = {k: v.reshape(T, B) for k, v in data.items()}
     return _numpy_dict(_state_dict(states, RULE_STATE_NAMES)), _numpy_dict(shaped)
 
@@ -394,7 +406,7 @@ def evaluate_optimal_path(
         data["I_A"] = data["I_A_effective"]
     data["Y_n"] = out_n["Y_n"]
     data["R_n_real"] = out_n["R_n_real"]
-    data = _add_common_ratios(data)
+    data = _add_common_ratios(data, params)
     shaped = {k: v.reshape(T, B) for k, v in data.items()}
     return _numpy_dict(_state_dict(states, state_names)), _numpy_dict(shaped)
 

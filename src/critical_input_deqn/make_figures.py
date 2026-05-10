@@ -315,18 +315,41 @@ def plot_complementarity_diagnostics(*, root: Path, policy: str, output: Path) -
     if chi is None or mbar is None or M is None:
         return False
     chi = np.asarray(chi, dtype=float).reshape(-1)
-    slack = (np.asarray(mbar, dtype=float).reshape(-1) - np.asarray(M, dtype=float).reshape(-1)) / np.maximum(
-        np.asarray(mbar, dtype=float).reshape(-1), 1e-12
-    )
-    product = chi * slack
-    fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
-    axes[0].hist(chi, bins=50, alpha=0.8)
-    axes[0].set_title(r"$\chi_t$")
-    axes[1].hist(slack, bins=50, alpha=0.8)
-    axes[1].set_title("relative cap slack")
-    axes[2].hist(product, bins=50, alpha=0.8)
-    axes[2].set_title(r"$\chi_t \times$ slack")
-    for ax in axes:
+    slack = data.get("cap_slack")
+    if slack is None:
+        slack = (np.asarray(mbar, dtype=float).reshape(-1) - np.asarray(M, dtype=float).reshape(-1)) / np.maximum(
+            np.asarray(mbar, dtype=float).reshape(-1), 1e-12
+        )
+    else:
+        slack = np.asarray(slack, dtype=float).reshape(-1)
+    product = data.get("cap_product_scaled", data.get("cap_product"))
+    if product is None:
+        product = chi * slack
+    else:
+        product = np.asarray(product, dtype=float).reshape(-1)
+    repair_gap = data.get("repair_gap_scaled", data.get("repair_gap"))
+    repair_product = data.get("repair_product_scaled", data.get("repair_product"))
+    has_repair = repair_gap is not None and repair_product is not None and data.get("I_A") is not None
+    if has_repair:
+        fig, axes = plt.subplots(2, 3, figsize=(12, 6.5))
+    else:
+        fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
+    flat = np.asarray(axes).reshape(-1)
+    flat[0].hist(chi, bins=50, alpha=0.8)
+    flat[0].set_title(r"$\chi_t$")
+    flat[1].hist(slack, bins=50, alpha=0.8)
+    flat[1].set_title("relative cap slack")
+    flat[2].hist(product, bins=50, alpha=0.8)
+    flat[2].set_title("cap product")
+    if has_repair:
+        I_A = np.asarray(data.get("I_A"), dtype=float).reshape(-1)
+        flat[3].hist(I_A, bins=50, alpha=0.8)
+        flat[3].set_title(r"$I_t^A$")
+        flat[4].hist(np.asarray(repair_gap, dtype=float).reshape(-1), bins=50, alpha=0.8)
+        flat[4].set_title("repair gap")
+        flat[5].hist(np.asarray(repair_product, dtype=float).reshape(-1), bins=50, alpha=0.8)
+        flat[5].set_title("repair product")
+    for ax in flat:
         ax.grid(alpha=0.2)
     fig.suptitle(f"Complementarity diagnostics: {policy}")
     _save(fig, output)

@@ -24,6 +24,7 @@ from .qmc import make_qmc_nodes
 from .residuals import natural_residuals, rule_residuals, stack_residuals
 from .sampling import natural_from_rule_states, sample_rule_states
 from .episode import simulate_rule_episode
+from .economics import adaptation_enabled, psi_prime
 from .optimal import commitment_residuals, discretion_residuals, simulate_optimal_episode
 
 
@@ -303,6 +304,53 @@ def residual_diagnostics(residuals: Dict[str, torch.Tensor]) -> Dict[str, float]
             mat = torch.cat(mats)
             diag["overall.rms"] = float(torch.sqrt(mat.pow(2).mean()).cpu())
             diag["overall.max_abs"] = float(mat.abs().max().cpu())
+    return diag
+
+
+def _add_tensor_diagnostics(diag: Dict[str, float], prefix: str, value: torch.Tensor) -> None:
+    v = value.detach().reshape(-1)
+    diag[f"{prefix}.rms"] = float(torch.sqrt(v.pow(2).mean()).cpu())
+    diag[f"{prefix}.mean_abs"] = float(v.abs().mean().cpu())
+    diag[f"{prefix}.max_abs"] = float(v.abs().max().cpu())
+    diag[f"{prefix}.min"] = float(v.min().cpu())
+    diag[f"{prefix}.max"] = float(v.max().cpu())
+
+
+def exact_condition_diagnostics(data: Dict[str, torch.Tensor], params: BaselineParams, *, natural: bool = False) -> Dict[str, float]:
+    """Diagnostics for original, un-smoothed complementarity conditions.
+
+    Training can use normalized and smoothed residuals for conditioning.  These
+    checks report the original gaps and products, so the saved eval JSON reveals
+    whether smoothing creates economically meaningful complementarity leakage.
+    """
+
+    diag: Dict[str, float] = {}
+    with torch.no_grad():
+        chi_name = "chi_n" if natural else "chi"
+        if chi_name in data and "mbar" in data and "M" in data:
+            chi = data[chi_name]
+            cap_gap = data["mbar"] - data["M"]
+            cap_gap_rel = cap_gap / torch.clamp(data["mbar"], min=1e-12)
+            _add_tensor_diagnostics(diag, "exact_cap_gap", cap_gap)
+            _add_tensor_diagnostics(diag, "exact_cap_gap_rel", cap_gap_rel)
+            _add_tensor_diagnostics(diag, "exact_cap_product", chi * cap_gap)
+            if "pm" in data:
+                cap_rent_scaled = chi / torch.clamp(data["pm"], min=1e-12)
+                _add_tensor_diagnostics(diag, "exact_cap_product_scaled", cap_rent_scaled * cap_gap_rel)
+            _add_tensor_diagnostics(diag, "exact_cap_chi_negative", torch.relu(-chi))
+            _add_tensor_diagnostics(diag, "exact_cap_gap_negative", torch.relu(-cap_gap))
+
+        if not natural and adaptation_enabled(params) and {"I_A", "Q_A", "Omega_A", "p_a"}.issubset(data):
+            I = data.get("I_A_effective", data["I_A"])
+            repair_gap = data["Omega_A"] * data["p_a"] * psi_prime(I, params) - data["Q_A"]
+            repair_gap_scaled = repair_gap / torch.clamp(data["Omega_A"] * data["p_a"], min=1e-12)
+            repair_quantity_scaled = I / (1.0 + I)
+            _add_tensor_diagnostics(diag, "exact_repair_gap", repair_gap)
+            _add_tensor_diagnostics(diag, "exact_repair_gap_scaled", repair_gap_scaled)
+            _add_tensor_diagnostics(diag, "exact_repair_product", I * repair_gap)
+            _add_tensor_diagnostics(diag, "exact_repair_product_scaled", repair_quantity_scaled * repair_gap_scaled)
+            _add_tensor_diagnostics(diag, "exact_repair_I_negative", torch.relu(-I))
+            _add_tensor_diagnostics(diag, "exact_repair_gap_negative", torch.relu(-repair_gap))
     return diag
 
 
@@ -866,7 +914,7 @@ def evaluate_natural(
     z = sample_rule_states(n_states, params=params, device=device, dtype=dtype, seed=1234)
     z_n = natural_from_rule_states(z)
     with torch.no_grad():
-        res, _ = natural_residuals(
+        res, drv = natural_residuals(
             z_n,
             net(z_n),
             net,
@@ -881,6 +929,7 @@ def evaluate_natural(
             "rms": float(torch.sqrt(mat.pow(2).mean()).cpu()),
             "max_abs": float(mat.abs().max().cpu()),
             **residual_diagnostics(res),
+            **exact_condition_diagnostics(drv, params, natural=True),
         }
 
 
@@ -899,7 +948,7 @@ def evaluate_rule(
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=device, dtype=dtype)
     z = sample_rule_states(n_states, params=params, device=device, dtype=dtype, seed=4321)
     with torch.no_grad():
-        res, _ = rule_residuals(
+        res, drv = rule_residuals(
             z,
             net(z),
             net,
@@ -916,6 +965,7 @@ def evaluate_rule(
             "rms": float(torch.sqrt(mat.pow(2).mean()).cpu()),
             "max_abs": float(mat.abs().max().cpu()),
             **residual_diagnostics(res),
+            **exact_condition_diagnostics(drv, params),
         }
 
 
@@ -946,7 +996,7 @@ def evaluate_optimal(
         promise_init_scale=train_cfg.promise_init_scale,
     )
     raw = net(z)
-    res, _ = residual_fn(
+    res, drv = residual_fn(
         z,
         raw,
         net,
@@ -961,4 +1011,5 @@ def evaluate_optimal(
         "rms": float(torch.sqrt(mat.pow(2).mean()).detach().cpu()),
         "max_abs": float(mat.abs().max().detach().cpu()),
         **residual_diagnostics(res),
+        **exact_condition_diagnostics(drv, params),
     }

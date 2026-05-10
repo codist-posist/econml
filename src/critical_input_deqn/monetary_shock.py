@@ -45,6 +45,7 @@ from .train import (
     _restore_best_state,
     _top_residual_summary,
     _validation_nodes,
+    exact_condition_diagnostics,
     freeze,
     residual_diagnostics,
     residual_loss,
@@ -554,7 +555,7 @@ def evaluate_rule_shock(
         seed=4_321,
     )
     with torch.no_grad():
-        res, _ = rule_shock_residuals(
+        res, drv = rule_shock_residuals(
             z,
             net(z),
             net,
@@ -572,6 +573,7 @@ def evaluate_rule_shock(
             "rms": float(torch.sqrt(mat.pow(2).mean()).cpu()),
             "max_abs": float(mat.abs().max().cpu()),
             **residual_diagnostics(res),
+            **exact_condition_diagnostics(drv, params),
         }
 
 
@@ -694,13 +696,25 @@ def _state_dict(z: torch.Tensor) -> Dict[str, torch.Tensor]:
     return {name: z[..., i] for i, name in enumerate(RULE_SHOCK_STATE_NAMES)}
 
 
-def _add_common_ratios(data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+def _add_common_ratios(data: Dict[str, torch.Tensor], params: BaselineParams) -> Dict[str, torch.Tensor]:
     if "Y" in data and "Y_n" in data:
         data["output_gap"] = data["Y"] / torch.clamp(data["Y_n"], min=1e-12) - 1.0
     if "M" in data and "mbar" in data:
-        data["cap_slack"] = (data["mbar"] - data["M"]) / torch.clamp(data["mbar"], min=1e-12)
+        data["cap_gap"] = data["mbar"] - data["M"]
+        data["cap_slack"] = data["cap_gap"] / torch.clamp(data["mbar"], min=1e-12)
+        if "chi" in data:
+            data["cap_product"] = data["chi"] * data["cap_gap"]
+            if "pm" in data:
+                data["cap_product_scaled"] = (
+                    data["chi"] / torch.clamp(data["pm"], min=1e-12)
+                ) * data["cap_slack"]
     if "I_A" in data and "A_next" in data and "A" in data:
         data["A_growth"] = data["A_next"] - data["A"]
+    if adaptation_enabled(params) and {"I_A", "Q_A", "Omega_A", "p_a"}.issubset(data):
+        data["repair_gap"] = data["Omega_A"] * data["p_a"] * psi_prime(data["I_A"], params) - data["Q_A"]
+        data["repair_product"] = data["I_A"] * data["repair_gap"]
+        data["repair_gap_scaled"] = data["repair_gap"] / torch.clamp(data["Omega_A"] * data["p_a"], min=1e-12)
+        data["repair_product_scaled"] = (data["I_A"] / (1.0 + data["I_A"])) * data["repair_gap_scaled"]
     if "R" in data and "Pi" in data:
         data["real_rate_ex_post_proxy"] = data["R"] / torch.clamp(data["Pi"], min=1e-12)
     if "R" in data and "R_rule" in data:
@@ -743,7 +757,7 @@ def evaluate_rule_shock_path(
         data["I_A"] = data["I_A_effective"]
     data["Y_n"] = out_n["Y_n"]
     data["R_n_real"] = out_n["R_n_real"]
-    data = _add_common_ratios(data)
+    data = _add_common_ratios(data, params)
     shaped = {k: v.reshape(T, B) for k, v in data.items()}
     return _numpy_dict(_state_dict(states)), _numpy_dict(shaped)
 
