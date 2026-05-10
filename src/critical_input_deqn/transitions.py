@@ -66,8 +66,8 @@ def transition_natural_states(
     """Next flexible-price benchmark state for every current state and QMC node.
 
     Natural output uses installed A_t as a state and does not choose current
-    repair. Hence A is held fixed for the static benchmark transition used in
-    the natural-rate Euler residual.
+    repair. Hence the benchmark transition carries A forward under the
+    no-new-repair law used in the natural-rate Euler residual.
     """
 
     B = st.D.shape[0]
@@ -97,7 +97,6 @@ def transition_natural_states(
         + float(p.sigma_lambda_X) * nodes.eps_lam_X[None, :]
     )
     log_Z_next = float(p.rho_z) * log_Z + float(p.sigma_z) * nodes.eps_z[None, :]
-    A_next = st.A[:, None].expand(B, S)
+    A_next = ((1.0 - float(p.delta_A)) * st.A)[:, None].expand(B, S)
 
     return torch.stack([D_next, X_next, ell_D_next, ell_X_next, log_Z_next, A_next], dim=-1)
-

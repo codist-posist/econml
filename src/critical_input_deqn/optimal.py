@@ -135,14 +135,17 @@ def private_residuals_free(
         - float(params.theta) * _mean_over_nodes(Mdisc * Pi_next.pow(float(params.epsilon) - 1.0) * F_p_next)
     ) / out["F_p"]
     cap_slack = (drv["mbar"] - drv["M"]) / torch.clamp(drv["mbar"], min=1e-12)
-    res["cap_fb"] = fischer_burmeister(out["chi"], cap_slack, fb_epsilon)
+    cap_rent = out["chi"] / torch.clamp(drv["pm"], min=1e-12)
+    res["cap_fb"] = fischer_burmeister(cap_rent, cap_slack, fb_epsilon)
     if adaptation_enabled(params):
         repair_gap = drv["Omega_A"] * float(params.p_a) * psi_prime(out["I_A"], params) - out["Q_A"]
-        res["repair_fb"] = fischer_burmeister(out["I_A"], repair_gap, fb_epsilon)
+        repair_quantity = out["I_A"] / (1.0 + out["I_A"])
+        repair_value = repair_gap / torch.clamp(drv["Omega_A"] * float(params.p_a), min=1e-12)
+        res["repair_fb"] = fischer_burmeister(repair_quantity, repair_value, fb_epsilon)
         res["Q"] = (
             out["Q_A"]
             - _mean_over_nodes(Mdisc * (benefit_A_next + (1.0 - float(params.delta_A)) * Q_next))
-        ) / out["Q_A"]
+        ) / (1.0 + out["Q_A"])
     else:
         res["repair_fb"] = out["I_A"]
         res["Q"] = out["Q_A"]
