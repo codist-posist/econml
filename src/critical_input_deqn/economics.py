@@ -183,7 +183,7 @@ def solve_import_rent(
     mbar: torch.Tensor,
     p_d: torch.Tensor,
     p: BaselineParams,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Solve the one-dimensional imported-input MCP for the scarcity rent.
 
     If zero-rent desired demand is below the cap, the rent is exactly zero. If
@@ -194,6 +194,7 @@ def solve_import_rent(
     M_zero = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
     bind = M_zero > mbar
     chi = torch.zeros_like(C)
+    M_at_rent = M_zero.clone()
     if bool(bind.detach().any().cpu()):
         st_b = _select_state(st, bind)
         C_b = C[bind]
@@ -214,8 +215,10 @@ def solve_import_rent(
             tight = M_mid > mbar_b
             lo = torch.where(tight, mid, lo)
             hi = torch.where(tight, hi, mid)
+        M_hi = desired_import_given_rent(st_b, C_b, Y_b, Delta_b, pm_b, p_d_b, hi, p)
         chi = chi.index_put((bind,), hi)
-    return chi, M_zero
+        M_at_rent = M_at_rent.index_put((bind,), M_hi)
+    return chi, M_zero, M_at_rent
 
 
 def input_static_quantities(
@@ -325,7 +328,7 @@ def derive_rule(
     Omega_A = omega_A_cost(R, p)
     I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
     A_next = (1.0 - float(p.delta_A)) * st.A + I
-    chi, M_zero_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
+    chi, M_zero_rent, M_at_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
     static = input_static_quantities(st, C, Y, Delta, pm, chi, p_d, p)
 
     return {
@@ -347,6 +350,7 @@ def derive_rule(
         "X_comp": static["X_comp"],
         "M": static["M"],
         "M_zero_rent": M_zero_rent,
+        "M_at_rent": M_at_rent,
         "S": static["S"],
         "N_d": static["N_d"],
         "I_A": I,
@@ -377,7 +381,7 @@ def derive_free(
     Omega_A = omega_A_cost(R, p)
     I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
     A_next = (1.0 - float(p.delta_A)) * st.A + I
-    chi, M_zero_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
+    chi, M_zero_rent, M_at_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
     static = input_static_quantities(st, C, Y, Delta, pm, chi, p_d, p)
 
     return {
@@ -399,6 +403,7 @@ def derive_free(
         "X_comp": static["X_comp"],
         "M": static["M"],
         "M_zero_rent": M_zero_rent,
+        "M_at_rent": M_at_rent,
         "S": static["S"],
         "N_d": static["N_d"],
         "I_A": I,
@@ -414,7 +419,7 @@ def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -
     pm, mbar = external_conditions(st, p)
     p_d = torch.full_like(C, float(p.p_d))
     Delta = torch.ones_like(C)
-    chi, M_zero_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
+    chi, M_zero_rent, M_at_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
     static = input_static_quantities(st, C, Y, Delta, pm, chi, p_d, p)
     return {
         "pm": pm,
@@ -432,6 +437,7 @@ def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -
         "X_comp": static["X_comp"],
         "M": static["M"],
         "M_zero_rent": M_zero_rent,
+        "M_at_rent": M_at_rent,
         "S": static["S"],
         "N_d": static["N_d"],
     }

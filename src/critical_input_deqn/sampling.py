@@ -38,16 +38,16 @@ def sample_rule_states(
 
     D = torch.where(crisis, 0.5 + 1.5 * torch.rand_like(u), D)
     X = torch.where(crisis, 0.15 * torch.rand_like(u), X)
-    A = torch.where(crisis, 0.25 * torch.rand_like(u), A)
+    A = torch.where(crisis, 0.6 * torch.rand_like(u), A)
 
     D = torch.where(relief, 0.5 + torch.rand_like(u), D)
     X = torch.where(relief, 0.25 + 0.75 * torch.rand_like(u), X)
-    A = torch.where(relief, 0.1 + 0.6 * torch.rand_like(u), A)
+    A = torch.where(relief, 0.1 + 1.1 * torch.rand_like(u), A)
 
-    # Boundary-like states: moderate tightness and moderate adaptation.
+    # Boundary-like states include high-adaptation support reachable under sustained repair.
     D = torch.where(boundary, 0.2 + 0.5 * torch.rand_like(u), D)
     X = torch.where(boundary, 0.1 + 0.4 * torch.rand_like(u), X)
-    A = torch.where(boundary, 0.05 + 0.3 * torch.rand_like(u), A)
+    A = torch.where(boundary, 0.05 + 0.95 * torch.rand_like(u), A)
 
     ell_D = torch.full_like(u, float(params.log_bar_lambda_D)) + 0.15 * torch.randn_like(u)
     ell_X = torch.full_like(u, float(params.log_bar_lambda_X)) + 0.15 * torch.randn_like(u)
@@ -58,4 +58,3 @@ def sample_rule_states(
 
 def natural_from_rule_states(z: torch.Tensor) -> torch.Tensor:
     return z[..., :6]
-

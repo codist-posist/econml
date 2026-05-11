@@ -336,6 +336,15 @@ def exact_condition_diagnostics(data: Dict[str, torch.Tensor], params: BaselineP
             _add_tensor_diagnostics(diag, "exact_cap_gap", cap_gap)
             _add_tensor_diagnostics(diag, "exact_cap_gap_rel", cap_gap_rel)
             _add_tensor_diagnostics(diag, "exact_cap_pressure_ratio", cap_pressure)
+            if "M_zero_rent" in data and "M_at_rent" in data:
+                cap_target = torch.where(data["M_zero_rent"] > data["mbar"], data["mbar"], data["M_zero_rent"])
+                cap_solve_error = data["M_at_rent"] - cap_target
+                _add_tensor_diagnostics(diag, "exact_cap_solve_error", cap_solve_error)
+                _add_tensor_diagnostics(
+                    diag,
+                    "exact_cap_solve_error_rel",
+                    cap_solve_error / torch.clamp(data["mbar"], min=1e-12),
+                )
             _add_tensor_diagnostics(diag, "exact_cap_product", chi * cap_gap)
             if "pm" in data:
                 cap_rent_scaled = chi / torch.clamp(data["pm"], min=1e-12)

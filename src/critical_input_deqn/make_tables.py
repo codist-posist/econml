@@ -206,6 +206,7 @@ def policy_moment_row(
     cap_slack = _safe(defs, "cap_slack")
     cap_pressure = _safe(defs, "cap_pressure_ratio")
     cap_product_scaled = _safe(defs, "cap_product_scaled")
+    cap_solve_error_rel = _safe(defs, "cap_solve_error_rel")
     repair_gap_scaled = _safe(defs, "repair_gap_scaled")
     repair_projection = _safe(defs, "repair_projection_residual")
     repair_activation = _safe(defs, "repair_activation_ratio")
@@ -222,8 +223,11 @@ def policy_moment_row(
         "scarcity_rent_positive_frequency": _freq_positive(chi, tol=1e-5),
         "mean_scarcity_rent": _mean(chi),
         "std_scarcity_rent": _std(chi),
-        "active_repair_frequency": _indicator_mean(_safe(defs, "repair_active_indicator")),
-        "repair_investment_positive_frequency": _freq_positive(I_A, tol=1e-5),
+        "active_repair_frequency": _indicator_mean(_safe(defs, "repair_active_or_capacity_indicator")),
+        "repair_lower_corner_frequency": _indicator_mean(_safe(defs, "repair_lower_corner_indicator")),
+        "repair_interior_frequency": _indicator_mean(_safe(defs, "repair_interior_indicator")),
+        "repair_capacity_bound_frequency": _indicator_mean(_safe(defs, "repair_capacity_bound_indicator")),
+        "repair_investment_positive_frequency": _indicator_mean(_safe(defs, "repair_positive_indicator")),
         "mean_repair_investment": _mean(I_A),
         "std_repair_investment": _std(I_A),
         "mean_adaptation_stock": _mean(A),
@@ -231,6 +235,7 @@ def policy_moment_row(
         "mean_cap_slack": _mean(cap_slack),
         "mean_cap_pressure_ratio": _mean(cap_pressure),
         "mean_cap_product_scaled": _mean(cap_product_scaled),
+        "mean_cap_solve_error_rel": _mean(cap_solve_error_rel),
         "mean_repair_gap_scaled": _mean(repair_gap_scaled),
         "mean_repair_projection_residual": _mean(repair_projection),
         "mean_repair_activation_ratio": _mean(repair_activation),

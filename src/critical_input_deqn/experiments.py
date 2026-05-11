@@ -127,7 +127,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         name="deep_crisis",
         group="sensitivity",
         description="Larger disruption events and stronger price/quantity effects.",
-        overrides={"mark_D": 0.50, "nu_qD": 0.45, "nu_pD": 0.225},
+        overrides={"mark_D": 0.50, "nu_qD": 1.50, "nu_pD": 0.225},
     ),
     "larger_disruption_marks": ExperimentSpec(
         name="larger_disruption_marks",
@@ -139,7 +139,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         name="stronger_quantity_effect",
         group="sensitivity",
         description="Disruption has a stronger effect on imported-input availability.",
-        overrides={"nu_qD": 0.45},
+        overrides={"nu_qD": 1.50},
     ),
     "stronger_price_effect": ExperimentSpec(
         name="stronger_price_effect",

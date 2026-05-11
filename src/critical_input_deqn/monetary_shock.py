@@ -704,6 +704,10 @@ def _add_common_ratios(data: Dict[str, torch.Tensor], params: BaselineParams) ->
         data["cap_pressure_ratio"] = pressure_source / torch.clamp(data["mbar"], min=1e-12)
         if "M_zero_rent" in data:
             data["cap_gap_zero_rent"] = data["mbar"] - data["M_zero_rent"]
+        if "M_zero_rent" in data and "M_at_rent" in data:
+            cap_target = torch.where(data["M_zero_rent"] > data["mbar"], data["mbar"], data["M_zero_rent"])
+            data["cap_solve_error"] = data["M_at_rent"] - cap_target
+            data["cap_solve_error_rel"] = data["cap_solve_error"] / torch.clamp(data["mbar"], min=1e-12)
         if "chi" in data:
             data["cap_product"] = data["chi"] * data["cap_gap"]
             if "pm" in data:
@@ -724,13 +728,32 @@ def _add_common_ratios(data: Dict[str, torch.Tensor], params: BaselineParams) ->
         data["repair_activation_ratio"] = data["Q_A"] / torch.clamp(
             data["Omega_A"] * data["p_a"] * float(params.psi_A), min=1e-12
         )
+        repair_tol = 1e-5
+        repair_gap_tol = 1e-3
+        repair_capacity = float(params.repair_capacity)
+        lower_region = data["I_A"] <= repair_tol
+        interior_region = (data["I_A"] > repair_tol) & (data["I_A"] < repair_capacity - repair_tol)
+        upper_region = data["I_A"] >= repair_capacity - repair_tol
+        data["repair_lower_corner_indicator"] = (
+            lower_region & (data["repair_gap_scaled"] >= -repair_gap_tol)
+        ).to(data["I_A"].dtype)
+        data["repair_interior_indicator"] = (
+            interior_region & (data["repair_gap_scaled"].abs() <= repair_gap_tol)
+        ).to(data["I_A"].dtype)
+        data["repair_capacity_bound_indicator"] = (
+            upper_region & (data["repair_gap_scaled"] <= repair_gap_tol)
+        ).to(data["I_A"].dtype)
+        data["repair_positive_indicator"] = (data["I_A"] > repair_tol).to(data["I_A"].dtype)
+        data["repair_active_or_capacity_indicator"] = (
+            (data["repair_interior_indicator"] > 0.5) | (data["repair_capacity_bound_indicator"] > 0.5)
+        ).to(data["I_A"].dtype)
         data["repair_active_indicator"] = (
             (data["I_A"] > 1e-5)
-            & (data["I_A"] < float(params.repair_capacity) - 1e-5)
-            & (data["repair_gap_scaled"].abs() <= 1e-3)
+            & (data["I_A"] < repair_capacity - 1e-5)
+            & (data["repair_gap_scaled"].abs() <= repair_gap_tol)
         ).to(data["I_A"].dtype)
         data["repair_capacity_indicator"] = (
-            (data["I_A"] >= float(params.repair_capacity) - 1e-5) & (data["repair_gap_scaled"] <= 1e-3)
+            (data["I_A"] >= repair_capacity - 1e-5) & (data["repair_gap_scaled"] <= repair_gap_tol)
         ).to(data["I_A"].dtype)
     if "R" in data and "Pi" in data:
         data["real_rate_ex_post_proxy"] = data["R"] / torch.clamp(data["Pi"], min=1e-12)
