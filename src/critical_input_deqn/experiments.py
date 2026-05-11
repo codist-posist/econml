@@ -279,6 +279,18 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         description="Firms initially rely less heavily on the critical imported input.",
         overrides={"target_import_cost_share": 0.15},
     ),
+    "low_residual_import_dependence": ExperimentSpec(
+        name="low_residual_import_dependence",
+        group="sensitivity",
+        description="Adaptation can reduce critical-input dependence to a lower residual floor.",
+        overrides={"target_min_import_cost_share": 0.05},
+    ),
+    "high_residual_import_dependence": ExperimentSpec(
+        name="high_residual_import_dependence",
+        group="sensitivity",
+        description="Adaptation leaves a higher irreducible critical-input dependence.",
+        overrides={"target_min_import_cost_share": 0.15},
+    ),
     "high_adaptation_effectiveness": ExperimentSpec(
         name="high_adaptation_effectiveness",
         group="sensitivity",
@@ -376,6 +388,8 @@ TABLE_EXPERIMENTS = {
         "high_substitutability",
         "high_import_exposure",
         "low_import_exposure",
+        "low_residual_import_dependence",
+        "high_residual_import_dependence",
         "high_adaptation_effectiveness",
         "low_adaptation_effectiveness",
         "high_repair_cost",

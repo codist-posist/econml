@@ -140,9 +140,9 @@ registered variants include:
 - sensitivity variants: `deep_crisis`, `persistent_crisis`, `fast_relief`,
   `fragile_relief`, granular crisis-depth/persistence variants, granular
   relief-arrival/relief-durability variants, bottleneck-tightness variants,
-  technology variants, repair-cost variants, financing-sensitivity variants,
-  and policy-rule variants such as `hawkish_policy`, `dovish_policy`, and
-  `output_gap_policy`.
+  technology variants, residual-import-dependence variants, repair-cost
+  variants, financing-sensitivity variants, and policy-rule variants such as
+  `hawkish_policy`, `dovish_policy`, and `output_gap_policy`.
 
 One structured experiment can be run with:
 

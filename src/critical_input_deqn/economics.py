@@ -45,9 +45,17 @@ def unpack_natural_state(z: torch.Tensor) -> State:
 
 def omega_import(A: torch.Tensor, p: BaselineParams) -> torch.Tensor:
     omega0 = float(p.omega0)
-    floor_fraction = min(max(float(p.omega_min_fraction), 0.0), 0.999999)
-    omega_min = omega0 * floor_fraction
+    omega_min = min(
+        _omega_from_import_share(float(p.target_min_import_cost_share), float(p.rho)),
+        omega0 * (1.0 - 1e-10),
+    )
     return omega_min + (omega0 - omega_min) * torch.exp(-float(p.kappa_a) * A)
+
+
+def _omega_from_import_share(share: float, rho: float) -> float:
+    share = min(max(float(share), 1e-8), 1.0 - 1e-8)
+    ratio = (share / (1.0 - share)) ** (1.0 / float(rho))
+    return ratio / (1.0 + ratio)
 
 
 def external_conditions(st: State, p: BaselineParams) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -98,8 +106,10 @@ def p_x_derivative_A(A: torch.Tensor, p_m_eff: torch.Tensor, p_d: torch.Tensor, 
     rho = float(p.rho)
     omega = omega_import(A, p)
     omega0 = float(p.omega0)
-    floor_fraction = min(max(float(p.omega_min_fraction), 0.0), 0.999999)
-    omega_min = omega0 * floor_fraction
+    omega_min = min(
+        _omega_from_import_share(float(p.target_min_import_cost_share), rho),
+        omega0 * (1.0 - 1e-10),
+    )
     omega_A = -float(p.kappa_a) * (omega - omega_min)
     F = omega.pow(rho) * p_m_eff.pow(1.0 - rho) + (1.0 - omega).pow(rho) * p_d.pow(1.0 - rho)
     F_A = rho * omega_A * (

@@ -20,9 +20,9 @@ class BaselineParams:
     theta: float = 0.75
     rho: float = 0.20
     target_import_cost_share: float = 0.30
+    target_min_import_cost_share: float = 0.10
     steady_state_output: float = 0.40
     omega0: float = 0.014252199413489739
-    omega_min_fraction: float = 0.20
     kappa_a: float = 1.0
 
     # Competitive supply-price normalizations
