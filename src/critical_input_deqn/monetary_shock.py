@@ -34,6 +34,8 @@ from .residuals import _mean_over_nodes, stack_residuals
 from .sampling import sample_rule_states
 from .train import (
     TrainLog,
+    _RULE_SCENARIO_LABELS,
+    _RULE_SCENARIO_OFFSETS,
     _announce_training,
     _log_metrics,
     _mark_stopped,
@@ -43,6 +45,8 @@ from .train import (
     _progress_range,
     _report_progress,
     _restore_best_state,
+    _rule_scenario_additions,
+    _scenario_q_diagnostics,
     _top_residual_summary,
     _validation_nodes,
     exact_condition_diagnostics,
@@ -468,6 +472,17 @@ def train_rule_shock_episode(
             )
             mat = stack_residuals(res)
             loss = residual_loss(mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+            loss = loss + _rule_shock_auxiliary_training_loss(
+                net,
+                natural_net,
+                nodes,
+                policy=policy,
+                params=params,
+                shock_cfg=shock_cfg,
+                qmc_cfg=qmc_cfg,
+                train_cfg=train_cfg,
+                fb_epsilon=train_cfg.fb_epsilon_start,
+            )
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
@@ -491,8 +506,22 @@ def train_rule_shock_episode(
                     policy=policy,
                 )
                 val_mat = stack_residuals(val_res).detach()
+                scenario_val_res, _, scenario_names = _rule_shock_scenario_residuals(
+                    net,
+                    natural_net,
+                    val_nodes,
+                    policy=policy,
+                    params=params,
+                    shock_cfg=shock_cfg,
+                    qmc_cfg=val_qmc_cfg,
+                    train_cfg=train_cfg,
+                    fb_epsilon=train_cfg.fb_epsilon_final,
+                )
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
+            scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
+            metrics.update(scenario_diag)
+            log.extra_metrics.append({"step": float(episode), **scenario_diag})
             best_state = _maybe_update_best_state(net, log, metrics, episode, best_state)
             _maybe_save_training_state(
                 step=episode,
@@ -564,12 +593,24 @@ def evaluate_rule_shock(
             policy=policy,
         )
         mat = stack_residuals(res)
+        scenario_res, _, scenario_names = _rule_shock_scenario_residuals(
+            net,
+            natural_net,
+            nodes,
+            policy=policy,
+            params=params,
+            shock_cfg=shock_cfg,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+            fb_epsilon=train_cfg.fb_epsilon_final,
+        )
         return {
             "loss": float(mat.pow(2).mean().cpu()),
             "rms": float(torch.sqrt(mat.pow(2).mean()).cpu()),
             "max_abs": float(mat.abs().max().cpu()),
             **residual_diagnostics(res),
             **exact_condition_diagnostics(drv, params),
+            **_scenario_q_diagnostics(scenario_res, scenario_names, q_key="Q"),
         }
 
 
@@ -597,12 +638,14 @@ def _deterministic_rule_shock_step(
     A_next: torch.Tensor,
     Delta_next: torch.Tensor,
     add_eps_R: torch.Tensor,
+    add_D: torch.Tensor | None = None,
+    add_X: torch.Tensor | None = None,
     params: BaselineParams,
     shock_cfg: MonetaryShockConfig,
 ) -> torch.Tensor:
     st, eps_R = unpack_rule_shock_state(z)
-    D_next = (1.0 - float(params.delta_D)) * st.D
-    X_next = (1.0 - float(params.delta_X)) * st.X
+    D_next = (1.0 - float(params.delta_D)) * st.D + (0.0 if add_D is None else add_D)
+    X_next = (1.0 - float(params.delta_X)) * st.X + (0.0 if add_X is None else add_X)
     ell_D_next = (
         (1.0 - float(params.rho_lambda_D)) * float(params.log_bar_lambda_D)
         + float(params.rho_lambda_D) * st.ell_D
@@ -617,6 +660,182 @@ def _deterministic_rule_shock_step(
     log_Delta_next = torch.log(torch.clamp(Delta_next, min=1e-12))
     eps_next = float(shock_cfg.rho_R) * eps_R + add_eps_R
     return torch.stack([D_next, X_next, ell_D_next, ell_X_next, log_Z_next, A_next, log_Delta_next, eps_next], dim=-1)
+
+
+def _rule_shock_training_scenario_states(
+    rule_net,
+    natural_net,
+    *,
+    policy: str,
+    params: BaselineParams,
+    shock_cfg: MonetaryShockConfig,
+    train_cfg: TrainConfig,
+) -> tuple[torch.Tensor, list[str]]:
+    device = train_cfg.device
+    dtype = train_cfg.dtype
+    burnin = max(1, int(train_cfg.rule_scenario_burnin))
+    horizon = max(5, int(train_cfg.rule_scenario_horizon))
+    total = burnin + horizon + 1
+    z = _normal_initial_rule_shock_state(len(_RULE_SCENARIO_LABELS), params=params, device=device, dtype=dtype)
+    states = [z]
+    with torch.no_grad():
+        for t in range(1, total):
+            st, eps_R = unpack_rule_shock_state(z)
+            out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES)
+            out_n = decode_natural_outputs(natural_net(natural_from_rule_shock_states(z)), NATURAL_OUTPUT_NAMES)
+            drv = derive_rule_with_monetary_shock(
+                st,
+                out,
+                params,
+                Y_n=out_n["Y_n"],
+                R_n=out_n["R_n_real"],
+                policy=policy,
+                eps_R=eps_R,
+            )
+            add_D, add_X = _rule_scenario_additions(
+                t=t,
+                pulse=burnin,
+                relief_lag=4,
+                params=params,
+                device=z.device,
+                dtype=z.dtype,
+            )
+            z = _deterministic_rule_shock_step(
+                z,
+                A_next=drv["A_next"],
+                Delta_next=drv["Delta"],
+                add_eps_R=torch.zeros_like(add_D),
+                add_D=add_D,
+                add_X=add_X,
+                params=params,
+                shock_cfg=shock_cfg,
+            )
+            states.append(z)
+    stacked = torch.stack(states, dim=0)
+    selected = []
+    names = []
+    for tag, offset in _RULE_SCENARIO_OFFSETS.items():
+        idx = min(max(burnin + int(offset), 0), stacked.shape[0] - 1)
+        for j, label in enumerate(_RULE_SCENARIO_LABELS):
+            selected.append(stacked[idx, j])
+            names.append(f"{label}.{tag}")
+    return torch.stack(selected, dim=0).detach(), names
+
+
+def _rule_shock_scenario_residuals(
+    rule_net,
+    natural_net,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    shock_cfg: MonetaryShockConfig,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], list[str]]:
+    z, names = _rule_shock_training_scenario_states(
+        rule_net,
+        natural_net,
+        policy=policy,
+        params=params,
+        shock_cfg=shock_cfg,
+        train_cfg=train_cfg,
+    )
+    res, drv = rule_shock_residuals(
+        z,
+        rule_net(z),
+        rule_net,
+        natural_net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        shock_cfg=shock_cfg,
+        fb_epsilon=fb_epsilon,
+        policy=policy,
+    )
+    return res, drv, names
+
+
+def _rule_shock_calm_anchor_loss(
+    rule_net,
+    natural_net,
+    *,
+    policy: str,
+    params: BaselineParams,
+    shock_cfg: MonetaryShockConfig,
+    train_cfg: TrainConfig,
+) -> torch.Tensor:
+    z = _normal_initial_rule_shock_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
+    st, eps_R = unpack_rule_shock_state(z)
+    out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES)
+    out_n = decode_natural_outputs(natural_net(natural_from_rule_shock_states(z)), NATURAL_OUTPUT_NAMES)
+    drv = derive_rule_with_monetary_shock(
+        st,
+        out,
+        params,
+        Y_n=out_n["Y_n"],
+        R_n=out_n["R_n_real"],
+        policy=policy,
+        eps_R=eps_R,
+    )
+    pressure = drv["M_zero_rent"] / torch.clamp(drv["mbar"], min=1e-12)
+    target_pressure = torch.full_like(pressure, 1.0 / (1.0 + float(params.normal_capacity_slack)))
+    repair_scale = max(float(params.repair_capacity), 1e-6)
+    terms = [
+        torch.log(torch.clamp(out["C"] / torch.clamp(out_n["C_n"], min=1e-12), min=1e-12)),
+        torch.log(torch.clamp(out["Y"] / torch.clamp(out_n["Y_n"], min=1e-12), min=1e-12)),
+        torch.log(torch.clamp(out["Pi"] / float(params.bar_pi), min=1e-12)),
+        pressure - target_pressure,
+        drv["chi"] / torch.clamp(drv["pm"], min=1e-12),
+        drv["I_A"] / repair_scale,
+    ]
+    return torch.stack([term.reshape(-1) for term in terms], dim=-1).pow(2).mean()
+
+
+def _rule_shock_auxiliary_training_loss(
+    rule_net,
+    natural_net,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    shock_cfg: MonetaryShockConfig,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> torch.Tensor:
+    pieces = []
+    q_weight = float(train_cfg.rule_scenario_q_weight)
+    if q_weight > 0.0:
+        scenario_res, _, _ = _rule_shock_scenario_residuals(
+            rule_net,
+            natural_net,
+            nodes,
+            policy=policy,
+            params=params,
+            shock_cfg=shock_cfg,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+            fb_epsilon=fb_epsilon,
+        )
+        pieces.append(q_weight * residual_loss(scenario_res["Q"].reshape(-1, 1), loss=train_cfg.loss, huber_delta=train_cfg.huber_delta))
+    calm_weight = float(train_cfg.rule_calm_anchor_weight)
+    if calm_weight > 0.0:
+        pieces.append(
+            calm_weight
+            * _rule_shock_calm_anchor_loss(
+                rule_net,
+                natural_net,
+                policy=policy,
+                params=params,
+                shock_cfg=shock_cfg,
+                train_cfg=train_cfg,
+            )
+        )
+    if not pieces:
+        return torch.zeros((), device=train_cfg.device, dtype=train_cfg.dtype)
+    return torch.stack(pieces).sum()
 
 
 def annualized_bp_to_log_quarterly(bp: float) -> float:

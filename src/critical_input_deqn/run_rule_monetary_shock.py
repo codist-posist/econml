@@ -106,6 +106,10 @@ def main() -> None:
     parser.add_argument("--episode-length", type=int, default=20)
     parser.add_argument("--episode-updates-per-episode", type=int, default=2)
     parser.add_argument("--episode-broad-share", type=float, default=0.50)
+    parser.add_argument("--rule-scenario-q-weight", type=float, default=25.0)
+    parser.add_argument("--rule-calm-anchor-weight", type=float, default=5.0)
+    parser.add_argument("--rule-scenario-burnin", type=int, default=5)
+    parser.add_argument("--rule-scenario-horizon", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--qmc-train", type=int, default=256)
     parser.add_argument("--qmc-val", type=int, default=512)
@@ -168,6 +172,10 @@ def main() -> None:
             "checkpoint_every": args.checkpoint_every,
             "checkpoint_keep": args.checkpoint_keep,
             "no_checkpoints": args.no_checkpoints,
+            "rule_scenario_q_weight": args.rule_scenario_q_weight,
+            "rule_calm_anchor_weight": args.rule_calm_anchor_weight,
+            "rule_scenario_burnin": args.rule_scenario_burnin,
+            "rule_scenario_horizon": args.rule_scenario_horizon,
             "dtype": args.dtype,
             "device": args.device,
         },
@@ -208,6 +216,10 @@ def main() -> None:
             checkpoint_name=f"{policy}_monetary_shock",
             checkpoint_every=args.checkpoint_every,
             checkpoint_keep=args.checkpoint_keep,
+            rule_scenario_q_weight=args.rule_scenario_q_weight,
+            rule_calm_anchor_weight=args.rule_calm_anchor_weight,
+            rule_scenario_burnin=args.rule_scenario_burnin,
+            rule_scenario_horizon=args.rule_scenario_horizon,
             dtype=dtype,
             device=args.device,
         )

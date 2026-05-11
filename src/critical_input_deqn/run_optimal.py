@@ -97,6 +97,20 @@ def main() -> None:
     parser.add_argument("--checkpoint-keep", type=int, default=3)
     parser.add_argument("--no-checkpoints", action="store_true")
     parser.add_argument(
+        "--scenario-q-weight",
+        type=float,
+        default=25.0,
+        help="Extra weight on private Q_A recursion residuals at deterministic no-event/crisis scenario states.",
+    )
+    parser.add_argument(
+        "--calm-anchor-weight",
+        type=float,
+        default=5.0,
+        help="Extra weight on the calm steady-branch anchor for optimal-policy training.",
+    )
+    parser.add_argument("--scenario-burnin", type=int, default=5)
+    parser.add_argument("--scenario-horizon", type=int, default=10)
+    parser.add_argument(
         "--promise-init-scale",
         type=float,
         default=1.0,
@@ -139,6 +153,10 @@ def main() -> None:
         checkpoint_name=args.kind,
         checkpoint_every=args.checkpoint_every,
         checkpoint_keep=args.checkpoint_keep,
+        rule_scenario_q_weight=args.scenario_q_weight,
+        rule_calm_anchor_weight=args.calm_anchor_weight,
+        rule_scenario_burnin=args.scenario_burnin,
+        rule_scenario_horizon=args.scenario_horizon,
         dtype=dtype,
         device=args.device,
     )
@@ -171,6 +189,10 @@ def main() -> None:
             "checkpoint_every": args.checkpoint_every,
             "checkpoint_keep": args.checkpoint_keep,
             "no_checkpoints": args.no_checkpoints,
+            "scenario_q_weight": args.scenario_q_weight,
+            "calm_anchor_weight": args.calm_anchor_weight,
+            "scenario_burnin": args.scenario_burnin,
+            "scenario_horizon": args.scenario_horizon,
             "commitment_promise_init_mean": COMMITMENT_PROMISE_INIT_MEAN,
             "commitment_promise_init_std": COMMITMENT_PROMISE_INIT_STD,
             "dtype": args.dtype,
