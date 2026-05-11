@@ -170,14 +170,20 @@ def _add_common_ratios(data: TensorDict, params: BaselineParams) -> TensorDict:
         data["A_growth"] = data["A_next"] - data["A"]
     if adaptation_enabled(params) and {"I_A", "Q_A", "Omega_A", "p_a"}.issubset(data):
         data["repair_gap"] = data["Omega_A"] * data["p_a"] * psi_prime(data["I_A"], params) - data["Q_A"]
-        data["repair_product"] = data["I_A"] * data["repair_gap"]
         data["repair_gap_scaled"] = data["repair_gap"] / torch.clamp(data["Omega_A"] * data["p_a"], min=1e-12)
-        data["repair_product_scaled"] = (data["I_A"] / (1.0 + data["I_A"])) * data["repair_gap_scaled"]
+        eta = 1.0 / torch.clamp(data["Omega_A"] * data["p_a"] * float(params.phi_A), min=1e-12)
+        projected = torch.clamp(data["I_A"] - eta * data["repair_gap"], min=0.0, max=float(params.repair_capacity))
+        data["repair_projection_residual"] = data["I_A"] - projected
         data["repair_activation_ratio"] = data["Q_A"] / torch.clamp(
             data["Omega_A"] * data["p_a"] * float(params.psi_A), min=1e-12
         )
         data["repair_active_indicator"] = (
-            (data["I_A"] > 1e-5) & (data["repair_gap_scaled"].abs() <= 1e-3)
+            (data["I_A"] > 1e-5)
+            & (data["I_A"] < float(params.repair_capacity) - 1e-5)
+            & (data["repair_gap_scaled"].abs() <= 1e-3)
+        ).to(data["I_A"].dtype)
+        data["repair_capacity_indicator"] = (
+            (data["I_A"] >= float(params.repair_capacity) - 1e-5) & (data["repair_gap_scaled"] <= 1e-3)
         ).to(data["I_A"].dtype)
     if "R" in data and "Pi" in data:
         data["real_rate_ex_post_proxy"] = data["R"] / torch.clamp(data["Pi"], min=1e-12)
@@ -380,7 +386,6 @@ def evaluate_rule_path(
     data.update({k: v for k, v in out_n.items() if k not in data})
     data.update({k: v for k, v in drv.items() if k not in data})
     if "I_A_effective" in data:
-        data["I_A_raw"] = out["I_A"]
         data["I_A"] = data["I_A_effective"]
     data["Y_n"] = out_n["Y_n"]
     data["R_n_real"] = out_n["R_n_real"]
@@ -417,7 +422,6 @@ def evaluate_optimal_path(
     data.update({k: v for k, v in out_n.items() if k not in data})
     data.update({k: v for k, v in drv.items() if k not in data})
     if "I_A_effective" in data:
-        data["I_A_raw"] = out["I_A"]
         data["I_A"] = data["I_A_effective"]
     data["Y_n"] = out_n["Y_n"]
     data["R_n_real"] = out_n["R_n_real"]

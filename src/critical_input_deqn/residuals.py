@@ -14,7 +14,6 @@ from .economics import (
     derive_natural,
     derive_rule,
     external_conditions,
-    fischer_burmeister,
     adaptation_enabled,
     marginal_cost,
     mc_derivative_A,
@@ -58,7 +57,7 @@ def natural_residuals(
     st = unpack_natural_state(z_n)
     out = decode_natural_outputs(raw_n, NATURAL_OUTPUT_NAMES)
     drv = derive_natural(st, out, params)
-    C, Y, chi, Rn = out["C_n"], out["Y_n"], out["chi_n"], out["R_n_real"]
+    C, Y, Rn = out["C_n"], out["Y_n"], out["R_n_real"]
 
     z_next = transition_natural_states(st, nodes, params, qmc_cfg)
     B, S, K = z_next.shape
@@ -72,9 +71,6 @@ def natural_residuals(
     res["n_mc"] = drv["mc"] / mc_flex - 1.0
     res["n_resource"] = (Y - C - drv["pm"] * drv["M"] - float(params.p_d) * drv["S"]) / Y
     res["n_euler"] = torch.log(torch.clamp(float(params.beta) * Rn * _mean_over_nodes(lambda_ratio), min=1e-12))
-    cap_slack = (drv["mbar"] - drv["M"]) / torch.clamp(drv["mbar"], min=1e-12)
-    cap_rent = chi / torch.clamp(drv["pm"], min=1e-12)
-    res["n_cap_fb"] = fischer_burmeister(cap_rent, cap_slack, fb_epsilon)
     return res, {**out, **drv}
 
 
@@ -168,20 +164,12 @@ def rule_residuals(
         - out["Y"]
         - float(params.theta) * _mean_over_nodes(Mdisc * Pi_next.pow(float(params.epsilon) - 1.0) * F_p_next)
     ) / out["F_p"]
-    cap_slack = (drv["mbar"] - drv["M"]) / torch.clamp(drv["mbar"], min=1e-12)
-    cap_rent = out["chi"] / torch.clamp(drv["pm"], min=1e-12)
-    res["cap_fb"] = fischer_burmeister(cap_rent, cap_slack, fb_epsilon)
     if adaptation_enabled(params):
-        repair_gap = drv["Omega_A"] * float(params.p_a) * psi_prime(out["I_A"], params) - out["Q_A"]
-        repair_quantity = out["I_A"] / (1.0 + out["I_A"])
-        repair_value = repair_gap / torch.clamp(drv["Omega_A"] * float(params.p_a), min=1e-12)
-        res["repair_fb"] = fischer_burmeister(repair_quantity, repair_value, fb_epsilon)
         res["Q"] = (
             out["Q_A"]
             - _mean_over_nodes(Mdisc * (benefit_A_next + (1.0 - float(params.delta_A)) * Q_next))
         ) / (1.0 + out["Q_A"])
     else:
-        res["repair_fb"] = out["I_A"]
         res["Q"] = out["Q_A"]
 
     return res, {**out, **drv, "Y_n": Y_n, "R_n_real": R_n}

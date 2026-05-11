@@ -347,17 +347,24 @@ def exact_condition_diagnostics(data: Dict[str, torch.Tensor], params: BaselineP
             I = data.get("I_A_effective", data["I_A"])
             repair_gap = data["Omega_A"] * data["p_a"] * psi_prime(I, params) - data["Q_A"]
             repair_gap_scaled = repair_gap / torch.clamp(data["Omega_A"] * data["p_a"], min=1e-12)
-            repair_quantity_scaled = I / (1.0 + I)
             repair_activation = data["Q_A"] / torch.clamp(
                 data["Omega_A"] * data["p_a"] * float(params.psi_A), min=1e-12
             )
+            eta = 1.0 / torch.clamp(data["Omega_A"] * data["p_a"] * float(params.phi_A), min=1e-12)
+            projected = torch.clamp(I - eta * repair_gap, min=0.0, max=float(params.repair_capacity))
+            repair_proj = I - projected
+            lower = (I <= 1e-6).to(I.dtype)
+            upper = (I >= float(params.repair_capacity) - 1e-6).to(I.dtype)
+            interior = 1.0 - torch.clamp(lower + upper, max=1.0)
             _add_tensor_diagnostics(diag, "exact_repair_gap", repair_gap)
             _add_tensor_diagnostics(diag, "exact_repair_gap_scaled", repair_gap_scaled)
             _add_tensor_diagnostics(diag, "exact_repair_activation_ratio", repair_activation)
-            _add_tensor_diagnostics(diag, "exact_repair_product", I * repair_gap)
-            _add_tensor_diagnostics(diag, "exact_repair_product_scaled", repair_quantity_scaled * repair_gap_scaled)
+            _add_tensor_diagnostics(diag, "exact_repair_projection", repair_proj)
+            _add_tensor_diagnostics(diag, "exact_repair_lower_violation", lower * torch.relu(-repair_gap_scaled))
+            _add_tensor_diagnostics(diag, "exact_repair_interior_violation", interior * repair_gap_scaled.abs())
+            _add_tensor_diagnostics(diag, "exact_repair_upper_violation", upper * torch.relu(repair_gap_scaled))
             _add_tensor_diagnostics(diag, "exact_repair_I_negative", torch.relu(-I))
-            _add_tensor_diagnostics(diag, "exact_repair_gap_negative", torch.relu(-repair_gap))
+            _add_tensor_diagnostics(diag, "exact_repair_capacity_excess", torch.relu(I - float(params.repair_capacity)))
     return diag
 
 

@@ -44,7 +44,10 @@ def unpack_natural_state(z: torch.Tensor) -> State:
 
 
 def omega_import(A: torch.Tensor, p: BaselineParams) -> torch.Tensor:
-    return float(p.omega0) * torch.exp(-float(p.kappa_a) * A)
+    omega0 = float(p.omega0)
+    floor_fraction = min(max(float(p.omega_min_fraction), 0.0), 0.999999)
+    omega_min = omega0 * floor_fraction
+    return omega_min + (omega0 - omega_min) * torch.exp(-float(p.kappa_a) * A)
 
 
 def external_conditions(st: State, p: BaselineParams) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -94,7 +97,10 @@ def implied_labor(
 def p_x_derivative_A(A: torch.Tensor, p_m_eff: torch.Tensor, p_d: torch.Tensor, p: BaselineParams) -> torch.Tensor:
     rho = float(p.rho)
     omega = omega_import(A, p)
-    omega_A = -float(p.kappa_a) * omega
+    omega0 = float(p.omega0)
+    floor_fraction = min(max(float(p.omega_min_fraction), 0.0), 0.999999)
+    omega_min = omega0 * floor_fraction
+    omega_A = -float(p.kappa_a) * (omega - omega_min)
     F = omega.pow(rho) * p_m_eff.pow(1.0 - rho) + (1.0 - omega).pow(rho) * p_d.pow(1.0 - rho)
     F_A = rho * omega_A * (
         omega.pow(rho - 1.0) * p_m_eff.pow(1.0 - rho)
@@ -108,6 +114,30 @@ def mc_derivative_A(mc: torch.Tensor, p_x: torch.Tensor, p_x_A: torch.Tensor, p:
     return mc * float(p.alpha) * p_x_A / p_x
 
 
+def desired_import_given_rent(
+    st: State,
+    C: torch.Tensor,
+    Y: torch.Tensor,
+    Delta: torch.Tensor,
+    pm: torch.Tensor,
+    p_d: torch.Tensor,
+    chi: torch.Tensor,
+    p: BaselineParams,
+) -> torch.Tensor:
+    """Desired imported-input demand at a candidate scarcity rent."""
+
+    Z = torch.exp(st.log_Z)
+    p_m_eff = pm + chi
+    p_x0 = unit_intermediate_price(st.A, p_m_eff, p_d, p)
+    N0 = implied_labor(C, Y, p_x0, Z, Delta, p)
+    Lambda = C.pow(-float(p.sigma))
+    w0 = N0.pow(float(p.varphi)) / Lambda
+    mc0 = marginal_cost(w0, p_x0, Z, p)
+    X0 = float(p.alpha) * mc0 * Delta * Y / p_x0
+    omega = omega_import(st.A, p)
+    return X0 * omega.pow(float(p.rho)) * (p_x0 / p_m_eff).pow(float(p.rho))
+
+
 def desired_import_at_zero_rent(
     st: State,
     C: torch.Tensor,
@@ -119,15 +149,102 @@ def desired_import_at_zero_rent(
 ) -> torch.Tensor:
     """Desired imported-input demand at chi=0, holding aggregate C,Y,Delta fixed."""
 
+    return desired_import_given_rent(st, C, Y, Delta, pm, p_d, torch.zeros_like(C), p)
+
+
+def _select_state(st: State, mask: torch.Tensor) -> State:
+    return State(
+        D=st.D[mask],
+        X=st.X[mask],
+        ell_D=st.ell_D[mask],
+        ell_X=st.ell_X[mask],
+        log_Z=st.log_Z[mask],
+        A=st.A[mask],
+        log_Delta_prev=None if st.log_Delta_prev is None else st.log_Delta_prev[mask],
+    )
+
+
+def solve_import_rent(
+    st: State,
+    C: torch.Tensor,
+    Y: torch.Tensor,
+    Delta: torch.Tensor,
+    pm: torch.Tensor,
+    mbar: torch.Tensor,
+    p_d: torch.Tensor,
+    p: BaselineParams,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Solve the one-dimensional imported-input MCP for the scarcity rent.
+
+    If zero-rent desired demand is below the cap, the rent is exactly zero. If
+    desired demand exceeds the cap, bisection finds the rent that makes desired
+    demand equal available capacity.
+    """
+
+    M_zero = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
+    bind = M_zero > mbar
+    chi = torch.zeros_like(C)
+    if bool(bind.detach().any().cpu()):
+        st_b = _select_state(st, bind)
+        C_b = C[bind]
+        Y_b = Y[bind]
+        Delta_b = Delta[bind]
+        pm_b = pm[bind]
+        mbar_b = mbar[bind]
+        p_d_b = p_d[bind]
+
+        lo = torch.zeros_like(C_b)
+        hi = torch.clamp(pm_b, min=1.0)
+        for _ in range(24):
+            M_hi = desired_import_given_rent(st_b, C_b, Y_b, Delta_b, pm_b, p_d_b, hi, p)
+            hi = torch.where(M_hi > mbar_b, 2.0 * hi + 1e-8, hi)
+        for _ in range(32):
+            mid = 0.5 * (lo + hi)
+            M_mid = desired_import_given_rent(st_b, C_b, Y_b, Delta_b, pm_b, p_d_b, mid, p)
+            tight = M_mid > mbar_b
+            lo = torch.where(tight, mid, lo)
+            hi = torch.where(tight, hi, mid)
+        chi = chi.index_put((bind,), hi)
+    return chi, M_zero
+
+
+def input_static_quantities(
+    st: State,
+    C: torch.Tensor,
+    Y: torch.Tensor,
+    Delta: torch.Tensor,
+    pm: torch.Tensor,
+    chi: torch.Tensor,
+    p_d: torch.Tensor,
+    p: BaselineParams,
+) -> Dict[str, torch.Tensor]:
+    """Static input, labor, and marginal-cost objects implied by C,Y,Delta,chi."""
+
+    p_m_eff = pm + chi
     Z = torch.exp(st.log_Z)
-    p_x0 = unit_intermediate_price(st.A, pm, p_d, p)
-    N0 = implied_labor(C, Y, p_x0, Z, Delta, p)
+    p_x = unit_intermediate_price(st.A, p_m_eff, p_d, p)
+    N = implied_labor(C, Y, p_x, Z, Delta, p)
     Lambda = C.pow(-float(p.sigma))
-    w0 = N0.pow(float(p.varphi)) / Lambda
-    mc0 = marginal_cost(w0, p_x0, Z, p)
-    X0 = float(p.alpha) * mc0 * Delta * Y / p_x0
+    w = N.pow(float(p.varphi)) / Lambda
+    mc = marginal_cost(w, p_x, Z, p)
+    X_comp = float(p.alpha) * mc * Delta * Y / p_x
     omega = omega_import(st.A, p)
-    return X0 * omega.pow(float(p.rho)) * (p_x0 / pm).pow(float(p.rho))
+    M = X_comp * omega.pow(float(p.rho)) * (p_x / p_m_eff).pow(float(p.rho))
+    S = X_comp * (1.0 - omega).pow(float(p.rho)) * (p_x / p_d).pow(float(p.rho))
+    N_d = (1.0 - float(p.alpha)) * mc * Delta * Y / w
+    return {
+        "p_m_eff": p_m_eff,
+        "Z": Z,
+        "p_x": p_x,
+        "Lambda": Lambda,
+        "w": w,
+        "mc": mc,
+        "N": N,
+        "X_comp": X_comp,
+        "M": M,
+        "S": S,
+        "N_d": N_d,
+    }
 
 
 def psi(I: torch.Tensor, p: BaselineParams) -> torch.Tensor:
@@ -142,9 +259,19 @@ def adaptation_enabled(p: BaselineParams) -> bool:
     return float(p.adaptation_enabled) > 0.5
 
 
+def bounded_repair_investment(Q_A: torch.Tensor, Omega_A: torch.Tensor, p_a: torch.Tensor, p: BaselineParams) -> torch.Tensor:
+    """Repair investment implied by the bounded private repair KKT."""
+
+    if adaptation_enabled(p):
+        marginal_cost = torch.clamp(Omega_A * p_a, min=1e-12)
+        interior = (Q_A / marginal_cost - float(p.psi_A)) / float(p.phi_A)
+        return torch.clamp(interior, min=0.0, max=float(p.repair_capacity))
+    return torch.zeros_like(Q_A)
+
+
 def effective_repair_investment(I: torch.Tensor, p: BaselineParams) -> torch.Tensor:
     if adaptation_enabled(p):
-        return I
+        return torch.clamp(I, min=0.0, max=float(p.repair_capacity))
     return torch.zeros_like(I)
 
 
@@ -166,30 +293,15 @@ def derive_rule(
     policy: str,
 ) -> Dict[str, torch.Tensor]:
     C, Y = out["C"], out["Y"]
-    Pi, chi, I = out["Pi"], out["chi"], effective_repair_investment(out["I_A"], p)
+    Pi = out["Pi"]
     S_p, F_p = out["S_p"], out["F_p"]
     pm, mbar = external_conditions(st, p)
-    p_m_eff = pm + chi
     p_d = torch.full_like(C, float(p.p_d))
     p_a = torch.full_like(C, float(p.p_a))
-    Z = torch.exp(st.log_Z)
     Delta_prev = torch.exp(st.log_Delta_prev)
 
-    p_x = unit_intermediate_price(st.A, p_m_eff, p_d, p)
     p_star = (float(p.epsilon) / (float(p.epsilon) - 1.0)) * S_p / F_p
     Delta = (1.0 - float(p.theta)) * p_star.pow(-float(p.epsilon)) + float(p.theta) * Pi.pow(float(p.epsilon)) * Delta_prev
-    N = implied_labor(C, Y, p_x, Z, Delta, p)
-    Lambda = C.pow(-float(p.sigma))
-    w = N.pow(float(p.varphi)) / Lambda
-    mc = marginal_cost(w, p_x, Z, p)
-
-    X_comp = float(p.alpha) * mc * Delta * Y / p_x
-    omega = omega_import(st.A, p)
-    M = X_comp * omega.pow(float(p.rho)) * (p_x / p_m_eff).pow(float(p.rho))
-    S = X_comp * (1.0 - omega).pow(float(p.rho)) * (p_x / p_d).pow(float(p.rho))
-    N_d = (1.0 - float(p.alpha)) * mc * Delta * Y / w
-    A_next = (1.0 - float(p.delta_A)) * st.A + I
-    M_zero_rent = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
 
     if policy.lower() == "fixed":
         intercept = torch.full_like(C, float(p.bar_R))
@@ -200,31 +312,38 @@ def derive_rule(
     else:
         raise ValueError("policy must be 'fixed' or 'ba'.")
     R = intercept * (Pi / float(p.bar_pi)).pow(float(p.phi_pi)) * (Y / Y_n).pow(float(p.phi_y))
+    Omega_A = omega_A_cost(R, p)
+    I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
+    A_next = (1.0 - float(p.delta_A)) * st.A + I
+    chi, M_zero_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
+    static = input_static_quantities(st, C, Y, Delta, pm, chi, p_d, p)
 
     return {
         "pm": pm,
         "mbar": mbar,
-        "p_m_eff": p_m_eff,
+        "chi": chi,
+        "p_m_eff": static["p_m_eff"],
         "p_d": p_d,
         "p_a": p_a,
-        "Z": Z,
+        "Z": static["Z"],
         "Delta_prev": Delta_prev,
-        "p_x": p_x,
-        "Lambda": Lambda,
-        "w": w,
-        "mc": mc,
-        "N": N,
+        "p_x": static["p_x"],
+        "Lambda": static["Lambda"],
+        "w": static["w"],
+        "mc": static["mc"],
+        "N": static["N"],
         "p_star": p_star,
         "Delta": Delta,
-        "X_comp": X_comp,
-        "M": M,
+        "X_comp": static["X_comp"],
+        "M": static["M"],
         "M_zero_rent": M_zero_rent,
-        "S": S,
-        "N_d": N_d,
+        "S": static["S"],
+        "N_d": static["N_d"],
+        "I_A": I,
         "I_A_effective": I,
         "A_next": A_next,
         "R": R,
-        "Omega_A": omega_A_cost(R, p),
+        "Omega_A": Omega_A,
     }
 
 
@@ -236,90 +355,73 @@ def derive_free(
     """Derived objects when the gross policy rate is an implementability variable."""
 
     C, Y = out["C"], out["Y"]
-    R, Pi, chi, I = out["R"], out["Pi"], out["chi"], effective_repair_investment(out["I_A"], p)
+    R, Pi = out["R"], out["Pi"]
     S_p, F_p = out["S_p"], out["F_p"]
     pm, mbar = external_conditions(st, p)
-    p_m_eff = pm + chi
     p_d = torch.full_like(C, float(p.p_d))
     p_a = torch.full_like(C, float(p.p_a))
-    Z = torch.exp(st.log_Z)
     Delta_prev = torch.exp(st.log_Delta_prev)
 
-    p_x = unit_intermediate_price(st.A, p_m_eff, p_d, p)
     p_star = (float(p.epsilon) / (float(p.epsilon) - 1.0)) * S_p / F_p
     Delta = (1.0 - float(p.theta)) * p_star.pow(-float(p.epsilon)) + float(p.theta) * Pi.pow(float(p.epsilon)) * Delta_prev
-    N = implied_labor(C, Y, p_x, Z, Delta, p)
-    Lambda = C.pow(-float(p.sigma))
-    w = N.pow(float(p.varphi)) / Lambda
-    mc = marginal_cost(w, p_x, Z, p)
-
-    X_comp = float(p.alpha) * mc * Delta * Y / p_x
-    omega = omega_import(st.A, p)
-    M = X_comp * omega.pow(float(p.rho)) * (p_x / p_m_eff).pow(float(p.rho))
-    S = X_comp * (1.0 - omega).pow(float(p.rho)) * (p_x / p_d).pow(float(p.rho))
-    N_d = (1.0 - float(p.alpha)) * mc * Delta * Y / w
+    Omega_A = omega_A_cost(R, p)
+    I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
     A_next = (1.0 - float(p.delta_A)) * st.A + I
-    M_zero_rent = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
+    chi, M_zero_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
+    static = input_static_quantities(st, C, Y, Delta, pm, chi, p_d, p)
 
     return {
         "pm": pm,
         "mbar": mbar,
-        "p_m_eff": p_m_eff,
+        "chi": chi,
+        "p_m_eff": static["p_m_eff"],
         "p_d": p_d,
         "p_a": p_a,
-        "Z": Z,
+        "Z": static["Z"],
         "Delta_prev": Delta_prev,
-        "p_x": p_x,
-        "Lambda": Lambda,
-        "w": w,
-        "mc": mc,
-        "N": N,
+        "p_x": static["p_x"],
+        "Lambda": static["Lambda"],
+        "w": static["w"],
+        "mc": static["mc"],
+        "N": static["N"],
         "p_star": p_star,
         "Delta": Delta,
-        "X_comp": X_comp,
-        "M": M,
+        "X_comp": static["X_comp"],
+        "M": static["M"],
         "M_zero_rent": M_zero_rent,
-        "S": S,
-        "N_d": N_d,
+        "S": static["S"],
+        "N_d": static["N_d"],
+        "I_A": I,
         "I_A_effective": I,
         "A_next": A_next,
         "R": R,
-        "Omega_A": omega_A_cost(R, p),
+        "Omega_A": Omega_A,
     }
 
 
 def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -> Dict[str, torch.Tensor]:
-    C, Y, chi = out["C_n"], out["Y_n"], out["chi_n"]
+    C, Y = out["C_n"], out["Y_n"]
     pm, mbar = external_conditions(st, p)
-    p_m_eff = pm + chi
     p_d = torch.full_like(C, float(p.p_d))
-    Z = torch.exp(st.log_Z)
-    p_x = unit_intermediate_price(st.A, p_m_eff, p_d, p)
     Delta = torch.ones_like(C)
-    N = implied_labor(C, Y, p_x, Z, Delta, p)
-    Lambda = C.pow(-float(p.sigma))
-    w = N.pow(float(p.varphi)) / Lambda
-    mc = marginal_cost(w, p_x, Z, p)
-    X_comp = float(p.alpha) * mc * Y / p_x
-    omega = omega_import(st.A, p)
-    M = X_comp * omega.pow(float(p.rho)) * (p_x / p_m_eff).pow(float(p.rho))
-    S = X_comp * (1.0 - omega).pow(float(p.rho)) * (p_x / p_d).pow(float(p.rho))
-    N_d = (1.0 - float(p.alpha)) * mc * Y / w
-    M_zero_rent = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
+    chi, M_zero_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
+    static = input_static_quantities(st, C, Y, Delta, pm, chi, p_d, p)
     return {
         "pm": pm,
         "mbar": mbar,
-        "p_m_eff": p_m_eff,
+        "chi_n": chi,
+        "chi": chi,
+        "p_m_eff": static["p_m_eff"],
         "p_d": p_d,
-        "Z": Z,
-        "p_x": p_x,
-        "Lambda": Lambda,
-        "w": w,
-        "mc": mc,
-        "N": N,
-        "X_comp": X_comp,
-        "M": M,
+        "Z": static["Z"],
+        "p_x": static["p_x"],
+        "Lambda": static["Lambda"],
+        "w": static["w"],
+        "mc": static["mc"],
+        "N": static["N"],
+        "X_comp": static["X_comp"],
+        "M": static["M"],
         "M_zero_rent": M_zero_rent,
-        "S": S,
-        "N_d": N_d,
+        "S": static["S"],
+        "N_d": static["N_d"],
     }

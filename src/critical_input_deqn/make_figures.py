@@ -328,8 +328,8 @@ def plot_complementarity_diagnostics(*, root: Path, policy: str, output: Path) -
     else:
         product = np.asarray(product, dtype=float).reshape(-1)
     repair_gap = data.get("repair_gap_scaled", data.get("repair_gap"))
-    repair_product = data.get("repair_product_scaled", data.get("repair_product"))
-    has_repair = repair_gap is not None and repair_product is not None and data.get("I_A") is not None
+    repair_projection = data.get("repair_projection_residual")
+    has_repair = repair_gap is not None and repair_projection is not None and data.get("I_A") is not None
     if has_repair:
         fig, axes = plt.subplots(2, 3, figsize=(12, 6.5))
     else:
@@ -347,8 +347,8 @@ def plot_complementarity_diagnostics(*, root: Path, policy: str, output: Path) -
         flat[3].set_title(r"$I_t^A$")
         flat[4].hist(np.asarray(repair_gap, dtype=float).reshape(-1), bins=50, alpha=0.8)
         flat[4].set_title("repair gap")
-        flat[5].hist(np.asarray(repair_product, dtype=float).reshape(-1), bins=50, alpha=0.8)
-        flat[5].set_title("repair product")
+        flat[5].hist(np.asarray(repair_projection, dtype=float).reshape(-1), bins=50, alpha=0.8)
+        flat[5].set_title("repair projection")
     for ax in flat:
         ax.grid(alpha=0.2)
     fig.suptitle(f"Complementarity diagnostics: {policy}")

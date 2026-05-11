@@ -14,7 +14,8 @@ functions and are trained by minimizing equilibrium residuals.
 - fixed Taylor and bottleneck-adjusted Taylor residual systems;
 - fixed Sobol/QMC expectation nodes;
 - marked-Poisson transition block with deterministic marks;
-- smoothed Fischer--Burmeister complementarity residuals;
+- exact one-dimensional imported-input MCP for scarcity rents;
+- bounded repair-capacity KKT map for adaptation investment;
 - mixture state sampler for normal, crisis, relief, and boundary regions.
 
 ## Not a replacement method

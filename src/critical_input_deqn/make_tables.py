@@ -207,7 +207,7 @@ def policy_moment_row(
     cap_pressure = _safe(defs, "cap_pressure_ratio")
     cap_product_scaled = _safe(defs, "cap_product_scaled")
     repair_gap_scaled = _safe(defs, "repair_gap_scaled")
-    repair_product_scaled = _safe(defs, "repair_product_scaled")
+    repair_projection = _safe(defs, "repair_projection_residual")
     repair_activation = _safe(defs, "repair_activation_ratio")
     utility_parts = _utility_parts(defs, params)
     return {
@@ -232,7 +232,7 @@ def policy_moment_row(
         "mean_cap_pressure_ratio": _mean(cap_pressure),
         "mean_cap_product_scaled": _mean(cap_product_scaled),
         "mean_repair_gap_scaled": _mean(repair_gap_scaled),
-        "mean_repair_product_scaled": _mean(repair_product_scaled),
+        "mean_repair_projection_residual": _mean(repair_projection),
         "mean_repair_activation_ratio": _mean(repair_activation),
         "mean_utility_flow": _utility_mean(defs, params),
         **utility_parts,

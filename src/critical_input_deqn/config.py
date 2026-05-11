@@ -22,6 +22,7 @@ class BaselineParams:
     target_import_cost_share: float = 0.30
     steady_state_output: float = 0.40
     omega0: float = 0.014252199413489739
+    omega_min_fraction: float = 0.20
     kappa_a: float = 1.0
 
     # Competitive supply-price normalizations
@@ -61,6 +62,7 @@ class BaselineParams:
     repair_cost_share_10pct: float = 0.05
     repair_convex_share_10pct: float = 0.25
     repair_horizon_quarters: float = 4.0
+    repair_capacity: float = 0.03
     psi_A: float = 0.18982443162059814
     phi_A: float = 3.6033314840083133
     vartheta_A: float = 0.50
@@ -156,8 +158,6 @@ RULE_OUTPUT_NAMES = (
     "C",
     "Y",
     "Pi",
-    "chi",
-    "I_A",
     "Q_A",
     "S_p",
     "F_p",
@@ -166,7 +166,6 @@ RULE_OUTPUT_NAMES = (
 NATURAL_OUTPUT_NAMES = (
     "C_n",
     "Y_n",
-    "chi_n",
     "R_n_real",
 )
 
@@ -176,8 +175,6 @@ PRIVATE_RESIDUAL_NAMES = (
     "price_index",
     "calvo_S",
     "calvo_F",
-    "cap_fb",
-    "repair_fb",
     "Q",
 )
 
@@ -186,8 +183,6 @@ OPT_CONTROL_NAMES = (
     "Y",
     "R",
     "Pi",
-    "chi",
-    "I_A",
     "Q_A",
     "S_p",
     "F_p",

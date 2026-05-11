@@ -38,7 +38,7 @@ def decode_natural_outputs(raw: torch.Tensor, names: Iterable[str]) -> Dict[str,
 
 def decode_optimal_outputs(raw: torch.Tensor, names: Iterable[str]) -> Dict[str, torch.Tensor]:
     out: Dict[str, torch.Tensor] = {}
-    positive_names = {"C", "Y", "R", "Pi", "chi", "I_A", "Q_A", "S_p", "F_p"}
+    positive_names = {"C", "Y", "R", "Pi", "Q_A", "S_p", "F_p"}
     for i, name in enumerate(names):
         x = raw[..., i]
         if name == "Pi":
