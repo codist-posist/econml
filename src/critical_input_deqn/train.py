@@ -24,8 +24,9 @@ from .qmc import make_qmc_nodes
 from .residuals import natural_residuals, rule_residuals, stack_residuals
 from .sampling import natural_from_rule_states, sample_rule_states
 from .episode import simulate_rule_episode
-from .economics import adaptation_enabled, psi_prime
+from .economics import adaptation_enabled, derive_rule, psi_prime, unpack_rule_state
 from .optimal import commitment_residuals, discretion_residuals, simulate_optimal_episode
+from .transforms import decode_natural_outputs, decode_rule_outputs
 
 
 @dataclass
@@ -43,6 +44,7 @@ class TrainLog:
     best_val_rms: float | None = None
     best_val_max_abs: float | None = None
     best_train_rms: float | None = None
+    extra_metrics: list[dict[str, float]] = field(default_factory=list)
 
 
 def make_natural_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cpu", dtype: torch.dtype = torch.float64) -> MLP:
@@ -200,6 +202,12 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     val_top = metrics.get("val_top")
     if val_top:
         message += f" top_val={val_top}"
+    q_d3 = metrics.get("scenario_Q.D_3x.event")
+    if q_d3 is not None:
+        message += f" qD3={float(q_d3):.2e}"
+    q_d1 = metrics.get("scenario_Q.D_1x.event")
+    if q_d1 is not None:
+        message += f" qD1={float(q_d1):.2e}"
     if metrics.get("new_best"):
         message += " best=*"
     print(message, flush=True)
@@ -282,6 +290,246 @@ def _restore_best_state(net: nn.Module, best_state: dict[str, torch.Tensor] | No
 def _validation_nodes(qmc_cfg: QMCConfig, *, device: str, dtype: torch.dtype, seed_offset: int) -> QMCNodes:
     cfg = replace(qmc_cfg, n_train=qmc_cfg.n_val, seed=int(qmc_cfg.seed) + int(seed_offset))
     return make_qmc_nodes(cfg.n_train, cfg=cfg, device=device, dtype=dtype)
+
+
+_RULE_SCENARIO_LABELS = ("no_event", "D_1x", "D_3x", "D_1x_X_lag", "D_3x_X_lag")
+_RULE_SCENARIO_OFFSETS = {
+    "pre_event": -1,
+    "event": 0,
+    "event_plus_1": 1,
+    "event_plus_4": 4,
+}
+
+
+def _normal_rule_state(batch_size: int, *, params: BaselineParams, device: str, dtype: torch.dtype) -> torch.Tensor:
+    D = torch.zeros(batch_size, device=device, dtype=dtype)
+    X = torch.zeros_like(D)
+    ell_D = torch.full_like(D, float(params.log_bar_lambda_D))
+    ell_X = torch.full_like(D, float(params.log_bar_lambda_X))
+    log_Z = torch.full_like(D, float(-0.5 * params.sigma_z**2))
+    A = torch.zeros_like(D)
+    log_Delta = torch.zeros_like(D)
+    return torch.stack([D, X, ell_D, ell_X, log_Z, A, log_Delta], dim=-1)
+
+
+def _rule_scenario_additions(
+    *,
+    t: int,
+    pulse: int,
+    relief_lag: int,
+    params: BaselineParams,
+    device: str | torch.device,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    specs = {
+        "no_event": {},
+        "D_1x": {pulse: (float(params.mark_D), 0.0)},
+        "D_3x": {pulse: (3.0 * float(params.mark_D), 0.0)},
+        "D_1x_X_lag": {
+            pulse: (float(params.mark_D), 0.0),
+            pulse + int(relief_lag): (0.0, float(params.mark_X)),
+        },
+        "D_3x_X_lag": {
+            pulse: (3.0 * float(params.mark_D), 0.0),
+            pulse + int(relief_lag): (0.0, float(params.mark_X)),
+        },
+    }
+    add_D = []
+    add_X = []
+    for label in _RULE_SCENARIO_LABELS:
+        d, x = specs[label].get(int(t), (0.0, 0.0))
+        add_D.append(float(d))
+        add_X.append(float(x))
+    return (
+        torch.tensor(add_D, device=device, dtype=dtype),
+        torch.tensor(add_X, device=device, dtype=dtype),
+    )
+
+
+def _deterministic_rule_step(
+    z: torch.Tensor,
+    *,
+    A_next: torch.Tensor,
+    Delta_next: torch.Tensor,
+    add_D: torch.Tensor,
+    add_X: torch.Tensor,
+    params: BaselineParams,
+) -> torch.Tensor:
+    st = unpack_rule_state(z)
+    D_next = (1.0 - float(params.delta_D)) * st.D + add_D
+    X_next = (1.0 - float(params.delta_X)) * st.X + add_X
+    ell_D_next = (
+        (1.0 - float(params.rho_lambda_D)) * float(params.log_bar_lambda_D)
+        + float(params.rho_lambda_D) * st.ell_D
+        + float(params.kappa_D_lambda) * st.D
+    )
+    ell_X_next = (
+        (1.0 - float(params.rho_lambda_X)) * float(params.log_bar_lambda_X)
+        + float(params.rho_lambda_X) * st.ell_X
+        + float(params.beta_X) * st.D
+    )
+    log_Z_next = float(params.rho_z) * st.log_Z
+    log_Delta_next = torch.log(torch.clamp(Delta_next, min=1e-12))
+    return torch.stack([D_next, X_next, ell_D_next, ell_X_next, log_Z_next, A_next, log_Delta_next], dim=-1)
+
+
+def _rule_training_scenario_states(
+    net: MLP,
+    natural_net: MLP,
+    *,
+    policy: str,
+    params: BaselineParams,
+    train_cfg: TrainConfig,
+) -> tuple[torch.Tensor, list[str]]:
+    """Deterministic no-event/crisis states used to discipline value-function learning."""
+
+    device = train_cfg.device
+    dtype = train_cfg.dtype
+    burnin = max(1, int(train_cfg.rule_scenario_burnin))
+    horizon = max(5, int(train_cfg.rule_scenario_horizon))
+    total = burnin + horizon + 1
+    z = _normal_rule_state(len(_RULE_SCENARIO_LABELS), params=params, device=device, dtype=dtype)
+    states = [z]
+    with torch.no_grad():
+        for t in range(1, total):
+            st = unpack_rule_state(z)
+            out = decode_rule_outputs(net(z), RULE_OUTPUT_NAMES)
+            out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES)
+            drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
+            add_D, add_X = _rule_scenario_additions(
+                t=t,
+                pulse=burnin,
+                relief_lag=4,
+                params=params,
+                device=z.device,
+                dtype=z.dtype,
+            )
+            z = _deterministic_rule_step(
+                z,
+                A_next=drv["A_next"],
+                Delta_next=drv["Delta"],
+                add_D=add_D,
+                add_X=add_X,
+                params=params,
+            )
+            states.append(z)
+    stacked = torch.stack(states, dim=0)
+    selected = []
+    names = []
+    for tag, offset in _RULE_SCENARIO_OFFSETS.items():
+        idx = min(max(burnin + int(offset), 0), stacked.shape[0] - 1)
+        for j, label in enumerate(_RULE_SCENARIO_LABELS):
+            selected.append(stacked[idx, j])
+            names.append(f"{label}.{tag}")
+    return torch.stack(selected, dim=0).detach(), names
+
+
+def _rule_scenario_residuals(
+    net: MLP,
+    natural_net: MLP,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], list[str]]:
+    z, names = _rule_training_scenario_states(net, natural_net, policy=policy, params=params, train_cfg=train_cfg)
+    res, drv = rule_residuals(
+        z,
+        net(z),
+        net,
+        natural_net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        fb_epsilon=fb_epsilon,
+        policy=policy,
+    )
+    return res, drv, names
+
+
+def _rule_calm_anchor_loss(
+    net: MLP,
+    natural_net: MLP,
+    *,
+    policy: str,
+    params: BaselineParams,
+    train_cfg: TrainConfig,
+) -> torch.Tensor:
+    z = _normal_rule_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
+    out = decode_rule_outputs(net(z), RULE_OUTPUT_NAMES)
+    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES)
+    drv = derive_rule(
+        unpack_rule_state(z),
+        out,
+        params,
+        Y_n=out_n["Y_n"],
+        R_n=out_n["R_n_real"],
+        policy=policy,
+    )
+    pressure = drv["M_zero_rent"] / torch.clamp(drv["mbar"], min=1e-12)
+    target_pressure = torch.full_like(pressure, 1.0 / (1.0 + float(params.normal_capacity_slack)))
+    repair_scale = max(float(params.repair_capacity), 1e-6)
+    terms = [
+        torch.log(torch.clamp(out["C"] / torch.clamp(out_n["C_n"], min=1e-12), min=1e-12)),
+        torch.log(torch.clamp(out["Y"] / torch.clamp(out_n["Y_n"], min=1e-12), min=1e-12)),
+        torch.log(torch.clamp(out["Pi"] / float(params.bar_pi), min=1e-12)),
+        pressure - target_pressure,
+        drv["chi"] / torch.clamp(drv["pm"], min=1e-12),
+        drv["I_A"] / repair_scale,
+    ]
+    return torch.stack([term.reshape(-1) for term in terms], dim=-1).pow(2).mean()
+
+
+def _rule_scenario_q_diagnostics(res: Dict[str, torch.Tensor], names: list[str]) -> Dict[str, float]:
+    if "Q" not in res:
+        return {}
+    q = res["Q"].detach().reshape(-1)
+    diag: Dict[str, float] = {
+        "scenario_Q.rms": float(torch.sqrt(q.pow(2).mean()).cpu()),
+        "scenario_Q.max_abs": float(q.abs().max().cpu()),
+    }
+    wanted = {"D_1x.event", "D_3x.event", "D_3x.event_plus_1", "D_3x.event_plus_4", "no_event.event"}
+    for i, name in enumerate(names):
+        if name in wanted and i < q.numel():
+            diag[f"scenario_Q.{name}"] = float(q[i].abs().cpu())
+    return diag
+
+
+def _rule_auxiliary_training_loss(
+    net: MLP,
+    natural_net: MLP,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> torch.Tensor:
+    pieces = []
+    q_weight = float(train_cfg.rule_scenario_q_weight)
+    if q_weight > 0.0:
+        scenario_res, _, _ = _rule_scenario_residuals(
+            net,
+            natural_net,
+            nodes,
+            policy=policy,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+            fb_epsilon=fb_epsilon,
+        )
+        q_resid = scenario_res["Q"].reshape(-1, 1)
+        pieces.append(q_weight * residual_loss(q_resid, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta))
+    calm_weight = float(train_cfg.rule_calm_anchor_weight)
+    if calm_weight > 0.0:
+        pieces.append(calm_weight * _rule_calm_anchor_loss(net, natural_net, policy=policy, params=params, train_cfg=train_cfg))
+    if not pieces:
+        return torch.zeros((), device=train_cfg.device, dtype=train_cfg.dtype)
+    return torch.stack(pieces).sum()
 
 
 def residual_diagnostics(residuals: Dict[str, torch.Tensor]) -> Dict[str, float]:
@@ -581,6 +829,16 @@ def train_rule(
         )
         mat = stack_residuals(res)
         loss = residual_loss(mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+        loss = loss + _rule_auxiliary_training_loss(
+            net,
+            natural_net,
+            nodes,
+            policy=policy,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+            fb_epsilon=train_cfg.fb_epsilon_start,
+        )
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
@@ -599,8 +857,21 @@ def train_rule(
                     policy=policy,
                 )
                 val_mat = stack_residuals(val_res).detach()
+                scenario_val_res, _, scenario_names = _rule_scenario_residuals(
+                    net,
+                    natural_net,
+                    val_nodes,
+                    policy=policy,
+                    params=params,
+                    qmc_cfg=val_qmc_cfg,
+                    train_cfg=train_cfg,
+                    fb_epsilon=train_cfg.fb_epsilon_final,
+                )
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
+            scenario_diag = _rule_scenario_q_diagnostics(scenario_val_res, scenario_names)
+            metrics.update(scenario_diag)
+            log.extra_metrics.append({"step": float(step), **scenario_diag})
             best_state = _maybe_update_best_state(net, log, metrics, step, best_state)
             _maybe_save_training_state(
                 step=step,
@@ -717,6 +988,16 @@ def train_rule_episode(
             )
             mat = stack_residuals(res)
             loss = residual_loss(mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+            loss = loss + _rule_auxiliary_training_loss(
+                net,
+                natural_net,
+                nodes,
+                policy=policy,
+                params=params,
+                qmc_cfg=qmc_cfg,
+                train_cfg=train_cfg,
+                fb_epsilon=train_cfg.fb_epsilon_start,
+            )
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
@@ -739,8 +1020,21 @@ def train_rule_episode(
                     policy=policy,
                 )
                 val_mat = stack_residuals(val_res).detach()
+                scenario_val_res, _, scenario_names = _rule_scenario_residuals(
+                    net,
+                    natural_net,
+                    val_nodes,
+                    policy=policy,
+                    params=params,
+                    qmc_cfg=val_qmc_cfg,
+                    train_cfg=train_cfg,
+                    fb_epsilon=train_cfg.fb_epsilon_final,
+                )
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
+            scenario_diag = _rule_scenario_q_diagnostics(scenario_val_res, scenario_names)
+            metrics.update(scenario_diag)
+            log.extra_metrics.append({"step": float(episode), **scenario_diag})
             best_state = _maybe_update_best_state(net, log, metrics, episode, best_state)
             _maybe_save_training_state(
                 step=episode,
@@ -983,12 +1277,23 @@ def evaluate_rule(
             policy=policy,
         )
         mat = stack_residuals(res)
+        scenario_res, _, scenario_names = _rule_scenario_residuals(
+            net,
+            natural_net,
+            nodes,
+            policy=policy,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+            fb_epsilon=train_cfg.fb_epsilon_final,
+        )
         return {
             "loss": float(mat.pow(2).mean().cpu()),
             "rms": float(torch.sqrt(mat.pow(2).mean()).cpu()),
             "max_abs": float(mat.abs().max().cpu()),
             **residual_diagnostics(res),
             **exact_condition_diagnostics(drv, params),
+            **_rule_scenario_q_diagnostics(scenario_res, scenario_names),
         }
 
 

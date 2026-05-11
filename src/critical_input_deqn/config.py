@@ -120,6 +120,10 @@ class TrainConfig:
     device: str = "cpu"
     fb_epsilon_start: float = 1e-4
     fb_epsilon_final: float = 1e-8
+    rule_scenario_q_weight: float = 25.0
+    rule_calm_anchor_weight: float = 5.0
+    rule_scenario_burnin: int = 5
+    rule_scenario_horizon: int = 10
 
 
 STOP_PROFILES = {

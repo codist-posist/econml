@@ -109,6 +109,20 @@ def main() -> None:
         default=0.50,
         help="Share of each episode-training mini-batch drawn from broad sampled states.",
     )
+    parser.add_argument(
+        "--rule-scenario-q-weight",
+        type=float,
+        default=25.0,
+        help="Extra weight on Q_A recursion residuals at deterministic no-event/crisis scenario states.",
+    )
+    parser.add_argument(
+        "--rule-calm-anchor-weight",
+        type=float,
+        default=5.0,
+        help="Extra weight on the calm steady-branch anchor for rule-policy training.",
+    )
+    parser.add_argument("--rule-scenario-burnin", type=int, default=5)
+    parser.add_argument("--rule-scenario-horizon", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--qmc-train", type=int, default=256)
     parser.add_argument("--qmc-val", type=int, default=512)
@@ -158,6 +172,10 @@ def main() -> None:
             "episode_length": args.episode_length,
             "episode_updates_per_episode": args.episode_updates_per_episode,
             "episode_broad_share": args.episode_broad_share,
+            "rule_scenario_q_weight": args.rule_scenario_q_weight,
+            "rule_calm_anchor_weight": args.rule_calm_anchor_weight,
+            "rule_scenario_burnin": args.rule_scenario_burnin,
+            "rule_scenario_horizon": args.rule_scenario_horizon,
             "lr": args.lr,
             "natural_steps": args.natural_steps,
             "rule_steps": args.rule_steps,
@@ -245,6 +263,10 @@ def main() -> None:
             checkpoint_keep=args.checkpoint_keep,
             dtype=dtype,
             device=args.device,
+            rule_scenario_q_weight=args.rule_scenario_q_weight,
+            rule_calm_anchor_weight=args.rule_calm_anchor_weight,
+            rule_scenario_burnin=args.rule_scenario_burnin,
+            rule_scenario_horizon=args.rule_scenario_horizon,
         )
         if args.rule_trainer == "episode":
             rule_net, rule_log = train_rule_episode(
