@@ -22,10 +22,9 @@ def _half_life_delta(quarters: float) -> float:
     return 1.0 - 2.0 ** (-1.0 / float(quarters))
 
 
-def _omega_from_import_share(share: float, rho: float) -> float:
-    share = min(max(float(share), 1e-8), 1.0 - 1e-8)
-    ratio = (share / (1.0 - share)) ** (1.0 / float(rho))
-    return ratio / (1.0 + ratio)
+def _direct_import_share(share: float, rho: float) -> float:
+    del rho  # rho no longer transforms the equal-price import share.
+    return min(max(float(share), 1e-8), 1.0 - 1e-8)
 
 
 def _steady_import_demand(params: BaselineParams) -> float:
@@ -52,7 +51,7 @@ def _calibrated_params(params: BaselineParams, overrides: Mapping[str, Any]) -> 
     override_keys = set(overrides)
     updates: dict[str, float] = {}
     if "omega0" not in override_keys:
-        updates["omega0"] = _omega_from_import_share(params.target_import_cost_share, params.rho)
+        updates["omega0"] = _direct_import_share(params.target_import_cost_share, params.rho)
 
     a10 = -math.log(0.90)
     psi_A = float(params.psi_A)

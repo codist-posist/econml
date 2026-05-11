@@ -44,18 +44,16 @@ def unpack_natural_state(z: torch.Tensor) -> State:
 
 
 def omega_import(A: torch.Tensor, p: BaselineParams) -> torch.Tensor:
-    omega0 = float(p.omega0)
-    omega_min = min(
-        _omega_from_import_share(float(p.target_min_import_cost_share), float(p.rho)),
-        omega0 * (1.0 - 1e-10),
-    )
+    """Direct equal-price imported-input share, decreasing with adaptation.
+
+    The legacy name is kept because this object is used throughout the model,
+    but under the normalized CES specification it is the share mu(A), not the
+    transformed CES weight used in earlier drafts.
+    """
+
+    omega0 = min(max(float(p.omega0), 1e-8), 1.0 - 1e-8)
+    omega_min = min(max(float(p.target_min_import_cost_share), 1e-8), omega0 * (1.0 - 1e-10))
     return omega_min + (omega0 - omega_min) * torch.exp(-float(p.kappa_a) * A)
-
-
-def _omega_from_import_share(share: float, rho: float) -> float:
-    share = min(max(float(share), 1e-8), 1.0 - 1e-8)
-    ratio = (share / (1.0 - share)) ** (1.0 / float(rho))
-    return ratio / (1.0 + ratio)
 
 
 def external_conditions(st: State, p: BaselineParams) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -66,8 +64,8 @@ def external_conditions(st: State, p: BaselineParams) -> Tuple[torch.Tensor, tor
 
 def unit_intermediate_price(A: torch.Tensor, p_m_eff: torch.Tensor, p_d: torch.Tensor, p: BaselineParams) -> torch.Tensor:
     rho = float(p.rho)
-    omega = omega_import(A, p)
-    term = omega.pow(rho) * p_m_eff.pow(1.0 - rho) + (1.0 - omega).pow(rho) * p_d.pow(1.0 - rho)
+    mu = omega_import(A, p)
+    term = mu * p_m_eff.pow(1.0 - rho) + (1.0 - mu) * p_d.pow(1.0 - rho)
     return term.pow(1.0 / (1.0 - rho))
 
 
@@ -104,20 +102,14 @@ def implied_labor(
 
 def p_x_derivative_A(A: torch.Tensor, p_m_eff: torch.Tensor, p_d: torch.Tensor, p: BaselineParams) -> torch.Tensor:
     rho = float(p.rho)
-    omega = omega_import(A, p)
-    omega0 = float(p.omega0)
-    omega_min = min(
-        _omega_from_import_share(float(p.target_min_import_cost_share), rho),
-        omega0 * (1.0 - 1e-10),
-    )
-    omega_A = -float(p.kappa_a) * (omega - omega_min)
-    F = omega.pow(rho) * p_m_eff.pow(1.0 - rho) + (1.0 - omega).pow(rho) * p_d.pow(1.0 - rho)
-    F_A = rho * omega_A * (
-        omega.pow(rho - 1.0) * p_m_eff.pow(1.0 - rho)
-        - (1.0 - omega).pow(rho - 1.0) * p_d.pow(1.0 - rho)
-    )
-    p_x = F.pow(1.0 / (1.0 - rho))
-    return p_x * F_A / ((1.0 - rho) * F)
+    mu = omega_import(A, p)
+    omega0 = min(max(float(p.omega0), 1e-8), 1.0 - 1e-8)
+    omega_min = min(max(float(p.target_min_import_cost_share), 1e-8), omega0 * (1.0 - 1e-10))
+    mu_A = -float(p.kappa_a) * (mu - omega_min)
+    H = mu * p_m_eff.pow(1.0 - rho) + (1.0 - mu) * p_d.pow(1.0 - rho)
+    H_A = mu_A * (p_m_eff.pow(1.0 - rho) - p_d.pow(1.0 - rho))
+    p_x = H.pow(1.0 / (1.0 - rho))
+    return p_x * H_A / ((1.0 - rho) * H)
 
 
 def mc_derivative_A(mc: torch.Tensor, p_x: torch.Tensor, p_x_A: torch.Tensor, p: BaselineParams) -> torch.Tensor:
@@ -144,8 +136,8 @@ def desired_import_given_rent(
     w0 = N0.pow(float(p.varphi)) / Lambda
     mc0 = marginal_cost(w0, p_x0, Z, p)
     X0 = float(p.alpha) * mc0 * Delta * Y / p_x0
-    omega = omega_import(st.A, p)
-    return X0 * omega.pow(float(p.rho)) * (p_x0 / p_m_eff).pow(float(p.rho))
+    mu = omega_import(st.A, p)
+    return X0 * mu * (p_x0 / p_m_eff).pow(float(p.rho))
 
 
 def desired_import_at_zero_rent(
@@ -241,9 +233,9 @@ def input_static_quantities(
     w = N.pow(float(p.varphi)) / Lambda
     mc = marginal_cost(w, p_x, Z, p)
     X_comp = float(p.alpha) * mc * Delta * Y / p_x
-    omega = omega_import(st.A, p)
-    M = X_comp * omega.pow(float(p.rho)) * (p_x / p_m_eff).pow(float(p.rho))
-    S = X_comp * (1.0 - omega).pow(float(p.rho)) * (p_x / p_d).pow(float(p.rho))
+    mu = omega_import(st.A, p)
+    M = X_comp * mu * (p_x / p_m_eff).pow(float(p.rho))
+    S = X_comp * (1.0 - mu) * (p_x / p_d).pow(float(p.rho))
     N_d = (1.0 - float(p.alpha)) * mc * Delta * Y / w
     return {
         "p_m_eff": p_m_eff,

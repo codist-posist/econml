@@ -168,7 +168,7 @@ def rule_residuals(
         res["Q"] = (
             out["Q_A"]
             - _mean_over_nodes(Mdisc * (benefit_A_next + (1.0 - float(params.delta_A)) * Q_next))
-        ) / (1.0 + out["Q_A"])
+        ) / (1.0 + out["Q_A"].abs())
     else:
         res["Q"] = out["Q_A"]
 

@@ -7,12 +7,22 @@ from .networks import MLP
 from .qmc import make_qmc_nodes
 from .residuals import natural_residuals, rule_residuals, stack_residuals
 from .sampling import natural_from_rule_states, sample_rule_states
+from .economics import p_x_derivative_A, unit_intermediate_price
 
 
 def run_smoke(device: str = "cpu", dtype: torch.dtype = torch.float64) -> None:
     params = BaselineParams()
     qmc_cfg = QMCConfig(n_train=16, seed=7)
     net_cfg = NetworkConfig(hidden_width=32, hidden_depth=2)
+
+    A_grid = torch.linspace(0.0, 2.0, 8, device=device, dtype=dtype)
+    ones = torch.ones_like(A_grid)
+    px_equal = unit_intermediate_price(A_grid, ones, ones, params)
+    px_A_equal = p_x_derivative_A(A_grid, ones, ones, params)
+    if not torch.allclose(px_equal, ones, atol=1e-10, rtol=1e-10):
+        raise RuntimeError("Normalized CES price is not flat at equal prices.")
+    if not torch.allclose(px_A_equal, torch.zeros_like(px_A_equal), atol=1e-10, rtol=1e-10):
+        raise RuntimeError("Adaptation changes CES price at equal prices.")
 
     natural_net = MLP(6, len(NATURAL_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
     rule_net = MLP(7, len(RULE_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
@@ -54,4 +64,3 @@ def run_smoke(device: str = "cpu", dtype: torch.dtype = torch.float64) -> None:
 
 if __name__ == "__main__":
     run_smoke()
-
