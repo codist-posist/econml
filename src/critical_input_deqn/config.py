@@ -21,7 +21,7 @@ class BaselineParams:
     rho: float = 0.20
     target_import_cost_share: float = 0.30
     target_min_import_cost_share: float = 0.10
-    steady_state_output: float = 0.40
+    steady_state_output: float = 0.6223362929574802
     omega0: float = 0.30
     kappa_a: float = 1.0
 
@@ -32,7 +32,7 @@ class BaselineParams:
 
     # Imported-input availability and external mapping
     normal_capacity_slack: float = 0.10
-    bar_m: float = 0.05657142857142858
+    bar_m: float = 0.08801613286112933
     nu_pD: float = 0.15
     nu_pX: float = 0.05
     nu_qD: float = 1.00
@@ -63,8 +63,8 @@ class BaselineParams:
     repair_convex_share_10pct: float = 0.25
     repair_horizon_quarters: float = 4.0
     repair_capacity: float = 0.03
-    psi_A: float = 0.18982443162059814
-    phi_A: float = 3.6033314840083133
+    psi_A: float = 0.29533658271880925
+    phi_A: float = 5.606209895136772
     vartheta_A: float = 0.50
 
     # Policy rule

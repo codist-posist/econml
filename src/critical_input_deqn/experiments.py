@@ -27,22 +27,53 @@ def _direct_import_share(share: float, rho: float) -> float:
     return min(max(float(share), 1e-8), 1.0 - 1e-8)
 
 
+def _calm_no_repair_steady_state(params: BaselineParams) -> dict[str, float]:
+    """Deterministic calm branch used to calibrate capacity and repair costs.
+
+    The helper solves the no-shock, no-repair, flexible-price branch implied by
+    the static model equations.  This avoids calibrating normal input capacity
+    and repair costs from a stale output target after changing the CES block.
+    """
+
+    alpha = float(params.alpha)
+    sigma = float(params.sigma)
+    varphi = float(params.varphi)
+    rho = float(params.rho)
+    mu0 = _direct_import_share(float(params.omega0), rho)
+    p_m = float(params.bar_p_m)
+    p_d = float(params.p_d)
+    Z = math.exp(-0.5 * float(params.sigma_z) ** 2)
+    desired_mc = (float(params.epsilon) - 1.0) / float(params.epsilon)
+
+    p_x = (mu0 * p_m ** (1.0 - rho) + (1.0 - mu0) * p_d ** (1.0 - rho)) ** (1.0 / (1.0 - rho))
+    consumption_share = 1.0 - alpha * desired_mc
+    if consumption_share <= 0.0:
+        raise ValueError("Calm steady-state resource share is non-positive; check alpha and epsilon.")
+
+    labor_base = (((1.0 - alpha) * p_x) / alpha) ** alpha
+    n_const = (labor_base / Z * consumption_share ** (-alpha * sigma)) ** (1.0 / (1.0 + alpha * varphi))
+    w_const = n_const**varphi * consumption_share**sigma
+    mc_const = (1.0 / Z) * (w_const / (1.0 - alpha)) ** (1.0 - alpha) * (p_x / alpha) ** alpha
+    y_power = (1.0 - alpha) * (varphi * (1.0 - alpha * sigma) / (1.0 + alpha * varphi) + sigma)
+    if abs(y_power) < 1e-12:
+        raise ValueError("Calm steady-state output is unidentified under this calibration.")
+
+    Y = (desired_mc / mc_const) ** (1.0 / y_power)
+    C = consumption_share * Y
+    X_comp = alpha * desired_mc * Y / p_x
+    M_zero = X_comp * mu0 * (p_x / p_m) ** rho
+    return {"C": C, "Y": Y, "p_x": p_x, "mc": desired_mc, "X_comp": X_comp, "M_zero": M_zero}
+
+
 def _steady_import_demand(params: BaselineParams) -> float:
     """No-shock desired import use used to discipline normal capacity.
 
-    The target share is the imported-input cost share within the composite
-    intermediate bundle at equal input prices.  Steady intermediate spending is
-    alpha times desired real marginal cost times the target output scale.
+    The target is evaluated at the solved calm branch, not at a fixed output
+    placeholder.  This keeps normal capacity aligned with the actual model
+    normalization after changes to production or preferences.
     """
 
-    desired_mc = (float(params.epsilon) - 1.0) / float(params.epsilon)
-    return (
-        float(params.target_import_cost_share)
-        * float(params.alpha)
-        * desired_mc
-        * float(params.steady_state_output)
-        / float(params.bar_p_m)
-    )
+    return _calm_no_repair_steady_state(params)["M_zero"]
 
 
 def _calibrated_params(params: BaselineParams, overrides: Mapping[str, Any]) -> BaselineParams:
@@ -53,10 +84,14 @@ def _calibrated_params(params: BaselineParams, overrides: Mapping[str, Any]) -> 
     if "omega0" not in override_keys:
         updates["omega0"] = _direct_import_share(params.target_import_cost_share, params.rho)
 
+    params_for_steady = replace(params, **updates) if updates else params
+    calm = _calm_no_repair_steady_state(params_for_steady)
+    updates["steady_state_output"] = calm["Y"]
+
     a10 = -math.log(0.90)
     psi_A = float(params.psi_A)
     if "psi_A" not in override_keys:
-        psi_A = float(params.repair_cost_share_10pct) * float(params.steady_state_output) / a10
+        psi_A = float(params.repair_cost_share_10pct) * float(calm["Y"]) / a10
         updates["psi_A"] = psi_A
     if "phi_A" not in override_keys:
         updates["phi_A"] = (
@@ -67,9 +102,7 @@ def _calibrated_params(params: BaselineParams, overrides: Mapping[str, Any]) -> 
             / a10
         )
     if "bar_m" not in override_keys:
-        updates["bar_m"] = (1.0 + float(params.normal_capacity_slack)) * _steady_import_demand(
-            replace(params, **updates) if updates else params
-        )
+        updates["bar_m"] = (1.0 + float(params.normal_capacity_slack)) * float(calm["M_zero"])
     return replace(params, **updates) if updates else params
 
 
