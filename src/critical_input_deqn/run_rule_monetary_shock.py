@@ -44,6 +44,7 @@ def _selection_metadata(log) -> dict[str, object]:
         "best_train_rms": log.best_train_rms,
         "best_scenario_q_rms": log.best_scenario_q_rms,
         "best_calm_anchor_rms": log.best_calm_anchor_rms,
+        "best_calm_residual_rms": log.best_calm_residual_rms,
     }
 
 
@@ -111,11 +112,13 @@ def main() -> None:
     parser.add_argument("--episode-broad-share", type=float, default=0.50)
     parser.add_argument("--rule-scenario-q-weight", type=float, default=25.0)
     parser.add_argument("--rule-calm-anchor-weight", type=float, default=5.0)
+    parser.add_argument("--rule-calm-residual-weight", type=float, default=5.0)
     parser.add_argument("--rule-scenario-burnin", type=int, default=5)
     parser.add_argument("--rule-scenario-horizon", type=int, default=10)
     parser.add_argument("--rule-scenario-loss-interval", type=int, default=25)
     parser.add_argument("--best-scenario-q-weight", type=float, default=1.0)
     parser.add_argument("--best-calm-anchor-weight", type=float, default=1.0)
+    parser.add_argument("--best-calm-residual-weight", type=float, default=1.0)
     parser.add_argument("--target-scenario-q-rms", type=float, default=1e-2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--qmc-train", type=int, default=256)
@@ -181,11 +184,13 @@ def main() -> None:
             "no_checkpoints": args.no_checkpoints,
             "rule_scenario_q_weight": args.rule_scenario_q_weight,
             "rule_calm_anchor_weight": args.rule_calm_anchor_weight,
+            "rule_calm_residual_weight": args.rule_calm_residual_weight,
             "rule_scenario_burnin": args.rule_scenario_burnin,
             "rule_scenario_horizon": args.rule_scenario_horizon,
             "rule_scenario_loss_interval": args.rule_scenario_loss_interval,
             "best_scenario_q_weight": args.best_scenario_q_weight,
             "best_calm_anchor_weight": args.best_calm_anchor_weight,
+            "best_calm_residual_weight": args.best_calm_residual_weight,
             "target_scenario_q_rms": args.target_scenario_q_rms,
             "dtype": args.dtype,
             "device": args.device,
@@ -229,11 +234,13 @@ def main() -> None:
             checkpoint_keep=args.checkpoint_keep,
             rule_scenario_q_weight=args.rule_scenario_q_weight,
             rule_calm_anchor_weight=args.rule_calm_anchor_weight,
+            rule_calm_residual_weight=args.rule_calm_residual_weight,
             rule_scenario_burnin=args.rule_scenario_burnin,
             rule_scenario_horizon=args.rule_scenario_horizon,
             rule_scenario_loss_interval=args.rule_scenario_loss_interval,
             best_scenario_q_weight=args.best_scenario_q_weight,
             best_calm_anchor_weight=args.best_calm_anchor_weight,
+            best_calm_residual_weight=args.best_calm_residual_weight,
             target_scenario_q_rms=args.target_scenario_q_rms,
             dtype=dtype,
             device=args.device,

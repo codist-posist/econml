@@ -48,6 +48,7 @@ from .train import (
     _pricing_sum_targets,
     _progress_range,
     _report_progress,
+    _residual_matrix_diagnostics,
     _restore_best_state,
     _rule_scenario_additions,
     _scenario_q_diagnostics,
@@ -539,8 +540,28 @@ def train_rule_shock_episode(
                 train_cfg=train_cfg,
             )
             metrics.update(calm_diag)
-            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag})
-            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state, train_cfg)
+            calm_resid_diag = _rule_shock_calm_residual_diagnostics(
+                net,
+                natural_net,
+                val_nodes,
+                policy=policy,
+                params=params,
+                shock_cfg=shock_cfg,
+                qmc_cfg=val_qmc_cfg,
+                train_cfg=train_cfg,
+                fb_epsilon=train_cfg.fb_epsilon_final,
+            )
+            metrics.update(calm_resid_diag)
+            best_state = _maybe_update_best_state(
+                net,
+                log,
+                metrics,
+                episode,
+                best_state,
+                train_cfg,
+                extra={"kind": "rule_monetary_shock", "policy": policy.lower(), "current_state": current_state},
+            )
+            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag, **calm_resid_diag, "selection_score": float(metrics.get("selection_score", float("nan")))})
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -859,6 +880,85 @@ def _rule_shock_calm_anchor_diagnostics(
     )
 
 
+def _rule_shock_calm_residuals(
+    rule_net,
+    natural_net,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    shock_cfg: MonetaryShockConfig,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    z = _normal_initial_rule_shock_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
+    return rule_shock_residuals(
+        z,
+        rule_net(z),
+        rule_net,
+        natural_net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        shock_cfg=shock_cfg,
+        fb_epsilon=fb_epsilon,
+        policy=policy,
+    )
+
+
+def _rule_shock_calm_residual_loss(
+    rule_net,
+    natural_net,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    shock_cfg: MonetaryShockConfig,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> torch.Tensor:
+    res, _ = _rule_shock_calm_residuals(
+        rule_net,
+        natural_net,
+        nodes,
+        policy=policy,
+        params=params,
+        shock_cfg=shock_cfg,
+        qmc_cfg=qmc_cfg,
+        train_cfg=train_cfg,
+        fb_epsilon=fb_epsilon,
+    )
+    return residual_loss(stack_residuals(res), loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+
+
+def _rule_shock_calm_residual_diagnostics(
+    rule_net,
+    natural_net,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    shock_cfg: MonetaryShockConfig,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> Dict[str, float]:
+    res, _ = _rule_shock_calm_residuals(
+        rule_net,
+        natural_net,
+        nodes,
+        policy=policy,
+        params=params,
+        shock_cfg=shock_cfg,
+        qmc_cfg=qmc_cfg,
+        train_cfg=train_cfg,
+        fb_epsilon=fb_epsilon,
+    )
+    return _residual_matrix_diagnostics("calm_residual", stack_residuals(res))
+
+
 def _rule_shock_auxiliary_training_loss(
     rule_net,
     natural_net,
@@ -898,6 +998,22 @@ def _rule_shock_auxiliary_training_loss(
                 params=params,
                 shock_cfg=shock_cfg,
                 train_cfg=train_cfg,
+            )
+        )
+    calm_resid_weight = float(train_cfg.rule_calm_residual_weight)
+    if calm_resid_weight > 0.0:
+        pieces.append(
+            calm_resid_weight
+            * _rule_shock_calm_residual_loss(
+                rule_net,
+                natural_net,
+                nodes,
+                policy=policy,
+                params=params,
+                shock_cfg=shock_cfg,
+                qmc_cfg=qmc_cfg,
+                train_cfg=train_cfg,
+                fb_epsilon=fb_epsilon,
             )
         )
     if not pieces:

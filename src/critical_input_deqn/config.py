@@ -122,11 +122,13 @@ class TrainConfig:
     fb_epsilon_final: float = 1e-8
     rule_scenario_q_weight: float = 25.0
     rule_calm_anchor_weight: float = 5.0
+    rule_calm_residual_weight: float = 5.0
     rule_scenario_burnin: int = 5
     rule_scenario_horizon: int = 10
     rule_scenario_loss_interval: int = 25
     best_scenario_q_weight: float = 1.0
     best_calm_anchor_weight: float = 1.0
+    best_calm_residual_weight: float = 1.0
     target_scenario_q_rms: float | None = 1e-2
 
 

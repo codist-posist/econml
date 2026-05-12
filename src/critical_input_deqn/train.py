@@ -57,6 +57,7 @@ class TrainLog:
     best_selection_criterion: str | None = None
     best_scenario_q_rms: float | None = None
     best_calm_anchor_rms: float | None = None
+    best_calm_residual_rms: float | None = None
     extra_metrics: list[dict[str, float]] = field(default_factory=list)
 
 
@@ -220,12 +221,28 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
         "val_max": f"{metrics.get('val_max_abs', float('nan')):.2e}",
         "stop": int(stop_hits),
     }
-    if hasattr(progress, "set_postfix"):
-        progress.set_postfix(payload)
     message = (
         f"[{step}/{total}] train_rms={payload['train_rms']} "
         f"val_rms={payload['val_rms']} val_max={payload['val_max']} stop_hits={payload['stop']}"
     )
+    score = metrics.get("selection_score")
+    if score is not None and math.isfinite(float(score)):
+        payload["score"] = f"{float(score):.2e}"
+        message += f" score={float(score):.2e}"
+    q_rms = metrics.get("scenario_Q.rms")
+    if q_rms is not None and math.isfinite(float(q_rms)):
+        payload["q_rms"] = f"{float(q_rms):.2e}"
+        message += f" qRMS={float(q_rms):.2e}"
+    calm = metrics.get("calm_anchor.rms")
+    if calm is not None and math.isfinite(float(calm)):
+        payload["calm"] = f"{float(calm):.2e}"
+        message += f" calm={float(calm):.2e}"
+    calm_resid = metrics.get("calm_residual.rms")
+    if calm_resid is not None and math.isfinite(float(calm_resid)):
+        payload["calm_res"] = f"{float(calm_resid):.2e}"
+        message += f" calmRes={float(calm_resid):.2e}"
+    if hasattr(progress, "set_postfix"):
+        progress.set_postfix(payload)
     val_top = metrics.get("val_top")
     if val_top:
         message += f" top_val={val_top}"
@@ -299,7 +316,47 @@ def _checkpoint_selection_score(metrics: dict[str, float], cfg: TrainConfig) -> 
     if calm_rms is not None and calm_weight != 0.0:
         score += calm_weight * calm_rms
         parts.append(f"{calm_weight:g}*calm_anchor.rms")
+    calm_resid_rms = _metric_if_finite(metrics, "calm_residual.rms")
+    calm_resid_weight = float(cfg.best_calm_residual_weight)
+    if calm_resid_rms is not None and calm_resid_weight != 0.0:
+        score += calm_resid_weight * calm_resid_rms
+        parts.append(f"{calm_resid_weight:g}*calm_residual.rms")
     return score, "min_" + "_plus_".join(parts)
+
+
+def _maybe_save_best_checkpoint(
+    net: nn.Module,
+    log: TrainLog,
+    metrics: dict[str, float],
+    step: int,
+    cfg: TrainConfig,
+    *,
+    extra: Dict[str, object] | None = None,
+) -> Path | None:
+    if cfg.checkpoint_dir is None:
+        return None
+    directory = Path(cfg.checkpoint_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{str(cfg.checkpoint_name)}_best.pt"
+    scalar_metrics = {
+        key: float(value)
+        for key, value in metrics.items()
+        if isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(float(value))
+    }
+    payload = {
+        "state_dict": net.state_dict(),
+        "metadata": _cpu_detached(
+            {
+                "step": int(step),
+                "selection_score": log.best_selection_score,
+                "selection_criterion": log.best_selection_criterion,
+                "metrics": scalar_metrics,
+                "extra": extra or {},
+            }
+        ),
+    }
+    torch.save(payload, path)
+    return path
 
 
 def _maybe_update_best_state(
@@ -309,6 +366,8 @@ def _maybe_update_best_state(
     step: int,
     best_state: dict[str, torch.Tensor] | None,
     cfg: TrainConfig,
+    *,
+    extra: Dict[str, object] | None = None,
 ) -> dict[str, torch.Tensor] | None:
     """Track the best checkpoint using validation plus targeted scenario diagnostics."""
 
@@ -347,7 +406,11 @@ def _maybe_update_best_state(
     log.best_train_rms = train_rms
     log.best_scenario_q_rms = _metric_if_finite(metrics, "scenario_Q.rms")
     log.best_calm_anchor_rms = _metric_if_finite(metrics, "calm_anchor.rms")
+    log.best_calm_residual_rms = _metric_if_finite(metrics, "calm_residual.rms")
     metrics["new_best"] = True
+    best_path = _maybe_save_best_checkpoint(net, log, metrics, step, cfg, extra=extra)
+    if best_path is not None:
+        metrics["best_checkpoint"] = str(best_path)
     return _copy_state_dict_to_cpu(net)
 
 
@@ -564,6 +627,87 @@ def _calm_anchor_diagnostics_from_terms(terms: list[torch.Tensor]) -> Dict[str, 
     }
 
 
+def _residual_matrix_diagnostics(prefix: str, mat: torch.Tensor) -> Dict[str, float]:
+    mat = mat.detach()
+    return {
+        f"{prefix}.rms": float(torch.sqrt(mat.pow(2).mean()).cpu()),
+        f"{prefix}.max_abs": float(mat.abs().max().cpu()),
+    }
+
+
+def _rule_calm_residuals(
+    net: MLP,
+    natural_net: MLP,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    z = _normal_rule_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
+    return rule_residuals(
+        z,
+        net(z),
+        net,
+        natural_net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        fb_epsilon=fb_epsilon,
+        policy=policy,
+    )
+
+
+def _rule_calm_residual_loss(
+    net: MLP,
+    natural_net: MLP,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> torch.Tensor:
+    res, _ = _rule_calm_residuals(
+        net,
+        natural_net,
+        nodes,
+        policy=policy,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        train_cfg=train_cfg,
+        fb_epsilon=fb_epsilon,
+    )
+    return residual_loss(stack_residuals(res), loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+
+
+def _rule_calm_residual_diagnostics(
+    net: MLP,
+    natural_net: MLP,
+    nodes: QMCNodes,
+    *,
+    policy: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> Dict[str, float]:
+    res, _ = _rule_calm_residuals(
+        net,
+        natural_net,
+        nodes,
+        policy=policy,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        train_cfg=train_cfg,
+        fb_epsilon=fb_epsilon,
+    )
+    return _residual_matrix_diagnostics("calm_residual", stack_residuals(res))
+
+
 def _rule_calm_anchor_terms(
     net: MLP,
     natural_net: MLP,
@@ -654,6 +798,21 @@ def _rule_auxiliary_training_loss(
     calm_weight = float(train_cfg.rule_calm_anchor_weight)
     if calm_weight > 0.0:
         pieces.append(calm_weight * _rule_calm_anchor_loss(net, natural_net, policy=policy, params=params, train_cfg=train_cfg))
+    calm_resid_weight = float(train_cfg.rule_calm_residual_weight)
+    if calm_resid_weight > 0.0:
+        pieces.append(
+            calm_resid_weight
+            * _rule_calm_residual_loss(
+                net,
+                natural_net,
+                nodes,
+                policy=policy,
+                params=params,
+                qmc_cfg=qmc_cfg,
+                train_cfg=train_cfg,
+                fb_epsilon=fb_epsilon,
+            )
+        )
     if not pieces:
         return torch.zeros((), device=train_cfg.device, dtype=train_cfg.dtype)
     return torch.stack(pieces).sum()
@@ -845,6 +1004,82 @@ def _optimal_calm_anchor_diagnostics(
     )
 
 
+def _optimal_calm_residuals(
+    net: MLP,
+    nodes: QMCNodes,
+    *,
+    kind: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    key = kind.lower()
+    z = _normal_optimal_state(
+        1,
+        kind=key,
+        params=params,
+        device=train_cfg.device,
+        dtype=train_cfg.dtype,
+        promise_init_scale=train_cfg.promise_init_scale,
+    )
+    out = _decode_optimal_for_kind(net(z), key, params=params)
+    return private_residuals_free(
+        z,
+        out,
+        net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        fb_epsilon=fb_epsilon,
+        commitment=key == "commitment",
+    )
+
+
+def _optimal_calm_residual_loss(
+    net: MLP,
+    nodes: QMCNodes,
+    *,
+    kind: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> torch.Tensor:
+    res, _ = _optimal_calm_residuals(
+        net,
+        nodes,
+        kind=kind,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        train_cfg=train_cfg,
+        fb_epsilon=fb_epsilon,
+    )
+    return residual_loss(stack_residuals(res), loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+
+
+def _optimal_calm_residual_diagnostics(
+    net: MLP,
+    nodes: QMCNodes,
+    *,
+    kind: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> Dict[str, float]:
+    res, _ = _optimal_calm_residuals(
+        net,
+        nodes,
+        kind=kind,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        train_cfg=train_cfg,
+        fb_epsilon=fb_epsilon,
+    )
+    return _residual_matrix_diagnostics("calm_residual", stack_residuals(res))
+
+
 def _optimal_auxiliary_training_loss(
     net: MLP,
     nodes: QMCNodes,
@@ -873,6 +1108,20 @@ def _optimal_auxiliary_training_loss(
     calm_weight = float(train_cfg.rule_calm_anchor_weight)
     if calm_weight > 0.0:
         pieces.append(calm_weight * _optimal_calm_anchor_loss(net, kind=kind, params=params, train_cfg=train_cfg))
+    calm_resid_weight = float(train_cfg.rule_calm_residual_weight)
+    if calm_resid_weight > 0.0:
+        pieces.append(
+            calm_resid_weight
+            * _optimal_calm_residual_loss(
+                net,
+                nodes,
+                kind=kind,
+                params=params,
+                qmc_cfg=qmc_cfg,
+                train_cfg=train_cfg,
+                fb_epsilon=fb_epsilon,
+            )
+        )
     if not pieces:
         return torch.zeros((), device=train_cfg.device, dtype=train_cfg.dtype)
     return torch.stack(pieces).sum()
@@ -1102,7 +1351,15 @@ def train_natural(
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
-            best_state = _maybe_update_best_state(net, log, metrics, step, best_state, train_cfg)
+            best_state = _maybe_update_best_state(
+                net,
+                log,
+                metrics,
+                step,
+                best_state,
+                train_cfg,
+                extra={"kind": "natural"},
+            )
             _maybe_save_training_state(
                 step=step,
                 net=net,
@@ -1226,8 +1483,27 @@ def train_rule(
                 train_cfg=train_cfg,
             )
             metrics.update(calm_diag)
-            log.extra_metrics.append({"step": float(step), **scenario_diag, **calm_diag})
-            best_state = _maybe_update_best_state(net, log, metrics, step, best_state, train_cfg)
+            calm_resid_diag = _rule_calm_residual_diagnostics(
+                net,
+                natural_net,
+                val_nodes,
+                policy=policy,
+                params=params,
+                qmc_cfg=val_qmc_cfg,
+                train_cfg=train_cfg,
+                fb_epsilon=train_cfg.fb_epsilon_final,
+            )
+            metrics.update(calm_resid_diag)
+            best_state = _maybe_update_best_state(
+                net,
+                log,
+                metrics,
+                step,
+                best_state,
+                train_cfg,
+                extra={"kind": "rule", "policy": policy.lower()},
+            )
+            log.extra_metrics.append({"step": float(step), **scenario_diag, **calm_diag, **calm_resid_diag, "selection_score": float(metrics.get("selection_score", float("nan")))})
             _maybe_save_training_state(
                 step=step,
                 net=net,
@@ -1398,8 +1674,27 @@ def train_rule_episode(
                 train_cfg=train_cfg,
             )
             metrics.update(calm_diag)
-            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag})
-            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state, train_cfg)
+            calm_resid_diag = _rule_calm_residual_diagnostics(
+                net,
+                natural_net,
+                val_nodes,
+                policy=policy,
+                params=params,
+                qmc_cfg=val_qmc_cfg,
+                train_cfg=train_cfg,
+                fb_epsilon=train_cfg.fb_epsilon_final,
+            )
+            metrics.update(calm_resid_diag)
+            best_state = _maybe_update_best_state(
+                net,
+                log,
+                metrics,
+                episode,
+                best_state,
+                train_cfg,
+                extra={"kind": "rule", "policy": policy.lower(), "current_state": current_state},
+            )
+            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag, **calm_resid_diag, "selection_score": float(metrics.get("selection_score", float("nan")))})
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -1588,8 +1883,26 @@ def train_optimal_episode(
                 train_cfg=train_cfg,
             )
             metrics.update(calm_diag)
-            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag})
-            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state, train_cfg)
+            calm_resid_diag = _optimal_calm_residual_diagnostics(
+                net,
+                val_nodes,
+                kind=key,
+                params=params,
+                qmc_cfg=val_qmc_cfg,
+                train_cfg=train_cfg,
+                fb_epsilon=train_cfg.fb_epsilon_final,
+            )
+            metrics.update(calm_resid_diag)
+            best_state = _maybe_update_best_state(
+                net,
+                log,
+                metrics,
+                episode,
+                best_state,
+                train_cfg,
+                extra={"kind": key, "current_state": current_state},
+            )
+            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag, **calm_resid_diag, "selection_score": float(metrics.get("selection_score", float("nan")))})
             _maybe_save_training_state(
                 step=episode,
                 net=net,
