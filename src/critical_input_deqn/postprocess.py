@@ -84,6 +84,13 @@ def _first_existing(paths: list[Path]) -> Path:
     raise FileNotFoundError("None of these checkpoints exists: " + ", ".join(str(p) for p in paths))
 
 
+def _maybe_first_existing(paths: list[Path]) -> Path | None:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
 def load_natural(path: Path, *, device: str, dtype: torch.dtype) -> LoadedPolicy:
     payload = _load_payload(path, device=device)
     metadata = dict(payload.get("metadata", {}))
@@ -505,11 +512,46 @@ def run_postprocess(
     dtype: torch.dtype,
 ) -> None:
     params, experiment_meta = resolve_params(experiment, params_json)
-    natural_path = _first_existing([artifact_root / "natural" / "natural.pt", artifact_root / "natural.pt"])
-    fixed_path = _first_existing([artifact_root / "fixed_taylor" / "fixed.pt", artifact_root / "fixed.pt"])
-    ba_path = _first_existing([artifact_root / "modified_taylor" / "ba.pt", artifact_root / "ba.pt"])
-    discretion_path = _first_existing([artifact_root / "discretion" / "discretion.pt"])
-    commitment_path = _first_existing([artifact_root / "commitment" / "commitment.pt"])
+    natural_path = _first_existing(
+        [
+            artifact_root / "natural" / "checkpoints" / "natural_best.pt",
+            artifact_root / "natural" / "natural.pt",
+            artifact_root / "natural.pt",
+        ]
+    )
+    fixed_path = _first_existing(
+        [
+            artifact_root / "fixed_taylor" / "checkpoints" / "fixed_best.pt",
+            artifact_root / "fixed_taylor" / "fixed.pt",
+            artifact_root / "fixed.pt",
+        ]
+    )
+    ba_path = _first_existing(
+        [
+            artifact_root / "modified_taylor" / "checkpoints" / "ba_best.pt",
+            artifact_root / "modified_taylor" / "ba.pt",
+            artifact_root / "ba.pt",
+        ]
+    )
+    bottleneck_path = _maybe_first_existing(
+        [
+            artifact_root / "bottleneck_taylor" / "checkpoints" / "bottleneck_best.pt",
+            artifact_root / "bottleneck_taylor" / "bottleneck.pt",
+            artifact_root / "bottleneck.pt",
+        ]
+    )
+    discretion_path = _first_existing(
+        [
+            artifact_root / "discretion" / "checkpoints" / "discretion_best.pt",
+            artifact_root / "discretion" / "discretion.pt",
+        ]
+    )
+    commitment_path = _first_existing(
+        [
+            artifact_root / "commitment" / "checkpoints" / "commitment_best.pt",
+            artifact_root / "commitment" / "commitment.pt",
+        ]
+    )
 
     natural = load_natural(natural_path, device=device, dtype=dtype)
     if params_json is None:
@@ -517,13 +559,17 @@ def run_postprocess(
         experiment_meta["params"] = asdict(params)
     fixed = load_rule(fixed_path, policy="fixed", device=device, dtype=dtype)
     ba = load_rule(ba_path, policy="ba", device=device, dtype=dtype)
+    bottleneck = None if bottleneck_path is None else load_rule(bottleneck_path, policy="bottleneck", device=device, dtype=dtype)
     discretion = load_optimal(discretion_path, kind="discretion", device=device, dtype=dtype)
     commitment = load_optimal(commitment_path, kind="commitment", device=device, dtype=dtype)
+    rule_policies = {"fixed": fixed, "ba": ba}
+    if bottleneck is not None:
+        rule_policies["bottleneck"] = bottleneck
 
     torch.manual_seed(int(seed))
     z0 = sample_rule_states(batch_size, params=params, device=device, dtype=dtype, seed=seed)
     with torch.no_grad():
-        for policy, loaded in (("fixed", fixed), ("ba", ba)):
+        for policy, loaded in rule_policies.items():
             states = simulate_rule_episode(z0, loaded.net, natural.net, policy=policy, params=params, length=length)
             states_np, outputs_np = evaluate_rule_path(
                 states,
@@ -564,7 +610,7 @@ def run_postprocess(
         save_policy_artifacts(policy="commitment", states_np=states_np, outputs_np=outputs_np, out_dir=output_dir)
 
         if save_ir:
-            for policy, loaded in (("fixed", fixed), ("ba", ba)):
+            for policy, loaded in rule_policies.items():
                 labels, ir_states = simulate_rule_ir_scenarios(
                     policy=policy,
                     rule_net=loaded.net,
@@ -615,7 +661,7 @@ def run_postprocess(
         "length": int(length),
         "batch_size": int(batch_size),
         "seed": int(seed),
-        "policies": ["fixed", "ba", "discretion", "commitment"],
+        "policies": list(rule_policies) + ["discretion", "commitment"],
         "ir": {
             "saved": bool(save_ir),
             "burnin": int(ir_burnin),

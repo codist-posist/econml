@@ -215,9 +215,9 @@ def main() -> None:
     args = parser.parse_args()
 
     policies = [p.strip().lower() for p in args.policies.split(",") if p.strip()]
-    bad = sorted(set(policies) - {"fixed", "ba"})
+    bad = sorted(set(policies) - {"fixed", "ba", "bottleneck"})
     if bad:
-        raise ValueError(f"Unknown policy names: {bad}. Use fixed, ba, or fixed,ba.")
+        raise ValueError(f"Unknown policy names: {bad}. Use fixed, ba, bottleneck, or a comma-separated subset.")
     output_dir = args.output_dir or (args.artifact_root / "postprocess")
     run_postprocess_rule_monetary_shock(
         artifact_root=args.artifact_root,

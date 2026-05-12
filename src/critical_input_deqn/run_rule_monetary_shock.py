@@ -50,10 +50,10 @@ def _selection_metadata(log) -> dict[str, object]:
 
 def _policies(raw: str) -> list[str]:
     policies = [p.strip().lower() for p in raw.split(",") if p.strip()]
-    valid = {"fixed", "ba"}
+    valid = {"fixed", "ba", "bottleneck"}
     bad = sorted(set(policies) - valid)
     if bad:
-        raise ValueError(f"Unknown policy names: {bad}. Use fixed, ba, or fixed,ba.")
+        raise ValueError(f"Unknown policy names: {bad}. Use fixed, ba, bottleneck, or a comma-separated subset.")
     return policies
 
 
@@ -89,7 +89,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train Taylor-rule DEQN networks with a monetary-policy shock state.")
     parser.add_argument("--output-dir", type=Path, default=Path("baseline_artifacts/critical_input_deqn/rule_monetary_shock"))
     parser.add_argument("--natural-checkpoint", type=Path, default=Path("baseline_artifacts/critical_input_deqn/natural/natural.pt"))
-    parser.add_argument("--policies", default="fixed,ba", help="Comma-separated list: fixed,ba")
+    parser.add_argument("--policies", default="fixed,ba", help="Comma-separated list: fixed,ba,bottleneck")
     parser.add_argument("--experiment", default="baseline")
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--rule-steps", type=int, default=5_000)

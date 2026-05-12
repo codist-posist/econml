@@ -22,8 +22,17 @@ def main() -> None:
         net_cfg=net_cfg,
         log_every=1,
     )
+    bottleneck_net, bottleneck_log = train_rule(
+        natural_net,
+        policy="bottleneck",
+        train_cfg=train_cfg,
+        qmc_cfg=qmc_cfg,
+        net_cfg=net_cfg,
+        log_every=1,
+    )
     print("natural_log", natural_log)
     print("fixed_log", fixed_log)
+    print("bottleneck_log", bottleneck_log)
     print("natural_eval", evaluate_natural(natural_net, train_cfg=train_cfg, qmc_cfg=QMCConfig(n_train=32, seed=12), n_states=32))
     print(
         "fixed_eval",
@@ -36,8 +45,18 @@ def main() -> None:
             n_states=32,
         ),
     )
+    print(
+        "bottleneck_eval",
+        evaluate_rule(
+            bottleneck_net,
+            natural_net,
+            policy="bottleneck",
+            train_cfg=train_cfg,
+            qmc_cfg=QMCConfig(n_train=32, seed=14),
+            n_states=32,
+        ),
+    )
 
 
 if __name__ == "__main__":
     main()
-

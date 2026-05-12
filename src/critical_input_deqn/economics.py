@@ -308,15 +308,32 @@ def derive_rule(
     p_star = (float(p.epsilon) / (float(p.epsilon) - 1.0)) * S_p / F_p
     Delta = (1.0 - float(p.theta)) * p_star.pow(-float(p.epsilon)) + float(p.theta) * Pi.pow(float(p.epsilon)) * Delta_prev
 
-    if policy.lower() == "fixed":
+    policy_key = policy.lower()
+    if policy_key == "fixed":
         intercept = torch.full_like(C, float(p.bar_R))
-    elif policy.lower() == "ba":
+    elif policy_key == "ba":
         if R_n is None:
             raise ValueError("BA policy requires R_n.")
         intercept = float(p.bar_pi) * R_n
+    elif policy_key == "bottleneck":
+        intercept = torch.full_like(C, float(p.bar_R))
     else:
-        raise ValueError("policy must be 'fixed' or 'ba'.")
-    R = intercept * (Pi / float(p.bar_pi)).pow(float(p.phi_pi)) * (Y / Y_n).pow(float(p.phi_y))
+        raise ValueError("policy must be 'fixed', 'ba', or 'bottleneck'.")
+
+    bottleneck_scarcity = torch.zeros_like(C)
+    bottleneck_adjustment = torch.ones_like(C)
+    if policy_key == "bottleneck":
+        M_zero_policy = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
+        cap_pressure_policy = M_zero_policy / torch.clamp(mbar, min=1e-12)
+        bottleneck_scarcity = torch.relu(torch.log(torch.clamp(cap_pressure_policy, min=1e-12)))
+        bottleneck_adjustment = torch.exp(-float(p.phi_bottleneck) * bottleneck_scarcity)
+
+    R = (
+        intercept
+        * (Pi / float(p.bar_pi)).pow(float(p.phi_pi))
+        * (Y / Y_n).pow(float(p.phi_y))
+        * bottleneck_adjustment
+    )
     Omega_A = omega_A_cost(R, p)
     I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
     A_next = (1.0 - float(p.delta_A)) * st.A + I
@@ -350,6 +367,8 @@ def derive_rule(
         "A_next": A_next,
         "R": R,
         "Omega_A": Omega_A,
+        "bottleneck_scarcity": bottleneck_scarcity,
+        "bottleneck_adjustment": bottleneck_adjustment,
     }
 
 

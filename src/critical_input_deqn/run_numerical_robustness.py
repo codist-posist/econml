@@ -34,7 +34,7 @@ def main() -> None:
     parser.add_argument(
         "--stage",
         default="all",
-        choices=("natural", "fixed", "ba", "rules", "discretion", "commitment", "postprocess", "all"),
+        choices=("natural", "fixed", "ba", "bottleneck", "rules", "discretion", "commitment", "postprocess", "all"),
     )
     parser.add_argument("--dry-run", action="store_true")
     args, forwarded = parser.parse_known_args()

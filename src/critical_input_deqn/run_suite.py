@@ -57,12 +57,12 @@ def main() -> None:
     parser.add_argument(
         "--stage",
         default="all",
-        choices=("natural", "fixed", "ba", "rules", "discretion", "commitment", "postprocess", "all"),
+        choices=("natural", "fixed", "ba", "bottleneck", "rules", "discretion", "commitment", "postprocess", "all"),
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-tables", action="store_true")
     parser.add_argument("--skip-figures", action="store_true")
-    parser.add_argument("--table-policy", default="ba", choices=("fixed", "ba", "discretion", "commitment"))
+    parser.add_argument("--table-policy", default="bottleneck", choices=("fixed", "ba", "bottleneck", "discretion", "commitment"))
     args, forwarded = parser.parse_known_args()
     if forwarded and forwarded[0] == "--":
         forwarded = forwarded[1:]

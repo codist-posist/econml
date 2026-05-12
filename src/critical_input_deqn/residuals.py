@@ -51,7 +51,7 @@ def natural_residuals(
     """Flexible-price benchmark residuals.
 
     This auxiliary network is solved, validated, and frozen before the
-    bottleneck-adjusted Taylor rule is trained.
+    rule-based Taylor policies are trained.
     """
 
     st = unpack_natural_state(z_n)
@@ -86,7 +86,7 @@ def rule_residuals(
     fb_epsilon: float,
     policy: str,
 ) -> Tuple[TensorDict, TensorDict]:
-    """Residuals for fixed Taylor and bottleneck-adjusted Taylor policies."""
+    """Residuals for fixed, natural-rate-adjusted, and bottleneck-adjusted Taylor policies."""
 
     st = unpack_rule_state(z)
     z_n = z[..., :6]

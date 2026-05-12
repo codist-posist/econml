@@ -1391,10 +1391,10 @@ def train_rule(
     steps: int | None = None,
     log_every: int = 100,
 ) -> tuple[MLP, TrainLog]:
-    """Train a fixed-Taylor or bottleneck-adjusted Taylor DEQN policy network."""
+    """Train a rule-based Taylor DEQN policy network."""
 
-    if policy.lower() not in {"fixed", "ba"}:
-        raise ValueError("policy must be 'fixed' or 'ba'.")
+    if policy.lower() not in {"fixed", "ba", "bottleneck"}:
+        raise ValueError("policy must be 'fixed', 'ba', or 'bottleneck'.")
     freeze(natural_net)
     device = train_cfg.device
     dtype = train_cfg.dtype
@@ -1544,8 +1544,8 @@ def train_rule_episode(
     nodes.
     """
 
-    if policy.lower() not in {"fixed", "ba"}:
-        raise ValueError("policy must be 'fixed' or 'ba'.")
+    if policy.lower() not in {"fixed", "ba", "bottleneck"}:
+        raise ValueError("policy must be 'fixed', 'ba', or 'bottleneck'.")
     freeze(natural_net)
     device = train_cfg.device
     dtype = train_cfg.dtype

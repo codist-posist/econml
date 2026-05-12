@@ -60,6 +60,66 @@ def _append_common_training_args(cmd: list[str], args: argparse.Namespace) -> li
     return cmd
 
 
+def _append_rule_training_args(cmd: list[str], args: argparse.Namespace) -> list[str]:
+    cmd = _append_common_training_args(cmd, args)
+    cmd += [
+        "--rule-scenario-q-weight",
+        str(args.rule_scenario_q_weight),
+        "--rule-calm-anchor-weight",
+        str(args.rule_calm_anchor_weight),
+        "--rule-calm-residual-weight",
+        str(args.rule_calm_residual_weight),
+        "--rule-scenario-burnin",
+        str(args.rule_scenario_burnin),
+        "--rule-scenario-horizon",
+        str(args.rule_scenario_horizon),
+        "--rule-scenario-loss-interval",
+        str(args.rule_scenario_loss_interval),
+        "--best-scenario-q-weight",
+        str(args.best_scenario_q_weight),
+        "--best-calm-anchor-weight",
+        str(args.best_calm_anchor_weight),
+        "--best-calm-residual-weight",
+        str(args.best_calm_residual_weight),
+        "--target-scenario-q-rms",
+        str(args.target_scenario_q_rms),
+    ]
+    return cmd
+
+
+def _append_optimal_training_args(cmd: list[str], args: argparse.Namespace) -> list[str]:
+    cmd = _append_common_training_args(cmd, args)
+    cmd += [
+        "--scenario-q-weight",
+        str(args.rule_scenario_q_weight),
+        "--calm-anchor-weight",
+        str(args.rule_calm_anchor_weight),
+        "--calm-residual-weight",
+        str(args.rule_calm_residual_weight),
+        "--scenario-burnin",
+        str(args.rule_scenario_burnin),
+        "--scenario-horizon",
+        str(args.rule_scenario_horizon),
+        "--scenario-loss-interval",
+        str(args.rule_scenario_loss_interval),
+        "--best-scenario-q-weight",
+        str(args.best_scenario_q_weight),
+        "--best-calm-anchor-weight",
+        str(args.best_calm_anchor_weight),
+        "--best-calm-residual-weight",
+        str(args.best_calm_residual_weight),
+        "--target-scenario-q-rms",
+        str(args.target_scenario_q_rms),
+    ]
+    return cmd
+
+
+def _natural_checkpoint(root: Path) -> Path:
+    best = root / "natural" / "checkpoints" / "natural_best.pt"
+    final = root / "natural" / "natural.pt"
+    return best if best.exists() else final
+
+
 def build_commands(args: argparse.Namespace) -> list[list[str]]:
     root = experiment_root(args.base_root, args.experiment)
     cmds: list[list[str]] = []
@@ -82,13 +142,13 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "--output-dir",
             str(root / "fixed_taylor"),
             "--natural-checkpoint",
-            str(root / "natural" / "natural.pt"),
+            str(_natural_checkpoint(root)),
             "--policies",
             "fixed",
             "--rule-steps",
             str(args.rule_steps),
         ]
-        cmds.append(_append_common_training_args(cmd, args))
+        cmds.append(_append_rule_training_args(cmd, args))
 
     if args.stage in {"rules", "ba", "all"}:
         cmd = _base_cmd() + [
@@ -96,13 +156,27 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "--output-dir",
             str(root / "modified_taylor"),
             "--natural-checkpoint",
-            str(root / "natural" / "natural.pt"),
+            str(_natural_checkpoint(root)),
             "--policies",
             "ba",
             "--rule-steps",
             str(args.rule_steps),
         ]
-        cmds.append(_append_common_training_args(cmd, args))
+        cmds.append(_append_rule_training_args(cmd, args))
+
+    if args.stage in {"rules", "bottleneck", "all"}:
+        cmd = _base_cmd() + [
+            "src.critical_input_deqn.run_train",
+            "--output-dir",
+            str(root / "bottleneck_taylor"),
+            "--natural-checkpoint",
+            str(_natural_checkpoint(root)),
+            "--policies",
+            "bottleneck",
+            "--rule-steps",
+            str(args.rule_steps),
+        ]
+        cmds.append(_append_rule_training_args(cmd, args))
 
     if args.stage in {"discretion", "all"}:
         cmd = _base_cmd() + [
@@ -114,7 +188,7 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "--steps",
             str(args.optimal_steps),
         ]
-        cmds.append(_append_common_training_args(cmd, args))
+        cmds.append(_append_optimal_training_args(cmd, args))
 
     if args.stage in {"commitment", "all"}:
         cmd = _base_cmd() + [
@@ -128,7 +202,7 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "--promise-init-scale",
             str(args.promise_init_scale),
         ]
-        cmds.append(_append_common_training_args(cmd, args))
+        cmds.append(_append_optimal_training_args(cmd, args))
 
     if args.stage in {"postprocess", "all"}:
         cmd = _base_cmd() + [
@@ -169,7 +243,7 @@ def main() -> None:
     parser.add_argument(
         "--stage",
         default="all",
-        choices=("natural", "fixed", "ba", "rules", "discretion", "commitment", "postprocess", "all"),
+        choices=("natural", "fixed", "ba", "bottleneck", "rules", "discretion", "commitment", "postprocess", "all"),
     )
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true")
@@ -187,6 +261,16 @@ def main() -> None:
     parser.add_argument("--episode-length", type=int, default=20)
     parser.add_argument("--episode-updates-per-episode", type=int, default=2)
     parser.add_argument("--episode-broad-share", type=float, default=0.50)
+    parser.add_argument("--rule-scenario-q-weight", type=float, default=25.0)
+    parser.add_argument("--rule-calm-anchor-weight", type=float, default=5.0)
+    parser.add_argument("--rule-calm-residual-weight", type=float, default=5.0)
+    parser.add_argument("--rule-scenario-burnin", type=int, default=5)
+    parser.add_argument("--rule-scenario-horizon", type=int, default=10)
+    parser.add_argument("--rule-scenario-loss-interval", type=int, default=25)
+    parser.add_argument("--best-scenario-q-weight", type=float, default=1.0)
+    parser.add_argument("--best-calm-anchor-weight", type=float, default=1.0)
+    parser.add_argument("--best-calm-residual-weight", type=float, default=1.0)
+    parser.add_argument("--target-scenario-q-rms", type=float, default=1e-2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--checkpoint-keep", type=int, default=3)

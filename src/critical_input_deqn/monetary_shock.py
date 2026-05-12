@@ -393,8 +393,8 @@ def train_rule_shock_episode(
 ) -> tuple[MLP, TrainLog]:
     """Train a Taylor-rule network with an explicit policy-shock state."""
 
-    if policy.lower() not in {"fixed", "ba"}:
-        raise ValueError("policy must be 'fixed' or 'ba'.")
+    if policy.lower() not in {"fixed", "ba", "bottleneck"}:
+        raise ValueError("policy must be 'fixed', 'ba', or 'bottleneck'.")
     freeze(natural_net)
     device = train_cfg.device
     dtype = train_cfg.dtype

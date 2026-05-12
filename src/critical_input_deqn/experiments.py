@@ -389,6 +389,18 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         description="Rule-based policies also respond to the output gap.",
         overrides={"phi_y": 0.25},
     ),
+    "weak_bottleneck_policy": ExperimentSpec(
+        name="weak_bottleneck_policy",
+        group="sensitivity",
+        description="Bottleneck-adjusted Taylor policies respond less to positive cap pressure.",
+        overrides={"phi_bottleneck": 0.10},
+    ),
+    "strong_bottleneck_policy": ExperimentSpec(
+        name="strong_bottleneck_policy",
+        group="sensitivity",
+        description="Bottleneck-adjusted Taylor policies respond more to positive cap pressure.",
+        overrides={"phi_bottleneck": 0.50},
+    ),
 }
 
 
@@ -434,6 +446,8 @@ TABLE_EXPERIMENTS = {
         "hawkish_policy",
         "dovish_policy",
         "output_gap_policy",
+        "weak_bottleneck_policy",
+        "strong_bottleneck_policy",
     ],
 }
 
