@@ -36,17 +36,22 @@ from .train import (
     TrainLog,
     _RULE_SCENARIO_LABELS,
     _RULE_SCENARIO_OFFSETS,
+    _RULE_SCENARIO_POINTS,
     _announce_training,
+    _calm_anchor_diagnostics_from_terms,
+    _calm_anchor_loss_from_terms,
     _log_metrics,
     _mark_stopped,
     _maybe_save_training_state,
     _maybe_update_best_state,
     _passes_stop_criteria,
+    _pricing_sum_targets,
     _progress_range,
     _report_progress,
     _restore_best_state,
     _rule_scenario_additions,
     _scenario_q_diagnostics,
+    _should_apply_scenario_loss,
     _top_residual_summary,
     _validation_nodes,
     exact_condition_diagnostics,
@@ -482,6 +487,7 @@ def train_rule_shock_episode(
                 qmc_cfg=qmc_cfg,
                 train_cfg=train_cfg,
                 fb_epsilon=train_cfg.fb_epsilon_start,
+                step=episode,
             )
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -521,8 +527,17 @@ def train_rule_shock_episode(
             metrics["val_top"] = _top_residual_summary(val_res)
             scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
             metrics.update(scenario_diag)
-            log.extra_metrics.append({"step": float(episode), **scenario_diag})
-            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state)
+            calm_diag = _rule_shock_calm_anchor_diagnostics(
+                net,
+                natural_net,
+                policy=policy,
+                params=params,
+                shock_cfg=shock_cfg,
+                train_cfg=train_cfg,
+            )
+            metrics.update(calm_diag)
+            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag})
+            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state, train_cfg)
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -530,7 +545,7 @@ def train_rule_shock_episode(
                 cfg=train_cfg,
                 extra={"kind": "rule_monetary_shock", "policy": policy.lower(), "current_state": current_state},
             )
-            if _passes_stop_criteria(val_mat, train_cfg, episode):
+            if _passes_stop_criteria(val_mat, train_cfg, episode, metrics):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, episode, train_cfg)
@@ -712,13 +727,13 @@ def _rule_shock_training_scenario_states(
             )
             states.append(z)
     stacked = torch.stack(states, dim=0)
+    label_to_idx = {label: j for j, label in enumerate(_RULE_SCENARIO_LABELS)}
     selected = []
     names = []
-    for tag, offset in _RULE_SCENARIO_OFFSETS.items():
-        idx = min(max(burnin + int(offset), 0), stacked.shape[0] - 1)
-        for j, label in enumerate(_RULE_SCENARIO_LABELS):
-            selected.append(stacked[idx, j])
-            names.append(f"{label}.{tag}")
+    for label, tag in _RULE_SCENARIO_POINTS:
+        idx = min(max(burnin + int(_RULE_SCENARIO_OFFSETS[tag]), 0), stacked.shape[0] - 1)
+        selected.append(stacked[idx, label_to_idx[label]])
+        names.append(f"{label}.{tag}")
     return torch.stack(selected, dim=0).detach(), names
 
 
@@ -766,6 +781,27 @@ def _rule_shock_calm_anchor_loss(
     shock_cfg: MonetaryShockConfig,
     train_cfg: TrainConfig,
 ) -> torch.Tensor:
+    return _calm_anchor_loss_from_terms(
+        _rule_shock_calm_anchor_terms(
+            rule_net,
+            natural_net,
+            policy=policy,
+            params=params,
+            shock_cfg=shock_cfg,
+            train_cfg=train_cfg,
+        )
+    )
+
+
+def _rule_shock_calm_anchor_terms(
+    rule_net,
+    natural_net,
+    *,
+    policy: str,
+    params: BaselineParams,
+    shock_cfg: MonetaryShockConfig,
+    train_cfg: TrainConfig,
+) -> list[torch.Tensor]:
     z = _normal_initial_rule_shock_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
     st, eps_R = unpack_rule_shock_state(z)
     out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES)
@@ -782,15 +818,38 @@ def _rule_shock_calm_anchor_loss(
     pressure = drv["M_zero_rent"] / torch.clamp(drv["mbar"], min=1e-12)
     target_pressure = torch.full_like(pressure, 1.0 / (1.0 + float(params.normal_capacity_slack)))
     repair_scale = max(float(params.repair_capacity), 1e-6)
-    terms = [
+    s_target, f_target = _pricing_sum_targets(out_n["Y_n"], params)
+    return [
         torch.log(torch.clamp(out["C"] / torch.clamp(out_n["C_n"], min=1e-12), min=1e-12)),
         torch.log(torch.clamp(out["Y"] / torch.clamp(out_n["Y_n"], min=1e-12), min=1e-12)),
         torch.log(torch.clamp(out["Pi"] / float(params.bar_pi), min=1e-12)),
+        torch.log(torch.clamp(out["S_p"] / torch.clamp(s_target, min=1e-12), min=1e-12)),
+        torch.log(torch.clamp(out["F_p"] / torch.clamp(f_target, min=1e-12), min=1e-12)),
         pressure - target_pressure,
         drv["chi"] / torch.clamp(drv["pm"], min=1e-12),
         drv["I_A"] / repair_scale,
     ]
-    return torch.stack([term.reshape(-1) for term in terms], dim=-1).pow(2).mean()
+
+
+def _rule_shock_calm_anchor_diagnostics(
+    rule_net,
+    natural_net,
+    *,
+    policy: str,
+    params: BaselineParams,
+    shock_cfg: MonetaryShockConfig,
+    train_cfg: TrainConfig,
+) -> Dict[str, float]:
+    return _calm_anchor_diagnostics_from_terms(
+        _rule_shock_calm_anchor_terms(
+            rule_net,
+            natural_net,
+            policy=policy,
+            params=params,
+            shock_cfg=shock_cfg,
+            train_cfg=train_cfg,
+        )
+    )
 
 
 def _rule_shock_auxiliary_training_loss(
@@ -804,10 +863,11 @@ def _rule_shock_auxiliary_training_loss(
     qmc_cfg: QMCConfig,
     train_cfg: TrainConfig,
     fb_epsilon: float,
+    step: int | None = None,
 ) -> torch.Tensor:
     pieces = []
     q_weight = float(train_cfg.rule_scenario_q_weight)
-    if q_weight > 0.0:
+    if q_weight > 0.0 and _should_apply_scenario_loss(step, train_cfg):
         scenario_res, _, _ = _rule_shock_scenario_residuals(
             rule_net,
             natural_net,

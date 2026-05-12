@@ -36,11 +36,14 @@ def _write_json(path: Path, payload: object) -> None:
 
 def _selection_metadata(log) -> dict[str, object]:
     return {
-        "criterion": "min_val_rms_then_val_max_abs",
+        "criterion": log.best_selection_criterion or "min_val_rms_then_val_max_abs",
         "best_step": log.best_step,
+        "best_selection_score": log.best_selection_score,
         "best_val_rms": log.best_val_rms,
         "best_val_max_abs": log.best_val_max_abs,
         "best_train_rms": log.best_train_rms,
+        "best_scenario_q_rms": log.best_scenario_q_rms,
+        "best_calm_anchor_rms": log.best_calm_anchor_rms,
     }
 
 
@@ -110,6 +113,10 @@ def main() -> None:
     parser.add_argument("--rule-calm-anchor-weight", type=float, default=5.0)
     parser.add_argument("--rule-scenario-burnin", type=int, default=5)
     parser.add_argument("--rule-scenario-horizon", type=int, default=10)
+    parser.add_argument("--rule-scenario-loss-interval", type=int, default=25)
+    parser.add_argument("--best-scenario-q-weight", type=float, default=1.0)
+    parser.add_argument("--best-calm-anchor-weight", type=float, default=1.0)
+    parser.add_argument("--target-scenario-q-rms", type=float, default=1e-2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--qmc-train", type=int, default=256)
     parser.add_argument("--qmc-val", type=int, default=512)
@@ -176,6 +183,10 @@ def main() -> None:
             "rule_calm_anchor_weight": args.rule_calm_anchor_weight,
             "rule_scenario_burnin": args.rule_scenario_burnin,
             "rule_scenario_horizon": args.rule_scenario_horizon,
+            "rule_scenario_loss_interval": args.rule_scenario_loss_interval,
+            "best_scenario_q_weight": args.best_scenario_q_weight,
+            "best_calm_anchor_weight": args.best_calm_anchor_weight,
+            "target_scenario_q_rms": args.target_scenario_q_rms,
             "dtype": args.dtype,
             "device": args.device,
         },
@@ -220,6 +231,10 @@ def main() -> None:
             rule_calm_anchor_weight=args.rule_calm_anchor_weight,
             rule_scenario_burnin=args.rule_scenario_burnin,
             rule_scenario_horizon=args.rule_scenario_horizon,
+            rule_scenario_loss_interval=args.rule_scenario_loss_interval,
+            best_scenario_q_weight=args.best_scenario_q_weight,
+            best_calm_anchor_weight=args.best_calm_anchor_weight,
+            target_scenario_q_rms=args.target_scenario_q_rms,
             dtype=dtype,
             device=args.device,
         )

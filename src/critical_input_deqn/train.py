@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import math
 from pathlib import Path
 from typing import Dict, Iterable
 
@@ -52,6 +53,10 @@ class TrainLog:
     best_val_rms: float | None = None
     best_val_max_abs: float | None = None
     best_train_rms: float | None = None
+    best_selection_score: float | None = None
+    best_selection_criterion: str | None = None
+    best_scenario_q_rms: float | None = None
+    best_calm_anchor_rms: float | None = None
     extra_metrics: list[dict[str, float]] = field(default_factory=list)
 
 
@@ -159,8 +164,19 @@ def _log_metrics(
     return metrics
 
 
-def _passes_stop_criteria(resid: torch.Tensor, cfg: TrainConfig, step: int) -> bool:
-    if cfg.target_rms is None and cfg.target_max_abs is None:
+def _passes_stop_criteria(
+    resid: torch.Tensor,
+    cfg: TrainConfig,
+    step: int,
+    metrics: dict[str, float] | None = None,
+) -> bool:
+    validation_target_active = cfg.target_rms is not None or cfg.target_max_abs is not None
+    scenario_target_active = (
+        cfg.target_scenario_q_rms is not None
+        and metrics is not None
+        and "scenario_Q.rms" in metrics
+    )
+    if not validation_target_active:
         return False
     if step < int(cfg.min_steps_before_stop):
         return False
@@ -169,13 +185,16 @@ def _passes_stop_criteria(resid: torch.Tensor, cfg: TrainConfig, step: int) -> b
         max_abs = float(resid.abs().max().detach().cpu())
     rms_ok = True if cfg.target_rms is None else rms <= float(cfg.target_rms)
     max_ok = True if cfg.target_max_abs is None else max_abs <= float(cfg.target_max_abs)
-    return rms_ok and max_ok
+    scenario_ok = True
+    if scenario_target_active:
+        scenario_ok = float(metrics["scenario_Q.rms"]) <= float(cfg.target_scenario_q_rms)
+    return rms_ok and max_ok and scenario_ok
 
 
 def _mark_stopped(log: TrainLog, step: int, cfg: TrainConfig) -> None:
     log.stopped_early = True
     log.stop_reason = (
-        f"validation residual criteria satisfied for {int(cfg.early_stop_patience)} consecutive checks "
+        f"validation and scenario criteria satisfied for {int(cfg.early_stop_patience)} consecutive checks "
         f"at step/episode {int(step)}"
     )
 
@@ -257,25 +276,63 @@ def _copy_state_dict_to_cpu(net: nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.detach().cpu().clone() for name, value in net.state_dict().items()}
 
 
+def _metric_if_finite(metrics: dict[str, float], name: str) -> float | None:
+    if name not in metrics:
+        return None
+    value = float(metrics[name])
+    return value if math.isfinite(value) else None
+
+
+def _checkpoint_selection_score(metrics: dict[str, float], cfg: TrainConfig) -> tuple[float, str]:
+    val_rms = _metric_if_finite(metrics, "val_rms")
+    if val_rms is None:
+        return float("inf"), "unavailable"
+    score = val_rms
+    parts = ["val_rms"]
+    q_rms = _metric_if_finite(metrics, "scenario_Q.rms")
+    q_weight = float(cfg.best_scenario_q_weight)
+    if q_rms is not None and q_weight != 0.0:
+        score += q_weight * q_rms
+        parts.append(f"{q_weight:g}*scenario_Q.rms")
+    calm_rms = _metric_if_finite(metrics, "calm_anchor.rms")
+    calm_weight = float(cfg.best_calm_anchor_weight)
+    if calm_rms is not None and calm_weight != 0.0:
+        score += calm_weight * calm_rms
+        parts.append(f"{calm_weight:g}*calm_anchor.rms")
+    return score, "min_" + "_plus_".join(parts)
+
+
 def _maybe_update_best_state(
     net: nn.Module,
     log: TrainLog,
     metrics: dict[str, float],
     step: int,
     best_state: dict[str, torch.Tensor] | None,
+    cfg: TrainConfig,
 ) -> dict[str, torch.Tensor] | None:
-    """Track the best validation checkpoint by val_rms, breaking ties by val_max."""
+    """Track the best checkpoint using validation plus targeted scenario diagnostics."""
 
     if "val_rms" not in metrics:
         return best_state
+    selection_score, selection_criterion = _checkpoint_selection_score(metrics, cfg)
+    metrics["selection_score"] = selection_score
     val_rms = float(metrics["val_rms"])
     val_max = float(metrics.get("val_max_abs", float("inf")))
     train_rms = float(metrics.get("train_rms", float("nan")))
-    is_better = log.best_val_rms is None
-    if log.best_val_rms is not None:
+    is_better = log.best_selection_score is None
+    if log.best_selection_score is not None:
         tol = 1e-12
-        is_better = val_rms < float(log.best_val_rms) - tol or (
-            abs(val_rms - float(log.best_val_rms)) <= tol
+        is_better = selection_score < float(log.best_selection_score) - tol or (
+            abs(selection_score - float(log.best_selection_score)) <= tol
+            and (
+                val_rms < float(log.best_val_rms) - tol
+                if log.best_val_rms is not None
+                else True
+            )
+        ) or (
+            abs(selection_score - float(log.best_selection_score)) <= tol
+            and log.best_val_rms is not None
+            and abs(val_rms - float(log.best_val_rms)) <= tol
             and (log.best_val_max_abs is None or val_max < float(log.best_val_max_abs))
         )
     if not is_better:
@@ -283,9 +340,13 @@ def _maybe_update_best_state(
         return best_state
 
     log.best_step = int(step)
+    log.best_selection_score = selection_score
+    log.best_selection_criterion = selection_criterion
     log.best_val_rms = val_rms
     log.best_val_max_abs = val_max
     log.best_train_rms = train_rms
+    log.best_scenario_q_rms = _metric_if_finite(metrics, "scenario_Q.rms")
+    log.best_calm_anchor_rms = _metric_if_finite(metrics, "calm_anchor.rms")
     metrics["new_best"] = True
     return _copy_state_dict_to_cpu(net)
 
@@ -307,6 +368,14 @@ _RULE_SCENARIO_OFFSETS = {
     "event_plus_1": 1,
     "event_plus_4": 4,
 }
+_RULE_SCENARIO_POINTS = (
+    ("no_event", "event"),
+    ("D_1x", "event"),
+    ("D_1x", "event_plus_1"),
+    ("D_3x", "event"),
+    ("D_3x", "event_plus_1"),
+    ("D_3x", "event_plus_4"),
+)
 
 
 def _normal_rule_state(batch_size: int, *, params: BaselineParams, device: str, dtype: torch.dtype) -> torch.Tensor:
@@ -422,13 +491,13 @@ def _rule_training_scenario_states(
             )
             states.append(z)
     stacked = torch.stack(states, dim=0)
+    label_to_idx = {label: j for j, label in enumerate(_RULE_SCENARIO_LABELS)}
     selected = []
     names = []
-    for tag, offset in _RULE_SCENARIO_OFFSETS.items():
-        idx = min(max(burnin + int(offset), 0), stacked.shape[0] - 1)
-        for j, label in enumerate(_RULE_SCENARIO_LABELS):
-            selected.append(stacked[idx, j])
-            names.append(f"{label}.{tag}")
+    for label, tag in _RULE_SCENARIO_POINTS:
+        idx = min(max(burnin + int(_RULE_SCENARIO_OFFSETS[tag]), 0), stacked.shape[0] - 1)
+        selected.append(stacked[idx, label_to_idx[label]])
+        names.append(f"{label}.{tag}")
     return torch.stack(selected, dim=0).detach(), names
 
 
@@ -466,6 +535,43 @@ def _rule_calm_anchor_loss(
     params: BaselineParams,
     train_cfg: TrainConfig,
 ) -> torch.Tensor:
+    return _calm_anchor_loss_from_terms(
+        _rule_calm_anchor_terms(net, natural_net, policy=policy, params=params, train_cfg=train_cfg)
+    )
+
+
+def _pricing_sum_targets(y_target: torch.Tensor, params: BaselineParams) -> tuple[torch.Tensor, torch.Tensor]:
+    denom = max(1.0 - float(params.theta) * float(params.beta), 1e-8)
+    f_target = y_target / denom
+    mc_target = (float(params.epsilon) - 1.0) / float(params.epsilon)
+    s_target = mc_target * f_target
+    return s_target, f_target
+
+
+def _calm_anchor_matrix(terms: list[torch.Tensor]) -> torch.Tensor:
+    return torch.stack([term.reshape(-1) for term in terms], dim=-1)
+
+
+def _calm_anchor_loss_from_terms(terms: list[torch.Tensor]) -> torch.Tensor:
+    return _calm_anchor_matrix(terms).pow(2).mean()
+
+
+def _calm_anchor_diagnostics_from_terms(terms: list[torch.Tensor]) -> Dict[str, float]:
+    mat = _calm_anchor_matrix(terms).detach()
+    return {
+        "calm_anchor.rms": float(torch.sqrt(mat.pow(2).mean()).cpu()),
+        "calm_anchor.max_abs": float(mat.abs().max().cpu()),
+    }
+
+
+def _rule_calm_anchor_terms(
+    net: MLP,
+    natural_net: MLP,
+    *,
+    policy: str,
+    params: BaselineParams,
+    train_cfg: TrainConfig,
+) -> list[torch.Tensor]:
     z = _normal_rule_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
     out = decode_rule_outputs(net(z), RULE_OUTPUT_NAMES)
     out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES)
@@ -480,19 +586,42 @@ def _rule_calm_anchor_loss(
     pressure = drv["M_zero_rent"] / torch.clamp(drv["mbar"], min=1e-12)
     target_pressure = torch.full_like(pressure, 1.0 / (1.0 + float(params.normal_capacity_slack)))
     repair_scale = max(float(params.repair_capacity), 1e-6)
-    terms = [
+    s_target, f_target = _pricing_sum_targets(out_n["Y_n"], params)
+    return [
         torch.log(torch.clamp(out["C"] / torch.clamp(out_n["C_n"], min=1e-12), min=1e-12)),
         torch.log(torch.clamp(out["Y"] / torch.clamp(out_n["Y_n"], min=1e-12), min=1e-12)),
         torch.log(torch.clamp(out["Pi"] / float(params.bar_pi), min=1e-12)),
+        torch.log(torch.clamp(out["S_p"] / torch.clamp(s_target, min=1e-12), min=1e-12)),
+        torch.log(torch.clamp(out["F_p"] / torch.clamp(f_target, min=1e-12), min=1e-12)),
         pressure - target_pressure,
         drv["chi"] / torch.clamp(drv["pm"], min=1e-12),
         drv["I_A"] / repair_scale,
     ]
-    return torch.stack([term.reshape(-1) for term in terms], dim=-1).pow(2).mean()
+
+
+def _rule_calm_anchor_diagnostics(
+    net: MLP,
+    natural_net: MLP,
+    *,
+    policy: str,
+    params: BaselineParams,
+    train_cfg: TrainConfig,
+) -> Dict[str, float]:
+    return _calm_anchor_diagnostics_from_terms(
+        _rule_calm_anchor_terms(net, natural_net, policy=policy, params=params, train_cfg=train_cfg)
+    )
 
 
 def _rule_scenario_q_diagnostics(res: Dict[str, torch.Tensor], names: list[str]) -> Dict[str, float]:
     return _scenario_q_diagnostics(res, names, q_key="Q")
+
+
+def _should_apply_scenario_loss(step: int | None, train_cfg: TrainConfig) -> bool:
+    interval = max(1, int(train_cfg.rule_scenario_loss_interval))
+    if step is None:
+        return True
+    step_i = int(step)
+    return step_i == 1 or step_i % interval == 0
 
 
 def _rule_auxiliary_training_loss(
@@ -505,10 +634,11 @@ def _rule_auxiliary_training_loss(
     qmc_cfg: QMCConfig,
     train_cfg: TrainConfig,
     fb_epsilon: float,
+    step: int | None = None,
 ) -> torch.Tensor:
     pieces = []
     q_weight = float(train_cfg.rule_scenario_q_weight)
-    if q_weight > 0.0:
+    if q_weight > 0.0 and _should_apply_scenario_loss(step, train_cfg):
         scenario_res, _, _ = _rule_scenario_residuals(
             net,
             natural_net,
@@ -651,7 +781,7 @@ def _scenario_q_diagnostics(res: Dict[str, torch.Tensor], names: list[str], *, q
         "scenario_Q.rms": float(torch.sqrt(q.pow(2).mean()).cpu()),
         "scenario_Q.max_abs": float(q.abs().max().cpu()),
     }
-    wanted = {"D_1x.event", "D_3x.event", "D_3x.event_plus_1", "D_3x.event_plus_4", "no_event.event"}
+    wanted = {f"{label}.{tag}" for label, tag in _RULE_SCENARIO_POINTS}
     for i, name in enumerate(names):
         if name in wanted and i < q.numel():
             diag[f"scenario_Q.{name}"] = float(q[i].abs().cpu())
@@ -665,6 +795,18 @@ def _optimal_calm_anchor_loss(
     params: BaselineParams,
     train_cfg: TrainConfig,
 ) -> torch.Tensor:
+    return _calm_anchor_loss_from_terms(
+        _optimal_calm_anchor_terms(net, kind=kind, params=params, train_cfg=train_cfg)
+    )
+
+
+def _optimal_calm_anchor_terms(
+    net: MLP,
+    *,
+    kind: str,
+    params: BaselineParams,
+    train_cfg: TrainConfig,
+) -> list[torch.Tensor]:
     z = _normal_optimal_state(
         1,
         kind=kind,
@@ -678,14 +820,29 @@ def _optimal_calm_anchor_loss(
     pressure = drv["M_zero_rent"] / torch.clamp(drv["mbar"], min=1e-12)
     target_pressure = torch.full_like(pressure, 1.0 / (1.0 + float(params.normal_capacity_slack)))
     repair_scale = max(float(params.repair_capacity), 1e-6)
-    terms = [
+    y_target = torch.full_like(out["Y"], float(params.steady_state_output))
+    s_target, f_target = _pricing_sum_targets(y_target, params)
+    return [
         torch.log(torch.clamp(out["Y"] / float(params.steady_state_output), min=1e-12)),
         torch.log(torch.clamp(out["Pi"] / float(params.bar_pi), min=1e-12)),
+        torch.log(torch.clamp(out["S_p"] / torch.clamp(s_target, min=1e-12), min=1e-12)),
+        torch.log(torch.clamp(out["F_p"] / torch.clamp(f_target, min=1e-12), min=1e-12)),
         pressure - target_pressure,
         drv["chi"] / torch.clamp(drv["pm"], min=1e-12),
         drv["I_A"] / repair_scale,
     ]
-    return torch.stack([term.reshape(-1) for term in terms], dim=-1).pow(2).mean()
+
+
+def _optimal_calm_anchor_diagnostics(
+    net: MLP,
+    *,
+    kind: str,
+    params: BaselineParams,
+    train_cfg: TrainConfig,
+) -> Dict[str, float]:
+    return _calm_anchor_diagnostics_from_terms(
+        _optimal_calm_anchor_terms(net, kind=kind, params=params, train_cfg=train_cfg)
+    )
 
 
 def _optimal_auxiliary_training_loss(
@@ -697,10 +854,11 @@ def _optimal_auxiliary_training_loss(
     qmc_cfg: QMCConfig,
     train_cfg: TrainConfig,
     fb_epsilon: float,
+    step: int | None = None,
 ) -> torch.Tensor:
     pieces = []
     q_weight = float(train_cfg.rule_scenario_q_weight)
-    if q_weight > 0.0:
+    if q_weight > 0.0 and _should_apply_scenario_loss(step, train_cfg):
         scenario_res, _, _ = _optimal_scenario_residuals(
             net,
             nodes,
@@ -944,7 +1102,7 @@ def train_natural(
                 val_mat = stack_residuals(val_res).detach()
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
-            best_state = _maybe_update_best_state(net, log, metrics, step, best_state)
+            best_state = _maybe_update_best_state(net, log, metrics, step, best_state, train_cfg)
             _maybe_save_training_state(
                 step=step,
                 net=net,
@@ -952,7 +1110,7 @@ def train_natural(
                 cfg=train_cfg,
                 extra={"kind": "natural"},
             )
-            if _passes_stop_criteria(val_mat, train_cfg, step):
+            if _passes_stop_criteria(val_mat, train_cfg, step, metrics):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, step, train_cfg)
@@ -1026,6 +1184,7 @@ def train_rule(
             qmc_cfg=qmc_cfg,
             train_cfg=train_cfg,
             fb_epsilon=train_cfg.fb_epsilon_start,
+            step=step,
         )
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -1059,8 +1218,16 @@ def train_rule(
             metrics["val_top"] = _top_residual_summary(val_res)
             scenario_diag = _rule_scenario_q_diagnostics(scenario_val_res, scenario_names)
             metrics.update(scenario_diag)
-            log.extra_metrics.append({"step": float(step), **scenario_diag})
-            best_state = _maybe_update_best_state(net, log, metrics, step, best_state)
+            calm_diag = _rule_calm_anchor_diagnostics(
+                net,
+                natural_net,
+                policy=policy,
+                params=params,
+                train_cfg=train_cfg,
+            )
+            metrics.update(calm_diag)
+            log.extra_metrics.append({"step": float(step), **scenario_diag, **calm_diag})
+            best_state = _maybe_update_best_state(net, log, metrics, step, best_state, train_cfg)
             _maybe_save_training_state(
                 step=step,
                 net=net,
@@ -1068,7 +1235,7 @@ def train_rule(
                 cfg=train_cfg,
                 extra={"kind": "rule", "policy": policy.lower()},
             )
-            if _passes_stop_criteria(val_mat, train_cfg, step):
+            if _passes_stop_criteria(val_mat, train_cfg, step, metrics):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, step, train_cfg)
@@ -1185,6 +1352,7 @@ def train_rule_episode(
                 qmc_cfg=qmc_cfg,
                 train_cfg=train_cfg,
                 fb_epsilon=train_cfg.fb_epsilon_start,
+                step=episode,
             )
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -1222,8 +1390,16 @@ def train_rule_episode(
             metrics["val_top"] = _top_residual_summary(val_res)
             scenario_diag = _rule_scenario_q_diagnostics(scenario_val_res, scenario_names)
             metrics.update(scenario_diag)
-            log.extra_metrics.append({"step": float(episode), **scenario_diag})
-            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state)
+            calm_diag = _rule_calm_anchor_diagnostics(
+                net,
+                natural_net,
+                policy=policy,
+                params=params,
+                train_cfg=train_cfg,
+            )
+            metrics.update(calm_diag)
+            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag})
+            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state, train_cfg)
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -1231,7 +1407,7 @@ def train_rule_episode(
                 cfg=train_cfg,
                 extra={"kind": "rule", "policy": policy.lower(), "current_state": current_state},
             )
-            if _passes_stop_criteria(val_mat, train_cfg, episode):
+            if _passes_stop_criteria(val_mat, train_cfg, episode, metrics):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, episode, train_cfg)
@@ -1370,6 +1546,7 @@ def train_optimal_episode(
                 qmc_cfg=qmc_cfg,
                 train_cfg=train_cfg,
                 fb_epsilon=train_cfg.fb_epsilon_start,
+                step=episode,
             )
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -1404,8 +1581,15 @@ def train_optimal_episode(
             metrics["val_top"] = _top_residual_summary(val_res)
             scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
             metrics.update(scenario_diag)
-            log.extra_metrics.append({"step": float(episode), **scenario_diag})
-            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state)
+            calm_diag = _optimal_calm_anchor_diagnostics(
+                net,
+                kind=key,
+                params=params,
+                train_cfg=train_cfg,
+            )
+            metrics.update(calm_diag)
+            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag})
+            best_state = _maybe_update_best_state(net, log, metrics, episode, best_state, train_cfg)
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -1413,7 +1597,7 @@ def train_optimal_episode(
                 cfg=train_cfg,
                 extra={"kind": key, "current_state": current_state},
             )
-            if _passes_stop_criteria(val_mat, train_cfg, episode):
+            if _passes_stop_criteria(val_mat, train_cfg, episode, metrics):
                 stop_hits += 1
                 if stop_hits >= int(train_cfg.early_stop_patience):
                     _mark_stopped(log, episode, train_cfg)
