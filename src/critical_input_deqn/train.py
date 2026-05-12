@@ -470,8 +470,8 @@ def _rule_training_scenario_states(
     with torch.no_grad():
         for t in range(1, total):
             st = unpack_rule_state(z)
-            out = decode_rule_outputs(net(z), RULE_OUTPUT_NAMES)
-            out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES)
+            out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+            out = decode_rule_outputs(net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
             drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
             add_D, add_X = _rule_scenario_additions(
                 t=t,
@@ -573,8 +573,8 @@ def _rule_calm_anchor_terms(
     train_cfg: TrainConfig,
 ) -> list[torch.Tensor]:
     z = _normal_rule_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
-    out = decode_rule_outputs(net(z), RULE_OUTPUT_NAMES)
-    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES)
+    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+    out = decode_rule_outputs(net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
     drv = derive_rule(
         unpack_rule_state(z),
         out,
@@ -659,12 +659,12 @@ def _rule_auxiliary_training_loss(
     return torch.stack(pieces).sum()
 
 
-def _decode_optimal_for_kind(raw: torch.Tensor, kind: str) -> Dict[str, torch.Tensor]:
+def _decode_optimal_for_kind(raw: torch.Tensor, kind: str, *, params: BaselineParams | None = None) -> Dict[str, torch.Tensor]:
     key = kind.lower()
     if key == "discretion":
-        return decode_discretion(raw)
+        return decode_discretion(raw, params=params)
     if key == "commitment":
-        return decode_commitment(raw)
+        return decode_commitment(raw, params=params)
     raise ValueError("kind must be 'discretion' or 'commitment'.")
 
 
@@ -711,7 +711,7 @@ def _optimal_training_scenario_states(
     states = [z]
     with torch.no_grad():
         for t in range(1, total):
-            out = _decode_optimal_for_kind(net(z), key)
+            out = _decode_optimal_for_kind(net(z), key, params=params)
             st = unpack_rule_state(z[..., :7])
             drv = derive_free(st, out, params)
             add_D, add_X = _rule_scenario_additions(
@@ -759,7 +759,7 @@ def _optimal_scenario_residuals(
 ) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], list[str]]:
     key = kind.lower()
     z, names = _optimal_training_scenario_states(net, kind=key, params=params, train_cfg=train_cfg)
-    out = _decode_optimal_for_kind(net(z), key)
+    out = _decode_optimal_for_kind(net(z), key, params=params)
     res, drv = private_residuals_free(
         z,
         out,
@@ -815,7 +815,7 @@ def _optimal_calm_anchor_terms(
         dtype=train_cfg.dtype,
         promise_init_scale=train_cfg.promise_init_scale,
     )
-    out = _decode_optimal_for_kind(net(z), kind)
+    out = _decode_optimal_for_kind(net(z), kind, params=params)
     drv = derive_free(unpack_rule_state(z[..., :7]), out, params)
     pressure = drv["M_zero_rent"] / torch.clamp(drv["mbar"], min=1e-12)
     target_pressure = torch.full_like(pressure, 1.0 / (1.0 + float(params.normal_capacity_slack)))
