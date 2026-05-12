@@ -896,13 +896,13 @@ def _optimal_training_scenario_states(
                 z = z_phys
             states.append(z)
     stacked = torch.stack(states, dim=0)
+    label_to_idx = {label: j for j, label in enumerate(_RULE_SCENARIO_LABELS)}
     selected = []
     names = []
-    for tag, offset in _RULE_SCENARIO_OFFSETS.items():
-        idx = min(max(burnin + int(offset), 0), stacked.shape[0] - 1)
-        for j, label in enumerate(_RULE_SCENARIO_LABELS):
-            selected.append(stacked[idx, j])
-            names.append(f"{label}.{tag}")
+    for label, tag in _RULE_SCENARIO_POINTS:
+        idx = min(max(burnin + int(_RULE_SCENARIO_OFFSETS[tag]), 0), stacked.shape[0] - 1)
+        selected.append(stacked[idx, label_to_idx[label]])
+        names.append(f"{label}.{tag}")
     return torch.stack(selected, dim=0).detach(), names
 
 
