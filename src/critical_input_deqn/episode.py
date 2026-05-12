@@ -24,8 +24,8 @@ def random_rule_step(
     """
 
     st = unpack_rule_state(z)
-    out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES)
-    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES)
+    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+    out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
     drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
 
     lam_D = torch.exp(st.ell_D)

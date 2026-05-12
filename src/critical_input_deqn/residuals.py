@@ -55,14 +55,14 @@ def natural_residuals(
     """
 
     st = unpack_natural_state(z_n)
-    out = decode_natural_outputs(raw_n, NATURAL_OUTPUT_NAMES)
+    out = decode_natural_outputs(raw_n, NATURAL_OUTPUT_NAMES, params=params)
     drv = derive_natural(st, out, params)
     C, Y, Rn = out["C_n"], out["Y_n"], out["R_n_real"]
 
     z_next = transition_natural_states(st, nodes, params, qmc_cfg)
     B, S, K = z_next.shape
     raw_next = natural_net(z_next.reshape(B * S, K))
-    out_next = decode_natural_outputs(raw_next, NATURAL_OUTPUT_NAMES)
+    out_next = decode_natural_outputs(raw_next, NATURAL_OUTPUT_NAMES, params=params)
     C_next = out_next["C_n"].reshape(B, S)
     lambda_ratio = C_next.pow(-float(params.sigma)) / C[:, None].pow(-float(params.sigma))
 
@@ -89,23 +89,22 @@ def rule_residuals(
     """Residuals for fixed Taylor and bottleneck-adjusted Taylor policies."""
 
     st = unpack_rule_state(z)
-    out = decode_rule_outputs(raw, RULE_OUTPUT_NAMES)
-
     z_n = z[..., :6]
     raw_n = natural_net(z_n)
-    out_n = decode_natural_outputs(raw_n, NATURAL_OUTPUT_NAMES)
+    out_n = decode_natural_outputs(raw_n, NATURAL_OUTPUT_NAMES, params=params)
     Y_n = out_n["Y_n"]
     R_n = out_n["R_n_real"]
+    out = decode_rule_outputs(raw, RULE_OUTPUT_NAMES, params=params, y_ref=Y_n)
     drv = derive_rule(st, out, params, Y_n=Y_n, R_n=R_n, policy=policy)
 
     z_next = transition_rule_states(st, drv["A_next"], drv["Delta"], nodes, params, qmc_cfg)
     B, S, K = z_next.shape
     raw_next = rule_net(z_next.reshape(B * S, K))
-    out_next = decode_rule_outputs(raw_next, RULE_OUTPUT_NAMES)
     z_next_flat = z_next.reshape(B * S, K)
     st_next = unpack_rule_state(z_next_flat)
     raw_n_next = natural_net(z_next_flat[..., :6])
-    out_n_next = decode_natural_outputs(raw_n_next, NATURAL_OUTPUT_NAMES)
+    out_n_next = decode_natural_outputs(raw_n_next, NATURAL_OUTPUT_NAMES, params=params)
+    out_next = decode_rule_outputs(raw_next, RULE_OUTPUT_NAMES, params=params, y_ref=out_n_next["Y_n"])
     drv_next = derive_rule(
         st_next,
         out_next,
@@ -149,11 +148,11 @@ def rule_residuals(
         - float(params.p_d) * drv["S"]
         - float(params.p_a) * psi(drv["I_A_effective"], params)
     ) / out["Y"]
-    res["price_index"] = (
-        1.0
-        - (1.0 - float(params.theta)) * drv["p_star"].pow(1.0 - float(params.epsilon))
-        - float(params.theta) * out["Pi"].pow(float(params.epsilon) - 1.0)
+    price_index_lhs = (
+        (1.0 - float(params.theta)) * drv["p_star"].pow(1.0 - float(params.epsilon))
+        + float(params.theta) * out["Pi"].pow(float(params.epsilon) - 1.0)
     )
+    res["price_index"] = torch.log(torch.clamp(price_index_lhs, min=1e-12))
     res["calvo_S"] = (
         out["S_p"]
         - drv["mc"] * out["Y"]

@@ -315,8 +315,8 @@ def simulate_rule_ir_scenarios(
     with torch.no_grad():
         for t in range(1, total):
             st = unpack_rule_state(z)
-            out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES)
-            out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES)
+            out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+            out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
             drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
             add_D, add_X = _scenario_additions(scenarios, t=t, device=z.device, dtype=z.dtype)
             z = _deterministic_physical_step(
@@ -362,9 +362,9 @@ def simulate_optimal_ir_scenarios(
             z_phys = z[..., :7]
             st = unpack_rule_state(z_phys)
             if kind == "commitment":
-                out = decode_commitment(policy_net(z))
+                out = decode_commitment(policy_net(z), params=params)
             else:
-                out = decode_discretion(policy_net(z))
+                out = decode_discretion(policy_net(z), params=params)
             drv = derive_free(st, out, params)
             add_D, add_X = _scenario_additions(scenarios, t=t, device=z.device, dtype=z.dtype)
             z_phys_next = _deterministic_physical_step(
@@ -399,8 +399,8 @@ def evaluate_rule_path(
     T, B, K = states.shape
     z = states.reshape(T * B, K)
     st = unpack_rule_state(z)
-    out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES)
-    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES)
+    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+    out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
     drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
     data: TensorDict = {}
     data.update(_state_dict(z, RULE_STATE_NAMES))
@@ -430,14 +430,14 @@ def evaluate_optimal_path(
     z_phys = z[..., :7]
     st = unpack_rule_state(z_phys)
     if kind == "discretion":
-        out = decode_discretion(policy_net(z))
+        out = decode_discretion(policy_net(z), params=params)
         state_names = RULE_STATE_NAMES
     elif kind == "commitment":
-        out = decode_commitment(policy_net(z))
+        out = decode_commitment(policy_net(z), params=params)
         state_names = COMMITMENT_STATE_NAMES
     else:
         raise ValueError("kind must be discretion or commitment.")
-    out_n = decode_natural_outputs(natural_net(z_phys[..., :6]), NATURAL_OUTPUT_NAMES)
+    out_n = decode_natural_outputs(natural_net(z_phys[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
     drv = derive_free(st, out, params)
     data: TensorDict = {}
     data.update(_state_dict(z, state_names))

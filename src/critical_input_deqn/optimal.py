@@ -42,12 +42,12 @@ def period_utility(C: torch.Tensor, N: torch.Tensor, p: BaselineParams) -> torch
     return u_c - N.pow(1.0 + varphi) / (1.0 + varphi)
 
 
-def decode_discretion(raw: torch.Tensor) -> TensorDict:
-    return decode_optimal_outputs(raw, DISCRETION_OUTPUT_NAMES)
+def decode_discretion(raw: torch.Tensor, *, params: BaselineParams | None = None) -> TensorDict:
+    return decode_optimal_outputs(raw, DISCRETION_OUTPUT_NAMES, params=params)
 
 
-def decode_commitment(raw: torch.Tensor) -> TensorDict:
-    return decode_optimal_outputs(raw, COMMITMENT_OUTPUT_NAMES)
+def decode_commitment(raw: torch.Tensor, *, params: BaselineParams | None = None) -> TensorDict:
+    return decode_optimal_outputs(raw, COMMITMENT_OUTPUT_NAMES, params=params)
 
 
 def multipliers(out: TensorDict) -> torch.Tensor:
@@ -82,11 +82,11 @@ def private_residuals_free(
         p_next = p_next[:, None, :].expand(B, S, len(COMMITMENT_PROMISE_NAMES))
         z_next = torch.cat([z_next_phys, p_next], dim=-1)
         raw_next = policy_net(z_next.reshape(B * S, K + len(COMMITMENT_PROMISE_NAMES)))
-        out_next = decode_commitment(raw_next)
+        out_next = decode_commitment(raw_next, params=params)
     else:
         z_next = z_next_phys
         raw_next = policy_net(z_next.reshape(B * S, K))
-        out_next = decode_discretion(raw_next)
+        out_next = decode_discretion(raw_next, params=params)
 
     st_next = unpack_rule_state(z_next_phys.reshape(B * S, K))
     drv_next = derive_free(st_next, out_next, params)
@@ -118,11 +118,11 @@ def private_residuals_free(
         - float(params.p_d) * drv["S"]
         - float(params.p_a) * psi(drv["I_A_effective"], params)
     ) / out["Y"]
-    res["price_index"] = (
-        1.0
-        - (1.0 - float(params.theta)) * drv["p_star"].pow(1.0 - float(params.epsilon))
-        - float(params.theta) * out["Pi"].pow(float(params.epsilon) - 1.0)
+    price_index_lhs = (
+        (1.0 - float(params.theta)) * drv["p_star"].pow(1.0 - float(params.epsilon))
+        + float(params.theta) * out["Pi"].pow(float(params.epsilon) - 1.0)
     )
+    res["price_index"] = torch.log(torch.clamp(price_index_lhs, min=1e-12))
     res["calvo_S"] = (
         out["S_p"]
         - drv["mc"] * out["Y"]
@@ -217,7 +217,7 @@ def discretion_residuals(
     qmc_cfg: QMCConfig,
     fb_epsilon: float,
 ) -> Tuple[TensorDict, TensorDict]:
-    out = decode_discretion(raw)
+    out = decode_discretion(raw, params=params)
     priv, drv = private_residuals_free(
         z,
         out,
@@ -292,7 +292,7 @@ def commitment_residuals(
     qmc_cfg: QMCConfig,
     fb_epsilon: float,
 ) -> Tuple[TensorDict, TensorDict]:
-    out = decode_commitment(raw)
+    out = decode_commitment(raw, params=params)
     priv, drv = private_residuals_free(
         zc,
         out,
@@ -368,10 +368,10 @@ def simulate_optimal_episode(
     with torch.no_grad():
         for _ in range(1, int(length)):
             if kind == "discretion":
-                out = decode_discretion(policy_net(z))
+                out = decode_discretion(policy_net(z), params=params)
                 z = random_physical_step(z, out, params=params)
             elif kind == "commitment":
-                out = decode_commitment(policy_net(z))
+                out = decode_commitment(policy_net(z), params=params)
                 z_phys = random_physical_step(z[..., :7], out, params=params)
                 p_next = torch.stack([out[name] for name in COMMITMENT_PROMISE_NAMES], dim=-1)
                 z = torch.cat([z_phys, p_next], dim=-1)
