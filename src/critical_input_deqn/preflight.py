@@ -83,7 +83,7 @@ def run_preflight(
     )
     out["natural"] = _check("natural", res_n)
 
-    for policy in ("fixed", "ba", "bottleneck"):
+    for policy in ("fixed", "ba", "bottleneck", "repair_aware"):
         res_rule, _ = rule_residuals(
             z,
             rule_net(z),

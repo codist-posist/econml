@@ -401,6 +401,18 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         description="Bottleneck-adjusted Taylor policies respond more to positive cap pressure.",
         overrides={"phi_bottleneck": 0.50},
     ),
+    "weak_repair_aware_policy": ExperimentSpec(
+        name="weak_repair_aware_policy",
+        group="sensitivity",
+        description="Repair-aware Taylor policies respond less to near-threshold adaptation value.",
+        overrides={"phi_repair": 0.05},
+    ),
+    "strong_repair_aware_policy": ExperimentSpec(
+        name="strong_repair_aware_policy",
+        group="sensitivity",
+        description="Repair-aware Taylor policies respond more to near-threshold adaptation value.",
+        overrides={"phi_repair": 0.20},
+    ),
 }
 
 
@@ -448,6 +460,8 @@ TABLE_EXPERIMENTS = {
         "output_gap_policy",
         "weak_bottleneck_policy",
         "strong_bottleneck_policy",
+        "weak_repair_aware_policy",
+        "strong_repair_aware_policy",
     ],
 }
 

@@ -86,7 +86,7 @@ def rule_residuals(
     fb_epsilon: float,
     policy: str,
 ) -> Tuple[TensorDict, TensorDict]:
-    """Residuals for fixed, natural-rate-adjusted, and bottleneck-adjusted Taylor policies."""
+    """Residuals for fixed, natural-rate-adjusted, bottleneck, and repair-aware Taylor policies."""
 
     st = unpack_rule_state(z)
     z_n = z[..., :6]

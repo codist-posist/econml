@@ -22,11 +22,12 @@ from .optimal import period_utility
 import torch
 
 
-POLICIES = ("fixed", "ba", "bottleneck", "discretion", "commitment")
+POLICIES = ("fixed", "ba", "bottleneck", "repair_aware", "discretion", "commitment")
 POLICY_LABELS = {
     "fixed": "Fixed Taylor",
     "ba": "Natural-rate-adjusted Taylor",
     "bottleneck": "Bottleneck-adjusted Taylor",
+    "repair_aware": "Repair-aware Taylor",
     "discretion": "Discretion",
     "commitment": "Commitment",
 }
@@ -389,6 +390,7 @@ def numerical_diagnostic_rows(base_root: Path, experiment: str = "baseline") -> 
         "fixed": root / "fixed_taylor" / "fixed_eval.json",
         "ba": root / "modified_taylor" / "ba_eval.json",
         "bottleneck": root / "bottleneck_taylor" / "bottleneck_eval.json",
+        "repair_aware": root / "repair_aware_taylor" / "repair_aware_eval.json",
         "discretion": root / "discretion" / "discretion_eval.json",
         "commitment": root / "commitment" / "commitment_eval.json",
     }
@@ -419,7 +421,7 @@ def numerical_robustness_rows(base_root: Path, *, policy: str) -> list[dict[str,
     return rows
 
 
-def make_tables(base_root: Path, output_dir: Path, *, policy_for_decomposition: str = "bottleneck") -> dict[str, str]:
+def make_tables(base_root: Path, output_dir: Path, *, policy_for_decomposition: str = "repair_aware") -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, str] = {}
 
@@ -500,7 +502,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build tables from critical-input DEQN postprocess artifacts.")
     parser.add_argument("--base-root", type=Path, default=Path("baseline_artifacts/critical_input_deqn"))
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--policy", default="bottleneck", choices=POLICIES)
+    parser.add_argument("--policy", default="repair_aware", choices=POLICIES)
     args = parser.parse_args()
 
     output_dir = args.output_dir or (args.base_root / "tables")

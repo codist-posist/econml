@@ -51,10 +51,12 @@ def _selection_metadata(log) -> dict[str, object]:
 
 def _policies(raw: str) -> list[str]:
     policies = [p.strip().lower() for p in raw.split(",") if p.strip()]
-    valid = {"fixed", "ba", "bottleneck"}
+    valid = {"fixed", "ba", "bottleneck", "repair_aware"}
     bad = sorted(set(policies) - valid)
     if bad:
-        raise ValueError(f"Unknown policy names: {bad}. Use fixed, ba, bottleneck, or a comma-separated subset.")
+        raise ValueError(
+            f"Unknown policy names: {bad}. Use fixed, ba, bottleneck, repair_aware, or a comma-separated subset."
+        )
     return policies
 
 
@@ -79,7 +81,7 @@ def _resolved_stop(args: argparse.Namespace, kind: str) -> dict[str, float | int
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train the critical-input baseline DEQN.")
     parser.add_argument("--output-dir", type=Path, default=Path("baseline_artifacts/critical_input_deqn"))
-    parser.add_argument("--policies", default="fixed,ba", help="Comma-separated list: fixed,ba,bottleneck")
+    parser.add_argument("--policies", default="fixed,ba", help="Comma-separated list: fixed,ba,bottleneck,repair_aware")
     parser.add_argument("--experiment", default="baseline")
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--natural-checkpoint", type=Path, default=None)

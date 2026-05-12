@@ -30,9 +30,18 @@ def main() -> None:
         net_cfg=net_cfg,
         log_every=1,
     )
+    repair_aware_net, repair_aware_log = train_rule(
+        natural_net,
+        policy="repair_aware",
+        train_cfg=train_cfg,
+        qmc_cfg=qmc_cfg,
+        net_cfg=net_cfg,
+        log_every=1,
+    )
     print("natural_log", natural_log)
     print("fixed_log", fixed_log)
     print("bottleneck_log", bottleneck_log)
+    print("repair_aware_log", repair_aware_log)
     print("natural_eval", evaluate_natural(natural_net, train_cfg=train_cfg, qmc_cfg=QMCConfig(n_train=32, seed=12), n_states=32))
     print(
         "fixed_eval",
@@ -53,6 +62,17 @@ def main() -> None:
             policy="bottleneck",
             train_cfg=train_cfg,
             qmc_cfg=QMCConfig(n_train=32, seed=14),
+            n_states=32,
+        ),
+    )
+    print(
+        "repair_aware_eval",
+        evaluate_rule(
+            repair_aware_net,
+            natural_net,
+            policy="repair_aware",
+            train_cfg=train_cfg,
+            qmc_cfg=QMCConfig(n_train=32, seed=15),
             n_states=32,
         ),
     )

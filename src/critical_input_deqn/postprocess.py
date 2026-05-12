@@ -540,6 +540,13 @@ def run_postprocess(
             artifact_root / "bottleneck.pt",
         ]
     )
+    repair_aware_path = _maybe_first_existing(
+        [
+            artifact_root / "repair_aware_taylor" / "checkpoints" / "repair_aware_best.pt",
+            artifact_root / "repair_aware_taylor" / "repair_aware.pt",
+            artifact_root / "repair_aware.pt",
+        ]
+    )
     discretion_path = _first_existing(
         [
             artifact_root / "discretion" / "checkpoints" / "discretion_best.pt",
@@ -560,11 +567,14 @@ def run_postprocess(
     fixed = load_rule(fixed_path, policy="fixed", device=device, dtype=dtype)
     ba = load_rule(ba_path, policy="ba", device=device, dtype=dtype)
     bottleneck = None if bottleneck_path is None else load_rule(bottleneck_path, policy="bottleneck", device=device, dtype=dtype)
+    repair_aware = None if repair_aware_path is None else load_rule(repair_aware_path, policy="repair_aware", device=device, dtype=dtype)
     discretion = load_optimal(discretion_path, kind="discretion", device=device, dtype=dtype)
     commitment = load_optimal(commitment_path, kind="commitment", device=device, dtype=dtype)
     rule_policies = {"fixed": fixed, "ba": ba}
     if bottleneck is not None:
         rule_policies["bottleneck"] = bottleneck
+    if repair_aware is not None:
+        rule_policies["repair_aware"] = repair_aware
 
     torch.manual_seed(int(seed))
     z0 = sample_rule_states(batch_size, params=params, device=device, dtype=dtype, seed=seed)

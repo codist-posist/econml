@@ -11,8 +11,8 @@ functions and are trained by minimizing equilibrium residuals.
 ## Implemented first
 
 - auxiliary flexible-price benchmark network;
-- fixed Taylor, natural-rate-adjusted Taylor, and bottleneck-adjusted Taylor
-  residual systems;
+- fixed Taylor, natural-rate-adjusted Taylor, bottleneck-adjusted Taylor, and
+  repair-aware Taylor residual systems;
 - fixed Sobol/QMC expectation nodes;
 - marked-Poisson transition block with deterministic marks;
 - exact one-dimensional imported-input MCP for scarcity rents;
@@ -40,8 +40,8 @@ python -m src.critical_input_deqn.preflight
 
 The preflight is not a convergence test.  It checks that the natural
 benchmark, fixed Taylor, natural-rate-adjusted Taylor, bottleneck-adjusted
-Taylor, discretion, and commitment residual systems all build finite residual
-matrices with the current state and output architecture.
+Taylor, repair-aware Taylor, discretion, and commitment residual systems all
+build finite residual matrices with the current state and output architecture.
 
 ## Tiny training test
 
@@ -57,7 +57,7 @@ solution.
 ```bash
 python -m src.critical_input_deqn.run_train ^
   --output-dir baseline_artifacts/critical_input_deqn ^
-  --policies fixed,ba,bottleneck
+  --policies fixed,ba,bottleneck,repair_aware
 ```
 
 The launcher first trains the auxiliary flexible-price benchmark network,
@@ -116,17 +116,19 @@ The notebooks are experiment wrappers around the package code:
    natural-rate-adjusted Taylor rule using the frozen benchmark.
 4. `notebooks/critical_input_deqn_10_bottleneck_taylor.ipynb` trains the
    bottleneck-adjusted Taylor rule using the frozen benchmark.
-5. `notebooks/critical_input_deqn_04_discretion.ipynb` trains the discretionary
+5. `notebooks/critical_input_deqn_11_repair_aware_taylor.ipynb` trains the
+   repair-aware Taylor rule using the frozen benchmark.
+6. `notebooks/critical_input_deqn_04_discretion.ipynb` trains the discretionary
    optimal-policy network.
-6. `notebooks/critical_input_deqn_05_commitment.ipynb` trains the commitment
+7. `notebooks/critical_input_deqn_05_commitment.ipynb` trains the commitment
    optimal-policy network with promise states.
-7. `notebooks/critical_input_deqn_06_postprocess_artifacts.ipynb` loads all
+8. `notebooks/critical_input_deqn_06_postprocess_artifacts.ipynb` loads all
    trained checkpoints and saves simulated states, deterministic scenario
    responses, definitions, and summary statistics for downstream figures.
-8. `notebooks/critical_input_deqn_03_compare_all_policies.ipynb` loads saved
+9. `notebooks/critical_input_deqn_03_compare_all_policies.ipynb` loads saved
    diagnostics from the rule and optimal-policy environments and writes a
    comparison table.
-9. `notebooks/critical_input_deqn_07_tables_and_figures.ipynb` builds the
+10. `notebooks/critical_input_deqn_07_tables_and_figures.ipynb` builds the
    benchmark moments, counterfactual/sensitivity tables, and main figure files
    from the postprocessed arrays that already exist.
 
@@ -147,7 +149,8 @@ registered variants include:
   technology variants, residual-import-dependence variants, repair-cost
   variants, financing-sensitivity variants, and policy-rule variants such as
   `hawkish_policy`, `dovish_policy`, `output_gap_policy`,
-  `weak_bottleneck_policy`, and `strong_bottleneck_policy`.
+  `weak_bottleneck_policy`, `strong_bottleneck_policy`,
+  `weak_repair_aware_policy`, and `strong_repair_aware_policy`.
 
 One structured experiment can be run with:
 

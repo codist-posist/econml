@@ -21,7 +21,7 @@ VAR_LABELS = {
     "A": r"$A_t$",
     "R": r"$R_t$",
 }
-POLICIES = ("fixed", "ba", "bottleneck", "discretion", "commitment")
+POLICIES = ("fixed", "ba", "bottleneck", "repair_aware", "discretion", "commitment")
 
 
 def _postprocess_dir(base_root: Path, experiment: str) -> Path:
@@ -362,6 +362,7 @@ def plot_training_diagnostics(*, base_root: Path, output: Path) -> bool:
         "fixed": base_root / "fixed_taylor" / "fixed_train_log.json",
         "ba": base_root / "modified_taylor" / "ba_train_log.json",
         "bottleneck": base_root / "bottleneck_taylor" / "bottleneck_train_log.json",
+        "repair_aware": base_root / "repair_aware_taylor" / "repair_aware_train_log.json",
         "discretion": base_root / "discretion" / "discretion_train_log.json",
         "commitment": base_root / "commitment" / "commitment_train_log.json",
     }
@@ -402,6 +403,7 @@ def plot_eval_residual_bars(*, base_root: Path, output: Path) -> bool:
         "fixed": base_root / "fixed_taylor" / "fixed_eval.json",
         "ba": base_root / "modified_taylor" / "ba_eval.json",
         "bottleneck": base_root / "bottleneck_taylor" / "bottleneck_eval.json",
+        "repair_aware": base_root / "repair_aware_taylor" / "repair_aware_eval.json",
         "discretion": base_root / "discretion" / "discretion_eval.json",
         "commitment": base_root / "commitment" / "commitment_eval.json",
     }
@@ -464,11 +466,11 @@ def make_figures(base_root: Path, output_dir: Path, *, policy: str = "ba") -> di
         written["figure_3"] = str(output_dir / "figure_3_policy_comparison_disruption.png")
     if plot_policy_ir_grid_comparison(
         root=baseline_root,
-        policies=("fixed", "ba", "bottleneck"),
+        policies=("fixed", "ba", "bottleneck", "repair_aware"),
         scenario="D_1x",
         variables=policy_grid_vars,
         output=output_dir / "figure_4_rule_taylor_comparison.png",
-        title="Fixed vs natural-rate-adjusted vs bottleneck-adjusted Taylor",
+        title="Fixed vs natural-rate-adjusted vs bottleneck vs repair-aware Taylor",
         min_policies=2,
     ):
         written["figure_4"] = str(output_dir / "figure_4_rule_taylor_comparison.png")
@@ -562,7 +564,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build figures from critical-input DEQN postprocess artifacts.")
     parser.add_argument("--base-root", type=Path, default=Path("baseline_artifacts/critical_input_deqn"))
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--policy", default="bottleneck", choices=("fixed", "ba", "bottleneck", "discretion", "commitment"))
+    parser.add_argument("--policy", default="repair_aware", choices=POLICIES)
     args = parser.parse_args()
 
     output_dir = args.output_dir or (args.base_root / "figures")

@@ -315,25 +315,56 @@ def derive_rule(
         if R_n is None:
             raise ValueError("BA policy requires R_n.")
         intercept = float(p.bar_pi) * R_n
-    elif policy_key == "bottleneck":
+    elif policy_key in {"bottleneck", "repair_aware"}:
         intercept = torch.full_like(C, float(p.bar_R))
     else:
-        raise ValueError("policy must be 'fixed', 'ba', or 'bottleneck'.")
+        raise ValueError("policy must be 'fixed', 'ba', 'bottleneck', or 'repair_aware'.")
+
+    R_standard = intercept * (Pi / float(p.bar_pi)).pow(float(p.phi_pi)) * (Y / Y_n).pow(float(p.phi_y))
 
     bottleneck_scarcity = torch.zeros_like(C)
     bottleneck_adjustment = torch.ones_like(C)
+    cap_pressure_policy = torch.zeros_like(C)
     if policy_key == "bottleneck":
         M_zero_policy = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
         cap_pressure_policy = M_zero_policy / torch.clamp(mbar, min=1e-12)
         bottleneck_scarcity = torch.relu(torch.log(torch.clamp(cap_pressure_policy, min=1e-12)))
         bottleneck_adjustment = torch.exp(-float(p.phi_bottleneck) * bottleneck_scarcity)
 
-    R = (
-        intercept
-        * (Pi / float(p.bar_pi)).pow(float(p.phi_pi))
-        * (Y / Y_n).pow(float(p.phi_y))
-        * bottleneck_adjustment
-    )
+    repair_margin_standard = torch.zeros_like(C)
+    repair_margin_support = torch.zeros_like(C)
+    repair_cap_support = torch.zeros_like(C)
+    repair_support_raw = torch.zeros_like(C)
+    repair_support = torch.zeros_like(C)
+    repair_adjustment = torch.ones_like(C)
+    if policy_key == "repair_aware":
+        M_zero_policy = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
+        cap_pressure_policy = M_zero_policy / torch.clamp(mbar, min=1e-12)
+        Omega_standard = omega_A_cost(R_standard, p)
+        repair_threshold_standard = torch.clamp(Omega_standard * p_a * float(p.psi_A), min=1e-12)
+        repair_margin_standard = out["Q_A"] / repair_threshold_standard
+        repair_margin_support = torch.relu(
+            torch.log(
+                torch.clamp(
+                    repair_margin_standard / max(float(p.repair_margin_trigger), 1e-12),
+                    min=1e-12,
+                )
+            )
+        )
+        repair_cap_support = torch.relu(
+            torch.log(
+                torch.clamp(
+                    cap_pressure_policy / max(float(p.repair_cap_pressure_trigger), 1e-12),
+                    min=1e-12,
+                )
+            )
+        )
+        repair_support_raw = repair_margin_support * repair_cap_support
+        support_max = max(float(p.repair_support_max), 1e-12)
+        repair_support = support_max * torch.tanh(repair_support_raw / support_max)
+        repair_adjustment = torch.exp(-float(p.phi_repair) * repair_support)
+
+    R = R_standard * bottleneck_adjustment * repair_adjustment
     Omega_A = omega_A_cost(R, p)
     I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
     A_next = (1.0 - float(p.delta_A)) * st.A + I
@@ -366,9 +397,17 @@ def derive_rule(
         "I_A_effective": I,
         "A_next": A_next,
         "R": R,
+        "R_standard": R_standard,
         "Omega_A": Omega_A,
+        "cap_pressure_policy": cap_pressure_policy,
         "bottleneck_scarcity": bottleneck_scarcity,
         "bottleneck_adjustment": bottleneck_adjustment,
+        "repair_margin_standard": repair_margin_standard,
+        "repair_margin_support": repair_margin_support,
+        "repair_cap_support": repair_cap_support,
+        "repair_support_raw": repair_support_raw,
+        "repair_support": repair_support,
+        "repair_adjustment": repair_adjustment,
     }
 
 

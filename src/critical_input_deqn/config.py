@@ -72,6 +72,10 @@ class BaselineParams:
     phi_pi: float = 2.0
     phi_y: float = 0.0
     phi_bottleneck: float = 0.25
+    phi_repair: float = 0.10
+    repair_margin_trigger: float = 0.80
+    repair_cap_pressure_trigger: float = 0.90
+    repair_support_max: float = 1.00
 
     @property
     def bar_R(self) -> float:
@@ -138,6 +142,7 @@ STOP_PROFILES = {
     "fixed": {"target_rms": 1e-4, "target_max_abs": 1e-2, "min_steps_before_stop": 10_000, "early_stop_patience": 10},
     "ba": {"target_rms": 1e-4, "target_max_abs": 1e-2, "min_steps_before_stop": 10_000, "early_stop_patience": 10},
     "bottleneck": {"target_rms": 1e-4, "target_max_abs": 1e-2, "min_steps_before_stop": 10_000, "early_stop_patience": 10},
+    "repair_aware": {"target_rms": 1e-4, "target_max_abs": 1e-2, "min_steps_before_stop": 10_000, "early_stop_patience": 10},
     "discretion": {"target_rms": 5e-4, "target_max_abs": 2e-2, "min_steps_before_stop": 20_000, "early_stop_patience": 10},
     "commitment": {"target_rms": 5e-4, "target_max_abs": 2e-2, "min_steps_before_stop": 20_000, "early_stop_patience": 10},
 }

@@ -178,6 +178,20 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
         ]
         cmds.append(_append_rule_training_args(cmd, args))
 
+    if args.stage in {"rules", "repair_aware", "all"}:
+        cmd = _base_cmd() + [
+            "src.critical_input_deqn.run_train",
+            "--output-dir",
+            str(root / "repair_aware_taylor"),
+            "--natural-checkpoint",
+            str(_natural_checkpoint(root)),
+            "--policies",
+            "repair_aware",
+            "--rule-steps",
+            str(args.rule_steps),
+        ]
+        cmds.append(_append_rule_training_args(cmd, args))
+
     if args.stage in {"discretion", "all"}:
         cmd = _base_cmd() + [
             "src.critical_input_deqn.run_optimal",
@@ -243,7 +257,18 @@ def main() -> None:
     parser.add_argument(
         "--stage",
         default="all",
-        choices=("natural", "fixed", "ba", "bottleneck", "rules", "discretion", "commitment", "postprocess", "all"),
+        choices=(
+            "natural",
+            "fixed",
+            "ba",
+            "bottleneck",
+            "repair_aware",
+            "rules",
+            "discretion",
+            "commitment",
+            "postprocess",
+            "all",
+        ),
     )
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true")
