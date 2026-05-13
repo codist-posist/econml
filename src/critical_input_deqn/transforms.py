@@ -108,6 +108,37 @@ def _bounded_signed(raw: torch.Tensor, scale: float) -> torch.Tensor:
     return float(scale) * torch.tanh(raw)
 
 
+def calvo_index_implied_pstar(
+    Pi: torch.Tensor,
+    params: BaselineParams | None = None,
+    *,
+    floor: float = 1e-10,
+) -> torch.Tensor:
+    """Reset price implied by the Calvo price-index identity."""
+
+    p = params or BaselineParams()
+    theta = float(p.theta)
+    epsilon = float(p.epsilon)
+    if theta <= 0.0:
+        return torch.ones_like(Pi)
+    lhs = (1.0 - theta * Pi.pow(epsilon - 1.0)) / max(1.0 - theta, floor)
+    return torch.clamp(lhs, min=floor).pow(1.0 / (1.0 - epsilon))
+
+
+def _rule_pi_width(params: BaselineParams | None = None) -> float:
+    """Keep rule inflation inside the hard Calvo-index admissible region."""
+
+    p = params or BaselineParams()
+    theta = float(p.theta)
+    epsilon = float(p.epsilon)
+    if theta <= 0.0:
+        return math.log(1.30)
+    # This corresponds to roughly p_star <= 1.15 in the baseline calibration.
+    pstar_hi = 1.15
+    pi_hi = ((1.0 - (1.0 - theta) * pstar_hi ** (1.0 - epsilon)) / theta) ** (1.0 / (epsilon - 1.0))
+    return max(math.log(min(pi_hi, 1.30)), math.log(1.005))
+
+
 def decode_rule_outputs(
     raw: torch.Tensor,
     names: Iterable[str],
@@ -117,7 +148,8 @@ def decode_rule_outputs(
 ) -> Dict[str, torch.Tensor]:
     targets = steady_decode_targets(params)
     out: Dict[str, torch.Tensor] = {}
-    for i, name in enumerate(names):
+    names_tuple = tuple(names)
+    for i, name in enumerate(names_tuple):
         x = raw[..., i]
         if name == "C":
             out[name] = _bounded_log_center(x, targets["C"], math.log(3.0))
@@ -125,7 +157,7 @@ def decode_rule_outputs(
             center = y_ref if y_ref is not None else targets["Y"]
             out[name] = _bounded_log_center(x, center, 2.0)
         elif name == "Pi":
-            out[name] = _bounded_log_center(x, targets["Pi"], math.log(1.30))
+            out[name] = _bounded_log_center(x, targets["Pi"], _rule_pi_width(params))
         elif name == "Q_A":
             out[name] = _bounded_signed(x, targets["Q_A_scale"])
         elif name == "S_p":
@@ -134,6 +166,10 @@ def decode_rule_outputs(
             out[name] = _bounded_log_center(x, targets["F_p"], math.log(4.0))
         else:
             out[name] = positive(x)
+    if "S_p" in out and "F_p" in out and "Pi" in out:
+        p = params or BaselineParams()
+        p_star = calvo_index_implied_pstar(out["Pi"], p)
+        out["S_p"] = ((float(p.epsilon) - 1.0) / float(p.epsilon)) * p_star * out["F_p"]
     return out
 
 
