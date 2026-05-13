@@ -25,6 +25,7 @@ from .economics import (
     unpack_rule_state,
 )
 from .qmc import QMCNodes
+from .natural_oracle import natural_benchmark_outputs
 from .transforms import decode_natural_outputs, decode_rule_outputs
 from .transitions import transition_natural_states, transition_rule_states
 
@@ -90,10 +91,15 @@ def rule_residuals(
 
     st = unpack_rule_state(z)
     z_n = z[..., :6]
-    raw_n = natural_net(z_n)
-    out_n = decode_natural_outputs(raw_n, NATURAL_OUTPUT_NAMES, params=params)
+    policy_key = policy.lower()
+    out_n = natural_benchmark_outputs(
+        z_n,
+        natural_net,
+        params=params,
+        need_rate=policy_key == "ba",
+    )
     Y_n = out_n["Y_n"]
-    R_n = out_n["R_n_real"]
+    R_n = out_n.get("R_n_real", torch.full_like(Y_n, float(params.bar_R)))
     out = decode_rule_outputs(raw, RULE_OUTPUT_NAMES, params=params, y_ref=Y_n)
     drv = derive_rule(st, out, params, Y_n=Y_n, R_n=R_n, policy=policy)
 
@@ -102,15 +108,29 @@ def rule_residuals(
     raw_next = rule_net(z_next.reshape(B * S, K))
     z_next_flat = z_next.reshape(B * S, K)
     st_next = unpack_rule_state(z_next_flat)
-    raw_n_next = natural_net(z_next_flat[..., :6])
-    out_n_next = decode_natural_outputs(raw_n_next, NATURAL_OUTPUT_NAMES, params=params)
-    out_next = decode_rule_outputs(raw_next, RULE_OUTPUT_NAMES, params=params, y_ref=out_n_next["Y_n"])
+    if getattr(natural_net, "is_natural_oracle", False):
+        out_n_next = natural_benchmark_outputs(
+            z_next_flat[..., :6],
+            natural_net,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            need_rate=False,
+        )
+        out_next = decode_rule_outputs(raw_next, RULE_OUTPUT_NAMES, params=params, y_ref=out_n_next["Y_n"])
+        Y_n_next = out_n_next["Y_n"]
+        R_n_next = out_n_next.get("R_n_real", torch.full_like(Y_n_next, float(params.bar_R)))
+    else:
+        raw_n_next = natural_net(z_next_flat[..., :6])
+        out_n_next = decode_natural_outputs(raw_n_next, NATURAL_OUTPUT_NAMES, params=params)
+        out_next = decode_rule_outputs(raw_next, RULE_OUTPUT_NAMES, params=params, y_ref=out_n_next["Y_n"])
+        Y_n_next = out_n_next["Y_n"]
+        R_n_next = out_n_next["R_n_real"]
     drv_next = derive_rule(
         st_next,
         out_next,
         params,
-        Y_n=out_n_next["Y_n"],
-        R_n=out_n_next["R_n_real"],
+        Y_n=Y_n_next,
+        R_n=R_n_next,
         policy=policy,
     )
 

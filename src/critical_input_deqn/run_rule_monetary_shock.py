@@ -9,6 +9,7 @@ import torch
 
 from .config import NetworkConfig, QMCConfig, TrainConfig, stop_profile
 from .experiments import resolve_params
+from .natural_oracle import NaturalOracleNet
 from .monetary_shock import (
     MonetaryShockConfig,
     checkpoint_metadata,
@@ -105,6 +106,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train Taylor-rule DEQN networks with a monetary-policy shock state.")
     parser.add_argument("--output-dir", type=Path, default=Path("baseline_artifacts/critical_input_deqn/rule_monetary_shock"))
     parser.add_argument("--natural-checkpoint", type=Path, default=None)
+    parser.add_argument("--natural-benchmark", choices=("network", "oracle"), default="oracle")
+    parser.add_argument("--natural-oracle-nodes", type=int, default=32)
+    parser.add_argument("--natural-oracle-chunk-size", type=int, default=8192)
     parser.add_argument("--policies", default="fixed,ba", help="Comma-separated list: fixed,ba,bottleneck,repair_aware")
     parser.add_argument("--experiment", default="baseline")
     parser.add_argument("--params-json", type=Path, default=None)
@@ -171,6 +175,21 @@ def main() -> None:
         dtype=dtype,
         fallback_cfg=net_cfg,
     )
+    if args.natural_benchmark == "oracle":
+        natural_net = NaturalOracleNet(
+            params=params,
+            qmc_cfg=QMCConfig(n_train=args.natural_oracle_nodes, seed=args.seed + 991),
+            n_nodes=args.natural_oracle_nodes,
+            device=args.device,
+            dtype=dtype,
+            chunk_size=args.natural_oracle_chunk_size,
+        )
+        natural_metadata = {
+            **natural_metadata,
+            "natural_benchmark": "oracle",
+            "natural_oracle_nodes": args.natural_oracle_nodes,
+            "natural_oracle_chunk_size": args.natural_oracle_chunk_size,
+        }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     run_config = {
@@ -211,6 +230,9 @@ def main() -> None:
             "target_scenario_q_rms": args.target_scenario_q_rms,
             "dtype": args.dtype,
             "device": args.device,
+            "natural_benchmark": args.natural_benchmark,
+            "natural_oracle_nodes": args.natural_oracle_nodes,
+            "natural_oracle_chunk_size": args.natural_oracle_chunk_size,
         },
         "policies": _policies(args.policies),
         "natural_checkpoint": str(natural_checkpoint),
@@ -221,6 +243,7 @@ def main() -> None:
     print(
         f"Configured run_rule_monetary_shock: output_dir={args.output_dir}, policies={_policies(args.policies)}, "
         f"device={args.device}, dtype={args.dtype}, rule_steps={args.rule_steps}, "
+        f"natural_benchmark={args.natural_benchmark}, natural_oracle_nodes={args.natural_oracle_nodes}, "
         f"qmc_train={args.qmc_train}, qmc_val={args.qmc_val}, "
         f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}",
         flush=True,

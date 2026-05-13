@@ -24,6 +24,7 @@ from .config import (
     TrainConfig,
 )
 from .networks import MLP
+from .natural_oracle import natural_benchmark_outputs
 from .qmc import make_qmc_nodes
 from .residuals import natural_residuals, rule_residuals, stack_residuals
 from .sampling import natural_from_rule_states, sample_rule_states
@@ -661,7 +662,12 @@ def _rule_training_scenario_states(
     with torch.no_grad():
         for t in range(1, total):
             st = unpack_rule_state(z)
-            out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+            out_n = natural_benchmark_outputs(
+                z[..., :6],
+                natural_net,
+                params=params,
+                need_rate=policy.lower() == "ba",
+            )
             out = decode_rule_outputs(net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
             drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
             add_D, add_X = _rule_scenario_additions(
@@ -845,7 +851,12 @@ def _rule_calm_anchor_terms(
     train_cfg: TrainConfig,
 ) -> list[torch.Tensor]:
     z = _normal_rule_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
-    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+    out_n = natural_benchmark_outputs(
+        z[..., :6],
+        natural_net,
+        params=params,
+        need_rate=policy.lower() == "ba",
+    )
     out = decode_rule_outputs(net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
     drv = derive_rule(
         unpack_rule_state(z),

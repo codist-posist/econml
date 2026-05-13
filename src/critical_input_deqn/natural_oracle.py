@@ -3,20 +3,151 @@ from __future__ import annotations
 from typing import Dict, Tuple
 
 import torch
+import torch.nn as nn
 
-from .config import BaselineParams, QMCConfig
+from .config import BaselineParams, NATURAL_OUTPUT_NAMES, QMCConfig
 from .economics import derive_natural, unpack_natural_state
-from .qmc import QMCNodes
-from .residuals import _mean_over_nodes
+from .qmc import QMCNodes, make_qmc_nodes
 from .transitions import transition_natural_states
-from .transforms import steady_decode_targets
+from .transforms import decode_natural_outputs, steady_decode_targets
 
 
 TensorDict = Dict[str, torch.Tensor]
 
 
+def _mean_over_nodes(x: torch.Tensor) -> torch.Tensor:
+    return x.mean(dim=1)
+
+
 def _reshape_outputs(data: TensorDict, shape: torch.Size) -> TensorDict:
     return {key: value.reshape(shape) for key, value in data.items()}
+
+
+def _atanh_clamped(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    x = torch.clamp(x, min=-1.0 + float(eps), max=1.0 - float(eps))
+    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+
+
+def _encode_bounded_log_center(value: torch.Tensor, center: float, width: float) -> torch.Tensor:
+    scaled = torch.log(torch.clamp(value, min=1e-30) / max(float(center), 1e-30)) / float(width)
+    return _atanh_clamped(scaled)
+
+
+def encode_natural_outputs(out: TensorDict, params: BaselineParams = BaselineParams()) -> torch.Tensor:
+    """Encode natural oracle levels into raw outputs compatible with decode_natural_outputs."""
+
+    targets = steady_decode_targets(params)
+    raw = []
+    for name in NATURAL_OUTPUT_NAMES:
+        if name == "C_n":
+            raw.append(_encode_bounded_log_center(out[name], targets["C"], torch.log(torch.as_tensor(3.0)).item()))
+        elif name == "Y_n":
+            raw.append(_encode_bounded_log_center(out[name], targets["Y"], 2.0))
+        elif name == "R_n_real":
+            raw.append(_encode_bounded_log_center(out[name], targets["R"], torch.log(torch.as_tensor(1.50)).item()))
+        else:
+            raise ValueError(f"Unsupported natural output: {name}")
+    return torch.stack(raw, dim=-1)
+
+
+class NaturalOracleNet(nn.Module):
+    """Drop-in natural benchmark module backed by the numerical oracle.
+
+    Forward returns raw outputs so legacy code that calls
+    ``decode_natural_outputs(natural_net(z_n), ...)`` keeps working.  New code
+    can call ``outputs(..., need_rate=False)`` to avoid computing the Euler
+    natural rate when only ``C_n`` and ``Y_n`` are needed.
+    """
+
+    is_natural_oracle = True
+
+    def __init__(
+        self,
+        *,
+        params: BaselineParams = BaselineParams(),
+        qmc_cfg: QMCConfig = QMCConfig(),
+        n_nodes: int | None = None,
+        device: str = "cpu",
+        dtype: torch.dtype = torch.float64,
+        chunk_size: int = 8192,
+        max_iter: int = 80,
+        tol: float = 1e-10,
+    ) -> None:
+        super().__init__()
+        self.params = params
+        self.qmc_cfg = qmc_cfg
+        self.chunk_size = int(chunk_size)
+        self.max_iter = int(max_iter)
+        self.tol = float(tol)
+        nodes = make_qmc_nodes(int(n_nodes or qmc_cfg.n_train), cfg=qmc_cfg, device=device, dtype=dtype)
+        self.register_buffer("_eps_z", nodes.eps_z)
+        self.register_buffer("_eps_lam_D", nodes.eps_lam_D)
+        self.register_buffer("_eps_lam_X", nodes.eps_lam_X)
+        self.register_buffer("_u_N_D", nodes.u_N_D)
+        self.register_buffer("_u_N_X", nodes.u_N_X)
+
+    def _nodes(self) -> QMCNodes:
+        return QMCNodes(
+            eps_z=self._eps_z,
+            eps_lam_D=self._eps_lam_D,
+            eps_lam_X=self._eps_lam_X,
+            u_N_D=self._u_N_D,
+            u_N_X=self._u_N_X,
+        )
+
+    @torch.no_grad()
+    def outputs(
+        self,
+        z_n: torch.Tensor,
+        *,
+        nodes: QMCNodes | None = None,
+        qmc_cfg: QMCConfig | None = None,
+        need_rate: bool = True,
+    ) -> TensorDict:
+        cfg = qmc_cfg or self.qmc_cfg
+        if need_rate:
+            out, _ = natural_oracle_outputs(
+                z_n,
+                nodes or self._nodes(),
+                params=self.params,
+                qmc_cfg=cfg,
+                chunk_size=self.chunk_size,
+                max_iter=self.max_iter,
+                tol=self.tol,
+            )
+            return out
+        return _solve_static_chunks(
+            z_n,
+            params=self.params,
+            chunk_size=self.chunk_size,
+            max_iter=self.max_iter,
+            tol=self.tol,
+        )
+
+    @torch.no_grad()
+    def forward(self, z_n: torch.Tensor) -> torch.Tensor:
+        out = self.outputs(z_n, need_rate=True)
+        return encode_natural_outputs(out, self.params)
+
+
+def natural_benchmark_outputs(
+    z_n: torch.Tensor,
+    natural_net: nn.Module,
+    *,
+    params: BaselineParams = BaselineParams(),
+    need_rate: bool = True,
+    nodes: QMCNodes | None = None,
+    qmc_cfg: QMCConfig | None = None,
+) -> TensorDict:
+    """Return natural benchmark outputs from either the oracle or legacy network."""
+
+    if getattr(natural_net, "is_natural_oracle", False):
+        out = natural_net.outputs(z_n, nodes=nodes, qmc_cfg=qmc_cfg, need_rate=need_rate)
+        if "R_n_real" not in out:
+            out = dict(out)
+            out["R_n_real"] = torch.full_like(out["Y_n"], float(params.bar_R))
+        return out
+    return decode_natural_outputs(natural_net(z_n), NATURAL_OUTPUT_NAMES, params=params)
 
 
 def _natural_static_residuals_from_logs(

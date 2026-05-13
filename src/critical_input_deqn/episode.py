@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import torch
 
-from .config import BaselineParams, RULE_OUTPUT_NAMES, NATURAL_OUTPUT_NAMES
+from .config import BaselineParams, RULE_OUTPUT_NAMES
 from .economics import derive_rule, unpack_rule_state
-from .transforms import decode_natural_outputs, decode_rule_outputs
+from .natural_oracle import natural_benchmark_outputs
+from .transforms import decode_rule_outputs
 
 
 def random_rule_step(
@@ -24,7 +25,12 @@ def random_rule_step(
     """
 
     st = unpack_rule_state(z)
-    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+    out_n = natural_benchmark_outputs(
+        z[..., :6],
+        natural_net,
+        params=params,
+        need_rate=policy.lower() == "ba",
+    )
     out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
     drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
 

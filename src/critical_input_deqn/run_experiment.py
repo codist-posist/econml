@@ -63,6 +63,12 @@ def _append_common_training_args(cmd: list[str], args: argparse.Namespace) -> li
 def _append_rule_training_args(cmd: list[str], args: argparse.Namespace) -> list[str]:
     cmd = _append_common_training_args(cmd, args)
     cmd += [
+        "--natural-benchmark",
+        args.natural_benchmark,
+        "--natural-oracle-nodes",
+        str(args.natural_oracle_nodes),
+        "--natural-oracle-chunk-size",
+        str(args.natural_oracle_chunk_size),
         "--rule-scenario-q-weight",
         str(args.rule_scenario_q_weight),
         "--rule-calm-anchor-weight",
@@ -145,6 +151,12 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "",
             "--natural-steps",
             str(args.natural_steps),
+            "--natural-benchmark",
+            args.natural_benchmark,
+            "--natural-oracle-nodes",
+            str(args.natural_oracle_nodes),
+            "--natural-oracle-chunk-size",
+            str(args.natural_oracle_chunk_size),
         ]
         cmds.append(_append_common_training_args(cmd, args))
 
@@ -255,6 +267,12 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             args.device,
             "--dtype",
             args.dtype,
+            "--natural-benchmark",
+            args.natural_benchmark,
+            "--natural-oracle-nodes",
+            str(args.natural_oracle_nodes),
+            "--natural-oracle-chunk-size",
+            str(args.natural_oracle_chunk_size),
         ]
         if args.params_json is not None:
             cmd += ["--params-json", str(args.params_json)]
@@ -285,6 +303,9 @@ def main() -> None:
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--natural-steps", type=int, default=20_000)
+    parser.add_argument("--natural-benchmark", choices=("network", "oracle"), default="oracle")
+    parser.add_argument("--natural-oracle-nodes", type=int, default=32)
+    parser.add_argument("--natural-oracle-chunk-size", type=int, default=8192)
     parser.add_argument("--rule-steps", type=int, default=8_000)
     parser.add_argument("--optimal-steps", type=int, default=8_000)
     parser.add_argument("--qmc-train", type=int, default=256)

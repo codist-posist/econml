@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from .experiments import params_from_metadata, resolve_params
+from .config import QMCConfig
 from .monetary_shock import (
     MonetaryShockConfig,
     evaluate_rule_shock_path,
@@ -17,6 +18,7 @@ from .monetary_shock import (
     save_ir_artifacts,
     simulate_rule_monetary_ir_scenarios,
 )
+from .natural_oracle import NaturalOracleNet
 from .postprocess import _dtype, _load_payload, _network_config_from_metadata, load_natural
 
 
@@ -114,12 +116,33 @@ def run_postprocess_rule_monetary_shock(
     large_bp_annualized: float | None,
     device: str,
     dtype: torch.dtype,
+    natural_benchmark: str = "oracle",
+    natural_oracle_nodes: int = 32,
+    natural_oracle_chunk_size: int = 8192,
 ) -> None:
     params, experiment_meta = resolve_params(experiment, params_json)
     natural = load_natural(natural_checkpoint, device=device, dtype=dtype)
     if params_json is None:
         params = params_from_metadata(natural.metadata, fallback=params)
         experiment_meta["params"] = asdict(params)
+    if natural_benchmark == "oracle":
+        natural = type(natural)(
+            "natural_oracle",
+            NaturalOracleNet(
+                params=params,
+                qmc_cfg=QMCConfig(n_train=natural_oracle_nodes, seed=991),
+                n_nodes=natural_oracle_nodes,
+                device=device,
+                dtype=dtype,
+                chunk_size=natural_oracle_chunk_size,
+            ),
+            {
+                **natural.metadata,
+                "natural_benchmark": "oracle",
+                "natural_oracle_nodes": int(natural_oracle_nodes),
+                "natural_oracle_chunk_size": int(natural_oracle_chunk_size),
+            },
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     files: list[str] = []
@@ -191,6 +214,7 @@ def run_postprocess_rule_monetary_shock(
         "artifact_root": str(artifact_root),
         "output_dir": str(output_dir),
         "natural_checkpoint": str(natural_checkpoint),
+        "natural_benchmark": natural.kind,
         "experiment": experiment_meta,
         "params": asdict(params),
         "policies": policies,
@@ -213,6 +237,9 @@ def main() -> None:
     parser.add_argument("--artifact-root", type=Path, default=Path("baseline_artifacts/critical_input_deqn/rule_monetary_shock"))
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--natural-checkpoint", type=Path, default=None)
+    parser.add_argument("--natural-benchmark", choices=("network", "oracle"), default="oracle")
+    parser.add_argument("--natural-oracle-nodes", type=int, default=32)
+    parser.add_argument("--natural-oracle-chunk-size", type=int, default=8192)
     parser.add_argument("--experiment", default="baseline")
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--policies", default="fixed,ba")
@@ -249,6 +276,9 @@ def main() -> None:
         large_bp_annualized=args.large_bp_annualized,
         device=args.device,
         dtype=_dtype(args.dtype),
+        natural_benchmark=args.natural_benchmark,
+        natural_oracle_nodes=args.natural_oracle_nodes,
+        natural_oracle_chunk_size=args.natural_oracle_chunk_size,
     )
     print(f"rule monetary-shock artifacts saved to {output_dir}")
 

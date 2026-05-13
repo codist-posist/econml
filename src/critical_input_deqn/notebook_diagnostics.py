@@ -9,6 +9,7 @@ import torch
 
 from .config import BaselineParams, NetworkConfig, QMCConfig
 from .experiments import params_from_metadata
+from .natural_oracle import NaturalOracleNet
 from .postprocess import (
     evaluate_optimal_path,
     evaluate_rule_path,
@@ -202,6 +203,9 @@ def rule_ir_mechanism_diagnostics(
     presteps: int = 5,
     relief_lag: int = 8,
     plot: bool = True,
+    natural_benchmark: str = "oracle",
+    natural_oracle_nodes: int = 32,
+    natural_oracle_chunk_size: int = 8192,
 ) -> tuple[list[str], dict[str, dict[str, np.ndarray]], object]:
     """Load a rule-policy checkpoint and report the IRF mechanism diagnostics."""
 
@@ -230,6 +234,16 @@ def rule_ir_mechanism_diagnostics(
     natural_net = make_natural_net(net_cfg, device=device, dtype=dtype_t)
     load_checkpoint(natural_path, natural_net, map_location=device)
     natural_net.eval()
+    if natural_benchmark == "oracle":
+        natural_net = NaturalOracleNet(
+            params=params,
+            qmc_cfg=QMCConfig(n_train=natural_oracle_nodes, seed=991),
+            n_nodes=natural_oracle_nodes,
+            device=device,
+            dtype=dtype_t,
+            chunk_size=natural_oracle_chunk_size,
+        )
+        natural_net.eval()
 
     rule_net = make_rule_net(net_cfg, device=device, dtype=dtype_t)
     metadata = load_checkpoint(policy_path, rule_net, map_location=device)
@@ -238,6 +252,7 @@ def rule_ir_mechanism_diagnostics(
     print("policy:", policy)
     print("policy_checkpoint:", policy_path)
     print("natural_checkpoint:", natural_path)
+    print("natural_benchmark:", "oracle" if getattr(natural_net, "is_natural_oracle", False) else "network")
     print("run_config:", run_config_path)
     if metadata:
         print("checkpoint_step:", metadata.get("step"))
@@ -328,6 +343,9 @@ def optimal_ir_mechanism_diagnostics(
     presteps: int = 5,
     relief_lag: int = 8,
     plot: bool = True,
+    natural_benchmark: str = "oracle",
+    natural_oracle_nodes: int = 32,
+    natural_oracle_chunk_size: int = 8192,
 ) -> tuple[list[str], dict[str, dict[str, np.ndarray]], object]:
     """Load an optimal-policy checkpoint and report the IRF mechanism diagnostics."""
 
@@ -359,6 +377,16 @@ def optimal_ir_mechanism_diagnostics(
     natural_net = make_natural_net(net_cfg, device=device, dtype=dtype_t)
     load_checkpoint(natural_path, natural_net, map_location=device)
     natural_net.eval()
+    if natural_benchmark == "oracle":
+        natural_net = NaturalOracleNet(
+            params=params,
+            qmc_cfg=QMCConfig(n_train=natural_oracle_nodes, seed=991),
+            n_nodes=natural_oracle_nodes,
+            device=device,
+            dtype=dtype_t,
+            chunk_size=natural_oracle_chunk_size,
+        )
+        natural_net.eval()
 
     if kind == "discretion":
         policy_net = make_discretion_net(net_cfg, device=device, dtype=dtype_t)
@@ -370,6 +398,7 @@ def optimal_ir_mechanism_diagnostics(
     print("kind:", kind)
     print("policy_checkpoint:", policy_path)
     print("natural_checkpoint:", natural_path)
+    print("natural_benchmark:", "oracle" if getattr(natural_net, "is_natural_oracle", False) else "network")
     print("run_config:", run_config_path)
     if metadata:
         print("checkpoint_step:", metadata.get("step"))

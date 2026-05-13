@@ -14,7 +14,6 @@ from .config import (
     COMMITMENT_PROMISE_INIT_MEAN,
     COMMITMENT_STATE_NAMES,
     DISCRETION_OUTPUT_NAMES,
-    NATURAL_OUTPUT_NAMES,
     QMCConfig,
     RULE_OUTPUT_NAMES,
     RULE_STATE_NAMES,
@@ -23,6 +22,7 @@ from .config import (
 )
 from .experiments import params_from_metadata, resolve_params
 from .economics import adaptation_enabled, derive_rule, psi_prime, unpack_rule_state
+from .natural_oracle import NaturalOracleNet, natural_benchmark_outputs
 from .episode import simulate_rule_episode
 from .optimal import decode_commitment, decode_discretion, private_residuals_free, simulate_optimal_episode
 from .qmc import make_qmc_nodes
@@ -34,7 +34,7 @@ from .train import (
     make_natural_net,
     make_rule_net,
 )
-from .transforms import decode_natural_outputs, decode_rule_outputs
+from .transforms import decode_rule_outputs
 
 
 TensorDict = dict[str, torch.Tensor]
@@ -100,6 +100,38 @@ def load_natural(path: Path, *, device: str, dtype: torch.dtype) -> LoadedPolicy
     net.load_state_dict(payload["state_dict"])
     net.eval()
     return LoadedPolicy("natural", net, metadata)
+
+
+def _use_natural_benchmark(
+    loaded: LoadedPolicy,
+    *,
+    benchmark: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    n_nodes: int | None,
+    chunk_size: int,
+    device: str,
+    dtype: torch.dtype,
+) -> LoadedPolicy:
+    if benchmark == "network":
+        return loaded
+    if benchmark != "oracle":
+        raise ValueError("natural benchmark must be 'network' or 'oracle'.")
+    nodes = int(n_nodes or qmc_cfg.n_train)
+    net = NaturalOracleNet(
+        params=params,
+        qmc_cfg=qmc_cfg,
+        n_nodes=nodes,
+        device=device,
+        dtype=dtype,
+        chunk_size=chunk_size,
+    )
+    net.eval()
+    metadata = dict(loaded.metadata)
+    metadata["natural_benchmark"] = "oracle"
+    metadata["natural_oracle_nodes"] = nodes
+    metadata["natural_oracle_chunk_size"] = int(chunk_size)
+    return LoadedPolicy("natural_oracle", net, metadata)
 
 
 def load_rule(path: Path, *, policy: str, device: str, dtype: torch.dtype) -> LoadedPolicy:
@@ -324,7 +356,12 @@ def simulate_rule_ir_scenarios(
     with torch.no_grad():
         for t in range(1, total):
             st = unpack_rule_state(z)
-            out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+            out_n = natural_benchmark_outputs(
+                z[..., :6],
+                natural_net,
+                params=params,
+                need_rate=policy.lower() == "ba",
+            )
             out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
             drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
             add_D, add_X = _scenario_additions(scenarios, t=t, device=z.device, dtype=z.dtype)
@@ -419,7 +456,12 @@ def evaluate_rule_path(
     T, B, K = states.shape
     z = states.reshape(T * B, K)
     st = unpack_rule_state(z)
-    out_n = decode_natural_outputs(natural_net(z[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+    out_n = natural_benchmark_outputs(
+        z[..., :6],
+        natural_net,
+        params=params,
+        need_rate=policy.lower() == "ba",
+    )
     out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
     drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
     data: TensorDict = {}
@@ -460,7 +502,7 @@ def evaluate_optimal_path(
         state_names = COMMITMENT_STATE_NAMES
     else:
         raise ValueError("kind must be discretion or commitment.")
-    out_n = decode_natural_outputs(natural_net(z_phys[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
+    out_n = natural_benchmark_outputs(z_phys[..., :6], natural_net, params=params, need_rate=False)
     if nodes is None or qmc_cfg is None:
         raise ValueError("Optimal-policy path evaluation requires QMC nodes to recover the Euler-implied policy rate.")
     drv_parts: dict[str, list[torch.Tensor]] = {}
@@ -550,6 +592,9 @@ def run_postprocess(
     save_ir: bool,
     device: str,
     dtype: torch.dtype,
+    natural_benchmark: str = "oracle",
+    natural_oracle_nodes: int | None = None,
+    natural_oracle_chunk_size: int = 8192,
 ) -> None:
     params, experiment_meta = resolve_params(experiment, params_json)
     natural_path = _first_existing(
@@ -604,6 +649,17 @@ def run_postprocess(
     if params_json is None:
         params = params_from_metadata(natural.metadata, fallback=params)
         experiment_meta["params"] = asdict(params)
+    natural_qmc_cfg = QMCConfig(n_train=int(natural_oracle_nodes or 32), seed=int(seed) + 991)
+    natural = _use_natural_benchmark(
+        natural,
+        benchmark=natural_benchmark,
+        params=params,
+        qmc_cfg=natural_qmc_cfg,
+        n_nodes=natural_oracle_nodes,
+        chunk_size=natural_oracle_chunk_size,
+        device=device,
+        dtype=dtype,
+    )
     fixed = load_rule(fixed_path, policy="fixed", device=device, dtype=dtype)
     ba = load_rule(ba_path, policy="ba", device=device, dtype=dtype)
     bottleneck = None if bottleneck_path is None else load_rule(bottleneck_path, policy="bottleneck", device=device, dtype=dtype)
@@ -737,6 +793,8 @@ def run_postprocess(
         "length": int(length),
         "batch_size": int(batch_size),
         "seed": int(seed),
+        "natural_benchmark": natural.kind,
+        "natural_oracle_nodes": int(natural.metadata.get("natural_oracle_nodes", 0) or 0),
         "policies": list(rule_policies) + ["discretion", "commitment"],
         "ir": {
             "saved": bool(save_ir),
@@ -766,6 +824,9 @@ def main() -> None:
     parser.add_argument("--ir-presteps", type=int, default=5)
     parser.add_argument("--ir-relief-lag", type=int, default=8)
     parser.add_argument("--no-ir", action="store_true")
+    parser.add_argument("--natural-benchmark", choices=("network", "oracle"), default="oracle")
+    parser.add_argument("--natural-oracle-nodes", type=int, default=32)
+    parser.add_argument("--natural-oracle-chunk-size", type=int, default=8192)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--dtype", default="float64", choices=("float64", "float32"))
     args = parser.parse_args()
@@ -786,6 +847,9 @@ def main() -> None:
         save_ir=not args.no_ir,
         device=args.device,
         dtype=_dtype(args.dtype),
+        natural_benchmark=args.natural_benchmark,
+        natural_oracle_nodes=args.natural_oracle_nodes,
+        natural_oracle_chunk_size=args.natural_oracle_chunk_size,
     )
     print(f"critical_input_deqn postprocess artifacts saved to {output_dir}")
 

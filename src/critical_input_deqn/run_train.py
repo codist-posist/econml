@@ -9,6 +9,10 @@ import torch
 
 from .config import NetworkConfig, QMCConfig, TrainConfig, stop_profile
 from .experiments import resolve_params
+from .natural_oracle import NaturalOracleNet, natural_oracle_residuals
+from .qmc import make_qmc_nodes
+from .sampling import sample_rule_states, natural_from_rule_states
+from .residuals import stack_residuals
 from .train import (
     evaluate_natural,
     evaluate_rule,
@@ -18,6 +22,7 @@ from .train import (
     train_natural,
     train_rule,
     train_rule_episode,
+    residual_diagnostics,
 )
 
 
@@ -85,6 +90,9 @@ def main() -> None:
     parser.add_argument("--experiment", default="baseline")
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--natural-checkpoint", type=Path, default=None)
+    parser.add_argument("--natural-benchmark", choices=("network", "oracle"), default="network")
+    parser.add_argument("--natural-oracle-nodes", type=int, default=32)
+    parser.add_argument("--natural-oracle-chunk-size", type=int, default=8192)
     parser.add_argument("--natural-steps", type=int, default=20_000)
     parser.add_argument("--rule-steps", type=int, default=8_000)
     parser.add_argument("--rule-trainer", default="episode", choices=("episode", "iid"))
@@ -206,6 +214,9 @@ def main() -> None:
             "target_scenario_q_rms": args.target_scenario_q_rms,
             "lr": args.lr,
             "natural_steps": args.natural_steps,
+            "natural_benchmark": args.natural_benchmark,
+            "natural_oracle_nodes": args.natural_oracle_nodes,
+            "natural_oracle_chunk_size": args.natural_oracle_chunk_size,
             "rule_steps": args.rule_steps,
             "rule_trainer": args.rule_trainer,
             "loss": args.loss,
@@ -231,6 +242,7 @@ def main() -> None:
     print(
         f"Configured run_train: output_dir={args.output_dir}, policies={_policies(args.policies)}, "
         f"device={args.device}, dtype={args.dtype}, natural_steps={args.natural_steps}, "
+        f"natural_benchmark={args.natural_benchmark}, "
         f"rule_steps={args.rule_steps}, qmc_train={args.qmc_train}, qmc_val={args.qmc_val}, "
         f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}",
         flush=True,
@@ -265,6 +277,37 @@ def main() -> None:
         n_states=args.n_val_states,
     )
     _write_json(args.output_dir / "natural_eval.json", natural_eval)
+
+    if args.natural_benchmark == "oracle":
+        print("Using numerical natural oracle for downstream rule policies.", flush=True)
+        natural_net = NaturalOracleNet(
+            params=params,
+            qmc_cfg=qmc_cfg,
+            n_nodes=args.natural_oracle_nodes,
+            device=args.device,
+            dtype=dtype,
+            chunk_size=args.natural_oracle_chunk_size,
+        )
+        oracle_qmc_cfg = QMCConfig(n_train=args.natural_oracle_nodes, seed=args.seed + 303)
+        oracle_nodes = make_qmc_nodes(args.natural_oracle_nodes, cfg=oracle_qmc_cfg, device=args.device, dtype=dtype)
+        z_oracle = sample_rule_states(args.n_val_states, params=params, device=args.device, dtype=dtype, seed=args.seed + 404)
+        z_oracle_n = natural_from_rule_states(z_oracle)
+        oracle_res, _ = natural_oracle_residuals(
+            z_oracle_n,
+            oracle_nodes,
+            params=params,
+            qmc_cfg=oracle_qmc_cfg,
+            chunk_size=args.natural_oracle_chunk_size,
+        )
+        oracle_mat = stack_residuals(oracle_res)
+        _write_json(
+            args.output_dir / "natural_oracle_eval.json",
+            {
+                "rms": float(torch.sqrt(oracle_mat.pow(2).mean()).cpu()),
+                "max_abs": float(oracle_mat.abs().max().cpu()),
+                **residual_diagnostics(oracle_res),
+            },
+        )
 
     for policy in _policies(args.policies):
         print(f"Training rule-based policy network: {policy}.", flush=True)
