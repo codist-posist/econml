@@ -138,6 +138,14 @@ def _natural_checkpoint(root: Path) -> Path:
     return best if best.exists() else final
 
 
+def _append_natural_source_args(cmd: list[str], args: argparse.Namespace, root: Path) -> list[str]:
+    if args.natural_benchmark == "oracle":
+        cmd.append("--skip-natural-network")
+    else:
+        cmd += ["--natural-checkpoint", str(_natural_checkpoint(root))]
+    return cmd
+
+
 def build_commands(args: argparse.Namespace) -> list[list[str]]:
     root = experiment_root(args.base_root, args.experiment)
     cmds: list[list[str]] = []
@@ -165,13 +173,12 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "src.critical_input_deqn.run_train",
             "--output-dir",
             str(root / "fixed_taylor"),
-            "--natural-checkpoint",
-            str(_natural_checkpoint(root)),
             "--policies",
             "fixed",
             "--rule-steps",
             str(args.rule_steps),
         ]
+        cmd = _append_natural_source_args(cmd, args, root)
         cmds.append(_append_rule_training_args(cmd, args))
 
     if args.stage in {"rules", "ba", "all"}:
@@ -179,13 +186,12 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "src.critical_input_deqn.run_train",
             "--output-dir",
             str(root / "modified_taylor"),
-            "--natural-checkpoint",
-            str(_natural_checkpoint(root)),
             "--policies",
             "ba",
             "--rule-steps",
             str(args.rule_steps),
         ]
+        cmd = _append_natural_source_args(cmd, args, root)
         cmds.append(_append_rule_training_args(cmd, args))
 
     if args.stage in {"rules", "bottleneck", "all"}:
@@ -193,13 +199,12 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "src.critical_input_deqn.run_train",
             "--output-dir",
             str(root / "bottleneck_taylor"),
-            "--natural-checkpoint",
-            str(_natural_checkpoint(root)),
             "--policies",
             "bottleneck",
             "--rule-steps",
             str(args.rule_steps),
         ]
+        cmd = _append_natural_source_args(cmd, args, root)
         cmds.append(_append_rule_training_args(cmd, args))
 
     if args.stage in {"rules", "repair_aware", "all"}:
@@ -207,13 +212,12 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "src.critical_input_deqn.run_train",
             "--output-dir",
             str(root / "repair_aware_taylor"),
-            "--natural-checkpoint",
-            str(_natural_checkpoint(root)),
             "--policies",
             "repair_aware",
             "--rule-steps",
             str(args.rule_steps),
         ]
+        cmd = _append_natural_source_args(cmd, args, root)
         cmds.append(_append_rule_training_args(cmd, args))
 
     if args.stage in {"discretion", "all"}:

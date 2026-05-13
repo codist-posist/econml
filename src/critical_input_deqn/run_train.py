@@ -93,6 +93,11 @@ def main() -> None:
     parser.add_argument("--natural-benchmark", choices=("network", "oracle"), default="network")
     parser.add_argument("--natural-oracle-nodes", type=int, default=32)
     parser.add_argument("--natural-oracle-chunk-size", type=int, default=8192)
+    parser.add_argument(
+        "--skip-natural-network",
+        action="store_true",
+        help="Skip auxiliary natural-network training/loading; valid only with --natural-benchmark oracle.",
+    )
     parser.add_argument("--natural-steps", type=int, default=20_000)
     parser.add_argument("--rule-steps", type=int, default=8_000)
     parser.add_argument("--rule-trainer", default="episode", choices=("episode", "iid"))
@@ -164,6 +169,10 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--log-every", type=int, default=100)
     args = parser.parse_args()
+    if args.skip_natural_network and args.natural_benchmark != "oracle":
+        raise ValueError("--skip-natural-network requires --natural-benchmark oracle.")
+    if args.skip_natural_network and args.natural_checkpoint is not None:
+        raise ValueError("--skip-natural-network cannot be combined with --natural-checkpoint.")
 
     params, experiment_meta = resolve_params(args.experiment, args.params_json)
     dtype = _dtype(args.dtype)
@@ -217,6 +226,7 @@ def main() -> None:
             "natural_benchmark": args.natural_benchmark,
             "natural_oracle_nodes": args.natural_oracle_nodes,
             "natural_oracle_chunk_size": args.natural_oracle_chunk_size,
+            "skip_natural_network": args.skip_natural_network,
             "rule_steps": args.rule_steps,
             "rule_trainer": args.rule_trainer,
             "loss": args.loss,
@@ -248,7 +258,10 @@ def main() -> None:
         flush=True,
     )
 
-    if args.natural_checkpoint is None:
+    natural_net = None
+    if args.skip_natural_network:
+        print("Skipping auxiliary flexible-price benchmark network; using numerical natural oracle downstream.", flush=True)
+    elif args.natural_checkpoint is None:
         print("Training auxiliary flexible-price benchmark network.", flush=True)
         natural_net, natural_log = train_natural(
             net_cfg=net_cfg,
@@ -268,15 +281,16 @@ def main() -> None:
         natural_net = make_natural_net(net_cfg, device=args.device, dtype=dtype)
         load_checkpoint(args.natural_checkpoint, natural_net, map_location=args.device)
 
-    print("Evaluating auxiliary flexible-price benchmark network.", flush=True)
-    natural_eval = evaluate_natural(
-        natural_net,
-        params=params,
-        qmc_cfg=QMCConfig(n_train=args.qmc_val, seed=args.seed + 101),
-        train_cfg=train_cfg,
-        n_states=args.n_val_states,
-    )
-    _write_json(args.output_dir / "natural_eval.json", natural_eval)
+    if natural_net is not None:
+        print("Evaluating auxiliary flexible-price benchmark network.", flush=True)
+        natural_eval = evaluate_natural(
+            natural_net,
+            params=params,
+            qmc_cfg=QMCConfig(n_train=args.qmc_val, seed=args.seed + 101),
+            train_cfg=train_cfg,
+            n_states=args.n_val_states,
+        )
+        _write_json(args.output_dir / "natural_eval.json", natural_eval)
 
     if args.natural_benchmark == "oracle":
         print("Using numerical natural oracle for downstream rule policies.", flush=True)
