@@ -201,20 +201,21 @@ PRIVATE_RESIDUAL_NAMES = (
     "Q",
 )
 
+# Optimal policies impose the Calvo price-index identity in the output map:
+# S_p is derived from Pi and F_p, so it is not an independent FOC control.
 OPT_CONTROL_NAMES = (
     "C",
     "Y",
     "Pi",
     "Q_A",
-    "S_p",
     "F_p",
 )
 
 # In the author DEQN code the nominal policy rate is not an optimal-policy
 # network output: it is recovered from the household Euler equation.  The
-# optimal FOC block therefore uses multipliers only for the remaining private
-# implementability constraints.
-OPT_PRIVATE_RESIDUAL_NAMES = tuple(name for name in PRIVATE_RESIDUAL_NAMES if name != "hh_euler")
+# Calvo price-index identity is also imposed by the optimal output map, so the
+# optimal FOC block uses multipliers only for the remaining private constraints.
+OPT_PRIVATE_RESIDUAL_NAMES = tuple(name for name in PRIVATE_RESIDUAL_NAMES if name not in {"hh_euler", "price_index"})
 
 OPT_MULTIPLIER_NAMES = tuple(f"mu_{name}" for name in OPT_PRIVATE_RESIDUAL_NAMES)
 

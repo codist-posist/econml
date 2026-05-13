@@ -132,8 +132,8 @@ def calvo_index_implied_pstar(
     return torch.clamp(lhs, min=floor).pow(1.0 / (1.0 - epsilon))
 
 
-def _rule_pi_width(params: BaselineParams | None = None) -> float:
-    """Keep rule inflation inside the hard Calvo-index admissible region."""
+def _calvo_admissible_pi_width(params: BaselineParams | None = None) -> float:
+    """Keep inflation inside the hard Calvo-index admissible region."""
 
     p = params or BaselineParams()
     theta = float(p.theta)
@@ -146,6 +146,16 @@ def _rule_pi_width(params: BaselineParams | None = None) -> float:
     pstar_hi = 2.0
     pi_hi = ((1.0 - (1.0 - theta) * pstar_hi ** (1.0 - epsilon)) / theta) ** (1.0 / (epsilon - 1.0))
     return max(math.log(min(pi_hi, 1.30)), math.log(1.005))
+
+
+def _impose_calvo_index_identity(out: Dict[str, torch.Tensor], params: BaselineParams | None = None) -> None:
+    """Derive S_p from Pi and F_p so the price-index identity holds."""
+
+    if "F_p" not in out or "Pi" not in out:
+        return
+    p = params or BaselineParams()
+    p_star = calvo_index_implied_pstar(out["Pi"], p)
+    out["S_p"] = ((float(p.epsilon) - 1.0) / float(p.epsilon)) * p_star * out["F_p"]
 
 
 def decode_rule_outputs(
@@ -166,7 +176,7 @@ def decode_rule_outputs(
             center = y_ref if y_ref is not None else targets["Y"]
             out[name] = _bounded_log_center(x, center, 2.0)
         elif name == "Pi":
-            out[name] = _bounded_log_center(x, targets["Pi"], _rule_pi_width(params))
+            out[name] = _bounded_log_center(x, targets["Pi"], _calvo_admissible_pi_width(params))
         elif name == "Q_A":
             out[name] = _bounded_signed(x, targets["Q_A_scale"])
         elif name == "S_p":
@@ -175,10 +185,7 @@ def decode_rule_outputs(
             out[name] = _bounded_log_center(x, targets["F_p"], math.log(4.0))
         else:
             out[name] = positive(x)
-    if "S_p" in out and "F_p" in out and "Pi" in out:
-        p = params or BaselineParams()
-        p_star = calvo_index_implied_pstar(out["Pi"], p)
-        out["S_p"] = ((float(p.epsilon) - 1.0) / float(p.epsilon)) * p_star * out["F_p"]
+    _impose_calvo_index_identity(out, params)
     return out
 
 
@@ -220,7 +227,7 @@ def decode_optimal_outputs(
         elif name == "R":
             out[name] = _bounded_log_center(x, targets["R"], math.log(1.50))
         elif name == "Pi":
-            out[name] = _bounded_log_center(x, targets["Pi"], math.log(1.30))
+            out[name] = _bounded_log_center(x, targets["Pi"], _calvo_admissible_pi_width(params))
         elif name == "Q_A":
             out[name] = _bounded_signed(x, targets["Q_A_scale"])
         elif name == "S_p":
@@ -233,4 +240,5 @@ def decode_optimal_outputs(
             out[name] = _bounded_identity(x, 5.0)
         else:
             out[name] = x
+    _impose_calvo_index_identity(out, params)
     return out
