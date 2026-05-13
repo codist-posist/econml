@@ -249,6 +249,10 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     if calm_resid is not None and math.isfinite(float(calm_resid)):
         payload["calm_res"] = f"{float(calm_resid):.2e}"
         message += f" calmRes={float(calm_resid):.2e}"
+    full_weight = metrics.get("full_weight")
+    if full_weight is not None and math.isfinite(float(full_weight)):
+        payload["full_w"] = f"{float(full_weight):.2f}"
+        message += f" fullW={float(full_weight):.2f}"
     if hasattr(progress, "set_postfix"):
         progress.set_postfix(payload)
     val_top = metrics.get("val_top")
@@ -279,6 +283,7 @@ def _announce_training(
     if kind in {"discretion", "commitment"}:
         optimal_bits = (
             f", feasibility_pretrain={int(train_cfg.optimal_feasibility_pretrain_steps)}, "
+            f"full_warmup={int(train_cfg.optimal_full_weight_warmup_steps)}, "
             f"stat_w={float(train_cfg.optimal_stationarity_loss_weight):g}, "
             f"bellman_w={float(train_cfg.optimal_bellman_loss_weight):g}, "
             f"promise_w={float(train_cfg.optimal_promise_loss_weight):g}"
@@ -310,11 +315,35 @@ def _optimal_training_stage(step: int, train_cfg: TrainConfig) -> str:
     return "feas" if int(step) <= pretrain else "full"
 
 
+def _optimal_full_weight(step: int | None, train_cfg: TrainConfig) -> float:
+    if step is None:
+        return 1.0
+    pretrain = max(0, int(train_cfg.optimal_feasibility_pretrain_steps))
+    warmup = max(1, int(train_cfg.optimal_full_weight_warmup_steps))
+    return min(1.0, max(0.0, (int(step) - pretrain) / warmup))
+
+
+def _nonfinite_residual_summary(residuals: Dict[str, torch.Tensor], *, limit: int = 6) -> str:
+    bad: list[str] = []
+    with torch.no_grad():
+        for name, value in residuals.items():
+            finite = torch.isfinite(value.detach())
+            if bool(finite.all().cpu()):
+                continue
+            total = int(value.numel())
+            count = int((~finite).sum().detach().cpu())
+            bad.append(f"{name}:{count}/{total}")
+            if len(bad) >= int(limit):
+                break
+    return ", ".join(bad) if bad else "none"
+
+
 def _optimal_objective_matrix(
     residuals: Dict[str, torch.Tensor],
     train_cfg: TrainConfig,
     *,
     stage: str,
+    step: int | None = None,
 ) -> torch.Tensor:
     """Return the loss matrix used for optimal-policy updates.
 
@@ -324,16 +353,17 @@ def _optimal_objective_matrix(
     """
 
     pieces: list[torch.Tensor] = []
+    full_weight = _optimal_full_weight(step, train_cfg) if stage == "full" else 0.0
     for name, value in residuals.items():
         if stage == "feas" and not name.startswith("priv_"):
             continue
         weight = float(train_cfg.optimal_private_loss_weight)
         if name == "bellman":
-            weight = float(train_cfg.optimal_bellman_loss_weight)
+            weight = full_weight * float(train_cfg.optimal_bellman_loss_weight)
         elif name.startswith("stat_"):
-            weight = float(train_cfg.optimal_stationarity_loss_weight)
+            weight = full_weight * float(train_cfg.optimal_stationarity_loss_weight)
         elif name.startswith("promise_"):
-            weight = float(train_cfg.optimal_promise_loss_weight)
+            weight = full_weight * float(train_cfg.optimal_promise_loss_weight)
         pieces.append(value * weight)
     if not pieces:
         return stack_residuals(residuals)
@@ -1941,7 +1971,12 @@ def train_optimal_episode(
                 fb_epsilon=train_cfg.fb_epsilon_start,
                 stage=stage,
             )
-            obj_mat = _optimal_objective_matrix(res, train_cfg, stage=stage)
+            if not all(bool(torch.isfinite(value).all().detach().cpu()) for value in res.values()):
+                bad = _nonfinite_residual_summary(res)
+                raise FloatingPointError(
+                    f"Non-finite {key} residuals at episode {episode} stage={stage}: {bad}"
+                )
+            obj_mat = _optimal_objective_matrix(res, train_cfg, stage=stage, step=episode)
             loss = residual_loss(obj_mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
             loss = loss + _optimal_auxiliary_training_loss(
                 net,
@@ -1953,9 +1988,20 @@ def train_optimal_episode(
                 fb_epsilon=train_cfg.fb_epsilon_start,
                 step=episode,
             )
+            if not bool(torch.isfinite(loss).detach().cpu()):
+                bad = _nonfinite_residual_summary(res)
+                raise FloatingPointError(
+                    f"Non-finite {key} loss at episode {episode} stage={stage}: {bad}"
+                )
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
+            if not bool(torch.isfinite(grad_norm).detach().cpu()):
+                opt.zero_grad(set_to_none=True)
+                raise FloatingPointError(
+                    f"Non-finite {key} gradient at episode {episode} stage={stage}: "
+                    f"grad_norm={float(grad_norm.detach().cpu())}"
+                )
             opt.step()
             last_mat = obj_mat.detach()
             last_loss = loss.detach()
@@ -1986,6 +2032,7 @@ def train_optimal_episode(
             )
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["stage"] = _optimal_training_stage(episode, train_cfg)
+            metrics["full_weight"] = _optimal_full_weight(episode, train_cfg) if metrics["stage"] == "full" else 0.0
             metrics["val_top"] = val_top
             scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
             del scenario_val_res, scenario_names
@@ -2020,6 +2067,7 @@ def train_optimal_episode(
                 {
                     "step": float(episode),
                     "stage": metrics["stage"],
+                    "full_weight": metrics["full_weight"],
                     **scenario_diag,
                     **calm_diag,
                     **calm_resid_diag,

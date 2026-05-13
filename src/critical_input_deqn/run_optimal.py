@@ -137,6 +137,12 @@ def main() -> None:
         help="Initial optimal-policy episodes that train only private feasibility residuals.",
     )
     parser.add_argument(
+        "--full-weight-warmup-steps",
+        type=int,
+        default=1_000,
+        help="Episodes over which Bellman/stationarity/promise residual weights ramp in after feasibility pretraining.",
+    )
+    parser.add_argument(
         "--private-loss-weight",
         type=float,
         default=1.0,
@@ -218,6 +224,7 @@ def main() -> None:
         optimal_bellman_loss_weight=args.bellman_loss_weight,
         optimal_stationarity_loss_weight=args.stationarity_loss_weight,
         optimal_promise_loss_weight=args.promise_loss_weight,
+        optimal_full_weight_warmup_steps=args.full_weight_warmup_steps,
         dtype=dtype,
         device=args.device,
     )
@@ -261,6 +268,7 @@ def main() -> None:
             "best_calm_residual_weight": args.best_calm_residual_weight,
             "target_scenario_q_rms": args.target_scenario_q_rms,
             "feasibility_pretrain_steps": args.feasibility_pretrain_steps,
+            "full_weight_warmup_steps": args.full_weight_warmup_steps,
             "private_loss_weight": args.private_loss_weight,
             "bellman_loss_weight": args.bellman_loss_weight,
             "stationarity_loss_weight": args.stationarity_loss_weight,
@@ -278,6 +286,7 @@ def main() -> None:
         f"qmc_train={args.qmc_train}, qmc_val={args.qmc_val}, "
         f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}, "
         f"feasibility_pretrain={args.feasibility_pretrain_steps}, "
+        f"full_warmup={args.full_weight_warmup_steps}, "
         f"stat_w={args.stationarity_loss_weight:g}, bellman_w={args.bellman_loss_weight:g}",
         flush=True,
     )

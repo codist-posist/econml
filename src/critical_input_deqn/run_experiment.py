@@ -112,6 +112,8 @@ def _append_optimal_training_args(cmd: list[str], args: argparse.Namespace) -> l
         str(args.target_scenario_q_rms),
         "--feasibility-pretrain-steps",
         str(args.optimal_feasibility_pretrain_steps),
+        "--full-weight-warmup-steps",
+        str(args.optimal_full_weight_warmup_steps),
         "--private-loss-weight",
         str(args.optimal_private_loss_weight),
         "--bellman-loss-weight",
@@ -307,6 +309,7 @@ def main() -> None:
     parser.add_argument("--best-calm-residual-weight", type=float, default=1.0)
     parser.add_argument("--target-scenario-q-rms", type=float, default=1e-2)
     parser.add_argument("--optimal-feasibility-pretrain-steps", type=int, default=1_000)
+    parser.add_argument("--optimal-full-weight-warmup-steps", type=int, default=1_000)
     parser.add_argument("--optimal-private-loss-weight", type=float, default=1.0)
     parser.add_argument("--optimal-bellman-loss-weight", type=float, default=0.25)
     parser.add_argument("--optimal-stationarity-loss-weight", type=float, default=0.10)

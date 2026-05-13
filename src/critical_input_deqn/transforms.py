@@ -108,6 +108,13 @@ def _bounded_signed(raw: torch.Tensor, scale: float) -> torch.Tensor:
     return float(scale) * torch.tanh(raw)
 
 
+def _bounded_identity(raw: torch.Tensor, bound: float) -> torch.Tensor:
+    """Approximately identity near zero, smoothly bounded in the tails."""
+
+    b = max(float(bound), 1e-8)
+    return b * torch.tanh(raw / b)
+
+
 def calvo_index_implied_pstar(
     Pi: torch.Tensor,
     params: BaselineParams | None = None,
@@ -218,6 +225,10 @@ def decode_optimal_outputs(
             out[name] = _bounded_log_center(x, targets["S_p"], math.log(4.0))
         elif name == "F_p":
             out[name] = _bounded_log_center(x, targets["F_p"], math.log(4.0))
+        elif name.startswith("mu_"):
+            out[name] = _bounded_identity(x, 50.0)
+        elif name.startswith("promise_"):
+            out[name] = _bounded_identity(x, 5.0)
         else:
             out[name] = x
     return out

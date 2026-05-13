@@ -140,6 +140,7 @@ class TrainConfig:
     optimal_bellman_loss_weight: float = 0.25
     optimal_stationarity_loss_weight: float = 0.10
     optimal_promise_loss_weight: float = 1.0
+    optimal_full_weight_warmup_steps: int = 1_000
 
 
 STOP_PROFILES = {
