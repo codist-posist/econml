@@ -73,7 +73,7 @@ class BaselineParams:
     phi_y: float = 0.0
     phi_bottleneck: float = 0.25
     phi_repair: float = 0.10
-    repair_margin_trigger: float = 0.80
+    repair_margin_trigger: float = 0.70
     repair_cap_pressure_trigger: float = 0.90
     repair_support_max: float = 1.00
 

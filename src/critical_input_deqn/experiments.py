@@ -413,6 +413,12 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         description="Repair-aware Taylor policies respond more to near-threshold adaptation value.",
         overrides={"phi_repair": 0.20},
     ),
+    "conservative_repair_trigger_policy": ExperimentSpec(
+        name="conservative_repair_trigger_policy",
+        group="sensitivity",
+        description="Repair-aware Taylor support activates only when the repair margin is closer to the private threshold.",
+        overrides={"repair_margin_trigger": 0.80},
+    ),
 }
 
 
@@ -462,6 +468,7 @@ TABLE_EXPERIMENTS = {
         "strong_bottleneck_policy",
         "weak_repair_aware_policy",
         "strong_repair_aware_policy",
+        "conservative_repair_trigger_policy",
     ],
 }
 
