@@ -140,8 +140,10 @@ def _rule_pi_width(params: BaselineParams | None = None) -> float:
     epsilon = float(p.epsilon)
     if theta <= 0.0:
         return math.log(1.30)
-    # This corresponds to roughly p_star <= 1.15 in the baseline calibration.
-    pstar_hi = 1.15
+    # Keep the implied reset price finite without clipping ordinary inflation
+    # responses.  In the baseline this permits about +20.8% annualized inflation,
+    # close to the Calvo-index admissibility ceiling of about +21.1%.
+    pstar_hi = 2.0
     pi_hi = ((1.0 - (1.0 - theta) * pstar_hi ** (1.0 - epsilon)) / theta) ** (1.0 / (epsilon - 1.0))
     return max(math.log(min(pi_hi, 1.30)), math.log(1.005))
 
