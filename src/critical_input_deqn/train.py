@@ -1521,6 +1521,51 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
+def _adapt_legacy_rule_output_state_dict(state_dict: Dict[str, torch.Tensor], net: nn.Module) -> Dict[str, torch.Tensor]:
+    """Map legacy rule checkpoints with an unused S_p output into the current head.
+
+    Older rule-policy networks emitted C, Y, Pi, Q_A, S_p, F_p, but S_p was
+    immediately overwritten by the Calvo price-index identity during decoding.
+    Current rule networks emit C, Y, Pi, Q_A, F_p.  For old checkpoints, keep
+    the economically active rows and drop the legacy S_p row.
+    """
+
+    target = net.state_dict()
+    weight_keys = [key for key, value in target.items() if key.endswith(".weight") and value.ndim == 2]
+    if not weight_keys:
+        return state_dict
+    weight_key = weight_keys[-1]
+    bias_key = weight_key[:-6] + "bias"
+    if weight_key not in state_dict or bias_key not in state_dict or bias_key not in target:
+        return state_dict
+
+    src_w = state_dict[weight_key]
+    src_b = state_dict[bias_key]
+    tgt_w = target[weight_key]
+    tgt_b = target[bias_key]
+    if (
+        len(RULE_OUTPUT_NAMES) == 5
+        and tuple(tgt_w.shape[:1]) == (5,)
+        and tuple(tgt_b.shape) == (5,)
+        and src_w.ndim == 2
+        and tuple(src_w.shape[:1]) == (6,)
+        and src_w.shape[1] == tgt_w.shape[1]
+        and tuple(src_b.shape) == (6,)
+    ):
+        keep = torch.tensor([0, 1, 2, 3, 5], device=src_w.device)
+        migrated = dict(state_dict)
+        migrated[weight_key] = src_w.index_select(0, keep)
+        migrated[bias_key] = src_b.index_select(0, keep)
+        return migrated
+    return state_dict
+
+
+def load_model_state_dict(net: nn.Module, state_dict: Dict[str, torch.Tensor]) -> None:
+    """Load a checkpoint state dict, including known architecture migrations."""
+
+    net.load_state_dict(_adapt_legacy_rule_output_state_dict(state_dict, net))
+
+
 def _cpu_detached(value):
     if torch.is_tensor(value):
         return value.detach().cpu()
@@ -1568,7 +1613,7 @@ def load_checkpoint(path: str | Path, net: nn.Module, *, map_location: str | tor
     """Load a checkpoint into an already constructed network."""
 
     payload = torch.load(Path(path), map_location=map_location)
-    net.load_state_dict(payload["state_dict"])
+    load_model_state_dict(net, payload["state_dict"])
     metadata = payload.get("metadata", {})
     return dict(metadata) if isinstance(metadata, dict) else {}
 

@@ -29,6 +29,7 @@ from .qmc import make_qmc_nodes
 from .sampling import sample_rule_states
 from .train import (
     _initial_optimal_states,
+    load_model_state_dict,
     make_commitment_net,
     make_discretion_net,
     make_natural_net,
@@ -97,7 +98,7 @@ def load_natural(path: Path, *, device: str, dtype: torch.dtype) -> LoadedPolicy
     payload = _load_payload(path, device=device)
     metadata = dict(payload.get("metadata", {}))
     net = make_natural_net(_network_config_from_metadata(metadata), device=device, dtype=dtype)
-    net.load_state_dict(payload["state_dict"])
+    load_model_state_dict(net, payload["state_dict"])
     net.eval()
     return LoadedPolicy("natural", net, metadata)
 
@@ -138,7 +139,7 @@ def load_rule(path: Path, *, policy: str, device: str, dtype: torch.dtype) -> Lo
     payload = _load_payload(path, device=device)
     metadata = dict(payload.get("metadata", {}))
     net = make_rule_net(_network_config_from_metadata(metadata), device=device, dtype=dtype)
-    net.load_state_dict(payload["state_dict"])
+    load_model_state_dict(net, payload["state_dict"])
     net.eval()
     return LoadedPolicy(policy, net, metadata)
 
@@ -153,7 +154,7 @@ def load_optimal(path: Path, *, kind: str, device: str, dtype: torch.dtype) -> L
         net = make_commitment_net(net_cfg, device=device, dtype=dtype)
     else:
         raise ValueError("kind must be discretion or commitment.")
-    net.load_state_dict(payload["state_dict"])
+    load_model_state_dict(net, payload["state_dict"])
     net.eval()
     return LoadedPolicy(kind, net, metadata)
 

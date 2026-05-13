@@ -182,7 +182,6 @@ RULE_OUTPUT_NAMES = (
     "Y",
     "Pi",
     "Q_A",
-    "S_p",
     "F_p",
 )
 
@@ -201,8 +200,8 @@ PRIVATE_RESIDUAL_NAMES = (
     "Q",
 )
 
-# Optimal policies impose the Calvo price-index identity in the output map:
-# S_p is derived from Pi and F_p, so it is not an independent FOC control.
+# Policy networks impose the Calvo price-index identity in the output map:
+# S_p is derived from Pi and F_p, so it is not an independent control.
 OPT_CONTROL_NAMES = (
     "C",
     "Y",

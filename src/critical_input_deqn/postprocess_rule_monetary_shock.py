@@ -20,6 +20,7 @@ from .monetary_shock import (
 )
 from .natural_oracle import NaturalOracleNet
 from .postprocess import LoadedPolicy, _dtype, _load_payload, _network_config_from_metadata, load_natural
+from .train import load_model_state_dict
 
 
 def _first_existing(paths: list[Path]) -> Path:
@@ -73,7 +74,7 @@ def _load_rule_shock(path: Path, *, device: str, dtype: torch.dtype) -> tuple[to
     payload = _load_payload(path, device=device)
     metadata = dict(payload.get("metadata", {}))
     net = make_rule_shock_net(_network_config_from_metadata(metadata), device=device, dtype=dtype)
-    net.load_state_dict(payload["state_dict"])
+    load_model_state_dict(net, payload["state_dict"])
     net.eval()
     return net, metadata
 
