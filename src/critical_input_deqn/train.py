@@ -1899,6 +1899,8 @@ def train_optimal_episode(
             kind=key,
             params=params,
             length=train_cfg.episode_length,
+            nodes=nodes,
+            qmc_cfg=qmc_cfg,
         )
         current_state = state_episode[-1].detach()
         flat_states = state_episode.reshape(-1, state_episode.shape[-1]).detach()

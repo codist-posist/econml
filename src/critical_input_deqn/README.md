@@ -11,7 +11,7 @@ functions and are trained by minimizing equilibrium residuals.
 ## Implemented first
 
 - auxiliary flexible-price benchmark network;
-- fixed Taylor, natural-rate-adjusted Taylor, bottleneck-adjusted Taylor, and
+- fixed Taylor, natural-rate-adjusted Taylor, cap-pressure bottleneck Taylor, and
   repair-aware Taylor residual systems;
 - fixed Sobol/QMC expectation nodes;
 - marked-Poisson transition block with deterministic marks;
@@ -39,7 +39,7 @@ python -m src.critical_input_deqn.preflight
 ```
 
 The preflight is not a convergence test.  It checks that the natural
-benchmark, fixed Taylor, natural-rate-adjusted Taylor, bottleneck-adjusted
+benchmark, fixed Taylor, natural-rate-adjusted Taylor, cap-pressure bottleneck
 Taylor, repair-aware Taylor, discretion, and commitment residual systems all
 build finite residual matrices with the current state and output architecture.
 
@@ -115,7 +115,7 @@ The notebooks are experiment wrappers around the package code:
 3. `notebooks/critical_input_deqn_02_modified_taylor.ipynb` trains the
    natural-rate-adjusted Taylor rule using the frozen benchmark.
 4. `notebooks/critical_input_deqn_10_bottleneck_taylor.ipynb` trains the
-   bottleneck-adjusted Taylor rule using the frozen benchmark.
+   cap-pressure bottleneck Taylor rule using the frozen benchmark.
 5. `notebooks/critical_input_deqn_11_repair_aware_taylor.ipynb` trains the
    repair-aware Taylor rule using the frozen benchmark.
 6. `notebooks/critical_input_deqn_04_discretion.ipynb` trains the discretionary

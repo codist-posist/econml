@@ -325,7 +325,7 @@ def derive_rule(
     bottleneck_scarcity = torch.zeros_like(C)
     bottleneck_adjustment = torch.ones_like(C)
     cap_pressure_policy = torch.zeros_like(C)
-    if policy_key == "bottleneck":
+    if policy_key in {"bottleneck", "repair_aware"}:
         M_zero_policy = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
         cap_pressure_policy = M_zero_policy / torch.clamp(mbar, min=1e-12)
         bottleneck_scarcity = torch.relu(torch.log(torch.clamp(cap_pressure_policy, min=1e-12)))
@@ -338,8 +338,6 @@ def derive_rule(
     repair_support = torch.zeros_like(C)
     repair_adjustment = torch.ones_like(C)
     if policy_key == "repair_aware":
-        M_zero_policy = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
-        cap_pressure_policy = M_zero_policy / torch.clamp(mbar, min=1e-12)
         Omega_standard = omega_A_cost(R_standard, p)
         repair_threshold_standard = torch.clamp(Omega_standard * p_a * float(p.psi_A), min=1e-12)
         repair_margin_standard = out["Q_A"] / repair_threshold_standard
