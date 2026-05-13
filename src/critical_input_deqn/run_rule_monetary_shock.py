@@ -90,6 +90,8 @@ def _load_natural(path: Path, *, device: str, dtype: torch.dtype, fallback_cfg: 
 
 def _resolve_natural_checkpoint(path: Path | None) -> Path:
     if path is not None:
+        if not path.exists():
+            raise FileNotFoundError(f"Missing natural checkpoint: {path}")
         return path
     candidates = [
         Path("baseline_artifacts/critical_input_deqn/natural/checkpoints/natural_best.pt"),
@@ -100,6 +102,30 @@ def _resolve_natural_checkpoint(path: Path | None) -> Path:
         if candidate.exists():
             return candidate
     raise FileNotFoundError("No natural checkpoint found: " + ", ".join(str(p) for p in candidates))
+
+
+def _maybe_resolve_natural_checkpoint(path: Path | None) -> Path | None:
+    if path is not None:
+        return _resolve_natural_checkpoint(path)
+    candidates = [
+        Path("baseline_artifacts/critical_input_deqn/natural/checkpoints/natural_best.pt"),
+        Path("baseline_artifacts/critical_input_deqn/natural/natural.pt"),
+        Path("baseline_artifacts/critical_input_deqn/natural.pt"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_natural_metadata(path: Path | None, *, device: str) -> dict:
+    if path is None:
+        return {}
+    payload = torch.load(path, map_location=device)
+    if not isinstance(payload, dict):
+        return {}
+    metadata = payload.get("metadata", {})
+    return dict(metadata) if isinstance(metadata, dict) else {}
 
 
 def main() -> None:
@@ -168,14 +194,9 @@ def main() -> None:
         small_bp_annualized=args.small_bp_annualized,
         large_bp_annualized=args.large_bp_annualized,
     )
-    natural_checkpoint = _resolve_natural_checkpoint(args.natural_checkpoint)
-    natural_net, natural_metadata = _load_natural(
-        natural_checkpoint,
-        device=args.device,
-        dtype=dtype,
-        fallback_cfg=net_cfg,
-    )
     if args.natural_benchmark == "oracle":
+        natural_checkpoint = _maybe_resolve_natural_checkpoint(args.natural_checkpoint)
+        natural_metadata = _load_natural_metadata(natural_checkpoint, device=args.device)
         natural_net = NaturalOracleNet(
             params=params,
             qmc_cfg=QMCConfig(n_train=args.natural_oracle_nodes, seed=args.seed + 991),
@@ -190,6 +211,14 @@ def main() -> None:
             "natural_oracle_nodes": args.natural_oracle_nodes,
             "natural_oracle_chunk_size": args.natural_oracle_chunk_size,
         }
+    else:
+        natural_checkpoint = _resolve_natural_checkpoint(args.natural_checkpoint)
+        natural_net, natural_metadata = _load_natural(
+            natural_checkpoint,
+            device=args.device,
+            dtype=dtype,
+            fallback_cfg=net_cfg,
+        )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     run_config = {
@@ -235,7 +264,7 @@ def main() -> None:
             "natural_oracle_chunk_size": args.natural_oracle_chunk_size,
         },
         "policies": _policies(args.policies),
-        "natural_checkpoint": str(natural_checkpoint),
+        "natural_checkpoint": None if natural_checkpoint is None else str(natural_checkpoint),
         "natural_metadata": natural_metadata,
         "policy_stop": {policy: _resolved_stop(args, policy) for policy in _policies(args.policies)},
     }

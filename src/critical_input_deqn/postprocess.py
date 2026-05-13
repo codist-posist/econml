@@ -613,12 +613,15 @@ def run_postprocess(
     natural_oracle_chunk_size: int = 8192,
 ) -> None:
     params, experiment_meta = resolve_params(experiment, params_json)
-    natural_path = _first_existing(
-        [
-            artifact_root / "natural" / "checkpoints" / "natural_best.pt",
-            artifact_root / "natural" / "natural.pt",
-            artifact_root / "natural.pt",
-        ]
+    natural_candidates = [
+        artifact_root / "natural" / "checkpoints" / "natural_best.pt",
+        artifact_root / "natural" / "natural.pt",
+        artifact_root / "natural.pt",
+    ]
+    natural_path = (
+        _maybe_first_existing(natural_candidates)
+        if natural_benchmark == "oracle"
+        else _first_existing(natural_candidates)
     )
     fixed_path = _first_existing(
         [
@@ -661,21 +664,48 @@ def run_postprocess(
         ]
     )
 
-    natural = load_natural(natural_path, device=device, dtype=dtype)
-    if params_json is None:
+    if natural_path is None and params_json is None:
+        fixed_payload = _load_payload(fixed_path, device=device)
+        fixed_metadata = dict(fixed_payload.get("metadata", {}))
+        params = params_from_metadata(fixed_metadata, fallback=params)
+        experiment_meta["params"] = asdict(params)
+
+    natural_qmc_cfg = QMCConfig(n_train=int(natural_oracle_nodes or 32), seed=int(seed) + 991)
+    if natural_path is None:
+        if natural_benchmark != "oracle":
+            raise FileNotFoundError("A natural checkpoint is required when natural_benchmark='network'.")
+        natural = LoadedPolicy(
+            "natural_oracle",
+            NaturalOracleNet(
+                params=params,
+                qmc_cfg=natural_qmc_cfg,
+                n_nodes=natural_oracle_nodes,
+                chunk_size=natural_oracle_chunk_size,
+                device=device,
+                dtype=dtype,
+            ),
+            {
+                "natural_benchmark": "oracle",
+                "natural_oracle_nodes": int(natural_oracle_nodes or natural_qmc_cfg.n_train),
+                "natural_oracle_chunk_size": int(natural_oracle_chunk_size),
+            },
+        )
+    else:
+        natural = load_natural(natural_path, device=device, dtype=dtype)
+    if natural_path is not None and params_json is None:
         params = params_from_metadata(natural.metadata, fallback=params)
         experiment_meta["params"] = asdict(params)
-    natural_qmc_cfg = QMCConfig(n_train=int(natural_oracle_nodes or 32), seed=int(seed) + 991)
-    natural = _use_natural_benchmark(
-        natural,
-        benchmark=natural_benchmark,
-        params=params,
-        qmc_cfg=natural_qmc_cfg,
-        n_nodes=natural_oracle_nodes,
-        chunk_size=natural_oracle_chunk_size,
-        device=device,
-        dtype=dtype,
-    )
+    if natural.kind != "natural_oracle":
+        natural = _use_natural_benchmark(
+            natural,
+            benchmark=natural_benchmark,
+            params=params,
+            qmc_cfg=natural_qmc_cfg,
+            n_nodes=natural_oracle_nodes,
+            chunk_size=natural_oracle_chunk_size,
+            device=device,
+            dtype=dtype,
+        )
     fixed = load_rule(fixed_path, policy="fixed", device=device, dtype=dtype)
     ba = load_rule(ba_path, policy="ba", device=device, dtype=dtype)
     bottleneck = None if bottleneck_path is None else load_rule(bottleneck_path, policy="bottleneck", device=device, dtype=dtype)

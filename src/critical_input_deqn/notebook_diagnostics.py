@@ -43,6 +43,16 @@ def first_existing(paths: Iterable[Path | str | None]) -> Path:
     raise FileNotFoundError("No existing path found:\n" + "\n".join(tried))
 
 
+def maybe_first_existing(paths: Iterable[Path | str | None]) -> Path | None:
+    for path in paths:
+        if path is None:
+            continue
+        p = Path(path)
+        if p.exists():
+            return p
+    return None
+
+
 def _as_dtype(dtype: torch.dtype | str) -> torch.dtype:
     if isinstance(dtype, torch.dtype):
         return dtype
@@ -215,12 +225,15 @@ def rule_ir_mechanism_diagnostics(
     run_config, run_config_path = _load_run_config(artifact_root, output_dir)
     params, net_cfg = _params_and_net_cfg(run_config, hidden_width=hidden_width, hidden_depth=hidden_depth)
 
-    natural_path = first_existing(
-        [
-            natural_checkpoint,
-            artifact_root / "natural" / "checkpoints" / "natural_best.pt",
-            artifact_root / "natural" / "natural.pt",
-        ]
+    natural_candidates = [
+        natural_checkpoint,
+        artifact_root / "natural" / "checkpoints" / "natural_best.pt",
+        artifact_root / "natural" / "natural.pt",
+    ]
+    natural_path = (
+        maybe_first_existing(natural_candidates)
+        if natural_benchmark == "oracle"
+        else first_existing(natural_candidates)
     )
     policy_path = first_existing(
         [
@@ -231,9 +244,6 @@ def rule_ir_mechanism_diagnostics(
         ]
     )
 
-    natural_net = make_natural_net(net_cfg, device=device, dtype=dtype_t)
-    load_checkpoint(natural_path, natural_net, map_location=device)
-    natural_net.eval()
     if natural_benchmark == "oracle":
         natural_net = NaturalOracleNet(
             params=params,
@@ -243,6 +253,10 @@ def rule_ir_mechanism_diagnostics(
             dtype=dtype_t,
             chunk_size=natural_oracle_chunk_size,
         )
+        natural_net.eval()
+    else:
+        natural_net = make_natural_net(net_cfg, device=device, dtype=dtype_t)
+        load_checkpoint(natural_path, natural_net, map_location=device)
         natural_net.eval()
 
     rule_net = make_rule_net(net_cfg, device=device, dtype=dtype_t)
@@ -358,12 +372,15 @@ def optimal_ir_mechanism_diagnostics(
     run_config, run_config_path = _load_run_config(artifact_root, output_dir)
     params, net_cfg = _params_and_net_cfg(run_config, hidden_width=hidden_width, hidden_depth=hidden_depth)
 
-    natural_path = first_existing(
-        [
-            natural_checkpoint,
-            artifact_root / "natural" / "checkpoints" / "natural_best.pt",
-            artifact_root / "natural" / "natural.pt",
-        ]
+    natural_candidates = [
+        natural_checkpoint,
+        artifact_root / "natural" / "checkpoints" / "natural_best.pt",
+        artifact_root / "natural" / "natural.pt",
+    ]
+    natural_path = (
+        maybe_first_existing(natural_candidates)
+        if natural_benchmark == "oracle"
+        else first_existing(natural_candidates)
     )
     policy_path = first_existing(
         [
@@ -374,9 +391,6 @@ def optimal_ir_mechanism_diagnostics(
         ]
     )
 
-    natural_net = make_natural_net(net_cfg, device=device, dtype=dtype_t)
-    load_checkpoint(natural_path, natural_net, map_location=device)
-    natural_net.eval()
     if natural_benchmark == "oracle":
         natural_net = NaturalOracleNet(
             params=params,
@@ -386,6 +400,10 @@ def optimal_ir_mechanism_diagnostics(
             dtype=dtype_t,
             chunk_size=natural_oracle_chunk_size,
         )
+        natural_net.eval()
+    else:
+        natural_net = make_natural_net(net_cfg, device=device, dtype=dtype_t)
+        load_checkpoint(natural_path, natural_net, map_location=device)
         natural_net.eval()
 
     if kind == "discretion":

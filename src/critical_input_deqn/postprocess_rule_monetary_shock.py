@@ -19,7 +19,7 @@ from .monetary_shock import (
     simulate_rule_monetary_ir_scenarios,
 )
 from .natural_oracle import NaturalOracleNet
-from .postprocess import _dtype, _load_payload, _network_config_from_metadata, load_natural
+from .postprocess import LoadedPolicy, _dtype, _load_payload, _network_config_from_metadata, load_natural
 
 
 def _first_existing(paths: list[Path]) -> Path:
@@ -31,6 +31,8 @@ def _first_existing(paths: list[Path]) -> Path:
 
 def _resolve_natural_checkpoint(path: Path | None) -> Path:
     if path is not None:
+        if not path.exists():
+            raise FileNotFoundError(f"Missing natural checkpoint: {path}")
         return path
     return _first_existing(
         [
@@ -39,6 +41,19 @@ def _resolve_natural_checkpoint(path: Path | None) -> Path:
             Path("baseline_artifacts/critical_input_deqn/natural.pt"),
         ]
     )
+
+
+def _maybe_resolve_natural_checkpoint(path: Path | None) -> Path | None:
+    if path is not None:
+        return _resolve_natural_checkpoint(path)
+    for candidate in [
+        Path("baseline_artifacts/critical_input_deqn/natural/checkpoints/natural_best.pt"),
+        Path("baseline_artifacts/critical_input_deqn/natural/natural.pt"),
+        Path("baseline_artifacts/critical_input_deqn/natural.pt"),
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _shock_cfg_from_metadata(metadata: Mapping[str, object], fallback: MonetaryShockConfig) -> MonetaryShockConfig:
@@ -104,7 +119,7 @@ def run_postprocess_rule_monetary_shock(
     *,
     artifact_root: Path,
     output_dir: Path,
-    natural_checkpoint: Path,
+    natural_checkpoint: Path | None,
     experiment: str,
     params_json: Path | None,
     policies: list[str],
@@ -121,12 +136,29 @@ def run_postprocess_rule_monetary_shock(
     natural_oracle_chunk_size: int = 8192,
 ) -> None:
     params, experiment_meta = resolve_params(experiment, params_json)
-    natural = load_natural(natural_checkpoint, device=device, dtype=dtype)
-    if params_json is None:
+    natural_metadata: dict[str, object] = {}
+    natural: LoadedPolicy | None = None
+    if natural_checkpoint is not None:
+        natural = load_natural(natural_checkpoint, device=device, dtype=dtype)
+        natural_metadata = dict(natural.metadata)
+    elif natural_benchmark != "oracle":
+        raise FileNotFoundError("A natural checkpoint is required when natural_benchmark='network'.")
+    if natural is not None and params_json is None:
         params = params_from_metadata(natural.metadata, fallback=params)
         experiment_meta["params"] = asdict(params)
+    elif natural is None and params_json is None and policies:
+        probe_path = _first_existing(
+            [
+                artifact_root / f"{policies[0]}_monetary_shock.pt",
+                artifact_root / policies[0] / f"{policies[0]}_monetary_shock.pt",
+            ]
+        )
+        probe_payload = _load_payload(probe_path, device=device)
+        probe_metadata = dict(probe_payload.get("metadata", {}))
+        params = params_from_metadata(probe_metadata, fallback=params)
+        experiment_meta["params"] = asdict(params)
     if natural_benchmark == "oracle":
-        natural = type(natural)(
+        natural = LoadedPolicy(
             "natural_oracle",
             NaturalOracleNet(
                 params=params,
@@ -137,12 +169,14 @@ def run_postprocess_rule_monetary_shock(
                 chunk_size=natural_oracle_chunk_size,
             ),
             {
-                **natural.metadata,
+                **natural_metadata,
                 "natural_benchmark": "oracle",
                 "natural_oracle_nodes": int(natural_oracle_nodes),
                 "natural_oracle_chunk_size": int(natural_oracle_chunk_size),
             },
         )
+    if natural is None:
+        raise RuntimeError("Natural benchmark was not initialized.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     files: list[str] = []
@@ -213,7 +247,7 @@ def run_postprocess_rule_monetary_shock(
     manifest = {
         "artifact_root": str(artifact_root),
         "output_dir": str(output_dir),
-        "natural_checkpoint": str(natural_checkpoint),
+        "natural_checkpoint": None if natural_checkpoint is None else str(natural_checkpoint),
         "natural_benchmark": natural.kind,
         "experiment": experiment_meta,
         "params": asdict(params),
@@ -260,7 +294,11 @@ def main() -> None:
             f"Unknown policy names: {bad}. Use fixed, ba, bottleneck, repair_aware, or a comma-separated subset."
         )
     output_dir = args.output_dir or (args.artifact_root / "postprocess")
-    natural_checkpoint = _resolve_natural_checkpoint(args.natural_checkpoint)
+    natural_checkpoint = (
+        _maybe_resolve_natural_checkpoint(args.natural_checkpoint)
+        if args.natural_benchmark == "oracle"
+        else _resolve_natural_checkpoint(args.natural_checkpoint)
+    )
     run_postprocess_rule_monetary_shock(
         artifact_root=args.artifact_root,
         output_dir=output_dir,
