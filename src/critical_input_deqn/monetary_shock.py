@@ -61,7 +61,7 @@ from .train import (
     residual_loss,
     save_checkpoint,
 )
-from .transforms import decode_rule_outputs
+from .transforms import decode_rule_outputs, steady_decode_targets
 from .transitions import transition_rule_states
 
 
@@ -881,13 +881,19 @@ def _rule_shock_calm_anchor_terms(
 ) -> list[torch.Tensor]:
     z = _normal_initial_rule_shock_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
     st, eps_R = unpack_rule_shock_state(z)
-    out_n = natural_benchmark_outputs(
-        natural_from_rule_shock_states(z),
-        natural_net,
-        params=params,
-        need_rate=policy.lower() == "ba",
-    )
     uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
+    if uses_natural_y_ref or policy.lower() == "ba":
+        out_n = natural_benchmark_outputs(
+            natural_from_rule_shock_states(z),
+            natural_net,
+            params=params,
+            need_rate=policy.lower() == "ba",
+        )
+    else:
+        targets = steady_decode_targets(params)
+        C_n = torch.full_like(z[..., 0], float(targets["C"]))
+        Y_n = torch.full_like(z[..., 0], float(targets["Y"]))
+        out_n = {"C_n": C_n, "Y_n": Y_n, "R_n_real": torch.full_like(Y_n, float(params.bar_R))}
     out = decode_rule_outputs(
         rule_net(z),
         RULE_OUTPUT_NAMES,
@@ -1252,13 +1258,13 @@ def evaluate_rule_shock_path(
     T, B, K = states.shape
     z = states.reshape(T * B, K)
     st, eps_R = unpack_rule_shock_state(z)
+    uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
     out_n = natural_benchmark_outputs(
         natural_from_rule_shock_states(z),
         natural_net,
         params=params,
         need_rate=policy.lower() == "ba",
     )
-    uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
     out = decode_rule_outputs(
         rule_net(z),
         RULE_OUTPUT_NAMES,

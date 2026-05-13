@@ -38,7 +38,7 @@ from .optimal import (
     private_residuals_free,
     simulate_optimal_episode,
 )
-from .transforms import decode_natural_outputs, decode_rule_outputs
+from .transforms import decode_natural_outputs, decode_rule_outputs, steady_decode_targets
 
 
 @dataclass
@@ -861,13 +861,19 @@ def _rule_calm_anchor_terms(
     train_cfg: TrainConfig,
 ) -> list[torch.Tensor]:
     z = _normal_rule_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
-    out_n = natural_benchmark_outputs(
-        z[..., :6],
-        natural_net,
-        params=params,
-        need_rate=policy.lower() == "ba",
-    )
     uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
+    if uses_natural_y_ref or policy.lower() == "ba":
+        out_n = natural_benchmark_outputs(
+            z[..., :6],
+            natural_net,
+            params=params,
+            need_rate=policy.lower() == "ba",
+        )
+    else:
+        targets = steady_decode_targets(params)
+        C_n = torch.full_like(z[..., 0], float(targets["C"]))
+        Y_n = torch.full_like(z[..., 0], float(targets["Y"]))
+        out_n = {"C_n": C_n, "Y_n": Y_n, "R_n_real": torch.full_like(Y_n, float(params.bar_R))}
     out = decode_rule_outputs(
         net(z),
         RULE_OUTPUT_NAMES,
