@@ -218,16 +218,21 @@ def _progress_range(total: int, *, desc: str, enabled: bool):
 def _report_progress(progress, metrics: dict[str, float], *, step: int, total: int, stop_hits: int, enabled: bool) -> None:
     if not enabled:
         return
+    stage = metrics.get("stage")
     payload = {
         "train_rms": f"{metrics['train_rms']:.2e}",
         "val_rms": f"{metrics.get('val_rms', float('nan')):.2e}",
         "val_max": f"{metrics.get('val_max_abs', float('nan')):.2e}",
         "stop": int(stop_hits),
     }
+    if stage:
+        payload["stage"] = str(stage)
     message = (
         f"[{step}/{total}] train_rms={payload['train_rms']} "
         f"val_rms={payload['val_rms']} val_max={payload['val_max']} stop_hits={payload['stop']}"
     )
+    if stage:
+        message += f" stage={stage}"
     score = metrics.get("selection_score")
     if score is not None and math.isfinite(float(score)):
         payload["score"] = f"{float(score):.2e}"
@@ -270,6 +275,14 @@ def _announce_training(
 ) -> None:
     if not train_cfg.show_progress:
         return
+    optimal_bits = ""
+    if kind in {"discretion", "commitment"}:
+        optimal_bits = (
+            f", feasibility_pretrain={int(train_cfg.optimal_feasibility_pretrain_steps)}, "
+            f"stat_w={float(train_cfg.optimal_stationarity_loss_weight):g}, "
+            f"bellman_w={float(train_cfg.optimal_bellman_loss_weight):g}, "
+            f"promise_w={float(train_cfg.optimal_promise_loss_weight):g}"
+        )
     print(
         f"Starting {kind}: total={int(total)}, batch_size={int(train_cfg.batch_size)}, "
         f"sim_batch_size={int(train_cfg.sim_batch_size)}, episode_length={int(train_cfg.episode_length)}, "
@@ -277,7 +290,7 @@ def _announce_training(
         f"broad_share={float(train_cfg.episode_broad_share):.2f}, "
         f"qmc_train={int(qmc_cfg.n_train)}, qmc_val={int(qmc_cfg.n_val)}, "
         f"stop_val_states={int(train_cfg.stop_val_states)}, log_every={int(log_every)}, "
-        f"device={train_cfg.device}, dtype={train_cfg.dtype}",
+        f"device={train_cfg.device}, dtype={train_cfg.dtype}{optimal_bits}",
         flush=True,
     )
 
@@ -290,6 +303,41 @@ def _top_residual_summary(residuals: Dict[str, torch.Tensor], *, limit: int = 3)
             items.append((float(rms.cpu()), name))
     items.sort(reverse=True)
     return ", ".join(f"{name}:{rms:.2e}" for rms, name in items[: int(limit)])
+
+
+def _optimal_training_stage(step: int, train_cfg: TrainConfig) -> str:
+    pretrain = max(0, int(train_cfg.optimal_feasibility_pretrain_steps))
+    return "feas" if int(step) <= pretrain else "full"
+
+
+def _optimal_objective_matrix(
+    residuals: Dict[str, torch.Tensor],
+    train_cfg: TrainConfig,
+    *,
+    stage: str,
+) -> torch.Tensor:
+    """Return the loss matrix used for optimal-policy updates.
+
+    Raw validation residuals are left untouched.  The feasibility stage fits
+    private implementability first; the full stage then down-weights FOC-style
+    residuals so they do not swamp the Calvo/resource/Q feasibility block.
+    """
+
+    pieces: list[torch.Tensor] = []
+    for name, value in residuals.items():
+        if stage == "feas" and not name.startswith("priv_"):
+            continue
+        weight = float(train_cfg.optimal_private_loss_weight)
+        if name == "bellman":
+            weight = float(train_cfg.optimal_bellman_loss_weight)
+        elif name.startswith("stat_"):
+            weight = float(train_cfg.optimal_stationarity_loss_weight)
+        elif name.startswith("promise_"):
+            weight = float(train_cfg.optimal_promise_loss_weight)
+        pieces.append(value * weight)
+    if not pieces:
+        return stack_residuals(residuals)
+    return torch.stack(pieces, dim=-1)
 
 
 def _copy_state_dict_to_cpu(net: nn.Module) -> dict[str, torch.Tensor]:
@@ -1815,6 +1863,7 @@ def train_optimal_episode(
         episode_n = batch_size - broad_n
         updates = max(1, int(train_cfg.episode_updates_per_episode))
         for _ in range(updates):
+            stage = _optimal_training_stage(episode, train_cfg)
             pieces = []
             if episode_n > 0:
                 idx = torch.randint(flat_states.shape[0], (episode_n,), device=flat_states.device)
@@ -1841,8 +1890,8 @@ def train_optimal_episode(
                 qmc_cfg=qmc_cfg,
                 fb_epsilon=train_cfg.fb_epsilon_start,
             )
-            mat = stack_residuals(res)
-            loss = residual_loss(mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+            obj_mat = _optimal_objective_matrix(res, train_cfg, stage=stage)
+            loss = residual_loss(obj_mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
             loss = loss + _optimal_auxiliary_training_loss(
                 net,
                 nodes,
@@ -1857,7 +1906,7 @@ def train_optimal_episode(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
             opt.step()
-            last_mat = mat.detach()
+            last_mat = obj_mat.detach()
             last_loss = loss.detach()
         if last_mat is not None and last_loss is not None and (
             episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
@@ -1883,6 +1932,7 @@ def train_optimal_episode(
                 fb_epsilon=train_cfg.fb_epsilon_final,
             )
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
+            metrics["stage"] = _optimal_training_stage(episode, train_cfg)
             metrics["val_top"] = _top_residual_summary(val_res)
             scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
             metrics.update(scenario_diag)
@@ -1912,7 +1962,16 @@ def train_optimal_episode(
                 train_cfg,
                 extra={"kind": key, "current_state": current_state},
             )
-            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag, **calm_resid_diag, "selection_score": float(metrics.get("selection_score", float("nan")))})
+            log.extra_metrics.append(
+                {
+                    "step": float(episode),
+                    "stage": metrics["stage"],
+                    **scenario_diag,
+                    **calm_diag,
+                    **calm_resid_diag,
+                    "selection_score": float(metrics.get("selection_score", float("nan"))),
+                }
+            )
             _maybe_save_training_state(
                 step=episode,
                 net=net,

@@ -131,6 +131,36 @@ def main() -> None:
     parser.add_argument("--best-calm-residual-weight", type=float, default=1.0)
     parser.add_argument("--target-scenario-q-rms", type=float, default=1e-2)
     parser.add_argument(
+        "--feasibility-pretrain-steps",
+        type=int,
+        default=1_000,
+        help="Initial optimal-policy episodes that train only private feasibility residuals.",
+    )
+    parser.add_argument(
+        "--private-loss-weight",
+        type=float,
+        default=1.0,
+        help="Training-objective weight on private implementability residuals.",
+    )
+    parser.add_argument(
+        "--bellman-loss-weight",
+        type=float,
+        default=0.25,
+        help="Training-objective weight on the optimal-policy Bellman residual after feasibility pretraining.",
+    )
+    parser.add_argument(
+        "--stationarity-loss-weight",
+        type=float,
+        default=0.10,
+        help="Training-objective weight on optimal-policy stationarity residuals after feasibility pretraining.",
+    )
+    parser.add_argument(
+        "--promise-loss-weight",
+        type=float,
+        default=1.0,
+        help="Training-objective weight on commitment promise residuals after feasibility pretraining.",
+    )
+    parser.add_argument(
         "--promise-init-scale",
         type=float,
         default=1.0,
@@ -183,6 +213,11 @@ def main() -> None:
         best_calm_anchor_weight=args.best_calm_anchor_weight,
         best_calm_residual_weight=args.best_calm_residual_weight,
         target_scenario_q_rms=args.target_scenario_q_rms,
+        optimal_feasibility_pretrain_steps=args.feasibility_pretrain_steps,
+        optimal_private_loss_weight=args.private_loss_weight,
+        optimal_bellman_loss_weight=args.bellman_loss_weight,
+        optimal_stationarity_loss_weight=args.stationarity_loss_weight,
+        optimal_promise_loss_weight=args.promise_loss_weight,
         dtype=dtype,
         device=args.device,
     )
@@ -225,6 +260,11 @@ def main() -> None:
             "best_calm_anchor_weight": args.best_calm_anchor_weight,
             "best_calm_residual_weight": args.best_calm_residual_weight,
             "target_scenario_q_rms": args.target_scenario_q_rms,
+            "feasibility_pretrain_steps": args.feasibility_pretrain_steps,
+            "private_loss_weight": args.private_loss_weight,
+            "bellman_loss_weight": args.bellman_loss_weight,
+            "stationarity_loss_weight": args.stationarity_loss_weight,
+            "promise_loss_weight": args.promise_loss_weight,
             "commitment_promise_init_mean": COMMITMENT_PROMISE_INIT_MEAN,
             "commitment_promise_init_std": COMMITMENT_PROMISE_INIT_STD,
             "dtype": args.dtype,
@@ -236,7 +276,9 @@ def main() -> None:
         f"Configured run_optimal: output_dir={args.output_dir}, kind={args.kind}, "
         f"device={args.device}, dtype={args.dtype}, steps={args.steps}, "
         f"qmc_train={args.qmc_train}, qmc_val={args.qmc_val}, "
-        f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}",
+        f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}, "
+        f"feasibility_pretrain={args.feasibility_pretrain_steps}, "
+        f"stat_w={args.stationarity_loss_weight:g}, bellman_w={args.bellman_loss_weight:g}",
         flush=True,
     )
     net, log = train_optimal_episode(

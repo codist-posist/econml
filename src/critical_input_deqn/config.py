@@ -135,6 +135,11 @@ class TrainConfig:
     best_calm_anchor_weight: float = 1.0
     best_calm_residual_weight: float = 1.0
     target_scenario_q_rms: float | None = 1e-2
+    optimal_feasibility_pretrain_steps: int = 1_000
+    optimal_private_loss_weight: float = 1.0
+    optimal_bellman_loss_weight: float = 0.25
+    optimal_stationarity_loss_weight: float = 0.10
+    optimal_promise_loss_weight: float = 1.0
 
 
 STOP_PROFILES = {
