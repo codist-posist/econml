@@ -12,7 +12,15 @@ def _base_cmd() -> list[str]:
     return [sys.executable, "-u", "-m"]
 
 
-def _append_common_training_args(cmd: list[str], args: argparse.Namespace) -> list[str]:
+def _append_common_training_args(
+    cmd: list[str],
+    args: argparse.Namespace,
+    *,
+    episode_updates_per_episode: int | None = None,
+) -> list[str]:
+    updates_per_episode = args.episode_updates_per_episode
+    if episode_updates_per_episode is not None:
+        updates_per_episode = int(episode_updates_per_episode)
     cmd += [
         "--experiment",
         args.experiment,
@@ -35,7 +43,7 @@ def _append_common_training_args(cmd: list[str], args: argparse.Namespace) -> li
         "--episode-length",
         str(args.episode_length),
         "--episode-updates-per-episode",
-        str(args.episode_updates_per_episode),
+        str(updates_per_episode),
         "--episode-broad-share",
         str(args.episode_broad_share),
         "--lr",
@@ -60,8 +68,25 @@ def _append_common_training_args(cmd: list[str], args: argparse.Namespace) -> li
     return cmd
 
 
-def _append_rule_training_args(cmd: list[str], args: argparse.Namespace) -> list[str]:
-    cmd = _append_common_training_args(cmd, args)
+def _append_rule_training_args(
+    cmd: list[str],
+    args: argparse.Namespace,
+    *,
+    scenario_q_weight: float | None = None,
+    scenario_loss_interval: int | None = None,
+    episode_updates_per_episode: int | None = None,
+) -> list[str]:
+    q_weight = args.rule_scenario_q_weight if scenario_q_weight is None else float(scenario_q_weight)
+    loss_interval = (
+        args.rule_scenario_loss_interval
+        if scenario_loss_interval is None
+        else int(scenario_loss_interval)
+    )
+    cmd = _append_common_training_args(
+        cmd,
+        args,
+        episode_updates_per_episode=episode_updates_per_episode,
+    )
     cmd += [
         "--natural-benchmark",
         args.natural_benchmark,
@@ -70,7 +95,7 @@ def _append_rule_training_args(cmd: list[str], args: argparse.Namespace) -> list
         "--natural-oracle-chunk-size",
         str(args.natural_oracle_chunk_size),
         "--rule-scenario-q-weight",
-        str(args.rule_scenario_q_weight),
+        str(q_weight),
         "--rule-calm-anchor-weight",
         str(args.rule_calm_anchor_weight),
         "--rule-calm-residual-weight",
@@ -80,7 +105,7 @@ def _append_rule_training_args(cmd: list[str], args: argparse.Namespace) -> list
         "--rule-scenario-horizon",
         str(args.rule_scenario_horizon),
         "--rule-scenario-loss-interval",
-        str(args.rule_scenario_loss_interval),
+        str(loss_interval),
         "--best-scenario-q-weight",
         str(args.best_scenario_q_weight),
         "--best-calm-anchor-weight",
@@ -179,7 +204,15 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             str(args.rule_steps),
         ]
         cmd = _append_natural_source_args(cmd, args, root)
-        cmds.append(_append_rule_training_args(cmd, args))
+        cmds.append(
+            _append_rule_training_args(
+                cmd,
+                args,
+                scenario_q_weight=args.fixed_rule_scenario_q_weight,
+                scenario_loss_interval=args.fixed_rule_scenario_loss_interval,
+                episode_updates_per_episode=args.fixed_episode_updates_per_episode,
+            )
+        )
 
     if args.stage in {"rules", "ba", "all"}:
         cmd = _base_cmd() + [
@@ -322,13 +355,16 @@ def main() -> None:
     parser.add_argument("--sim-batch-size", type=int, default=512)
     parser.add_argument("--episode-length", type=int, default=20)
     parser.add_argument("--episode-updates-per-episode", type=int, default=2)
+    parser.add_argument("--fixed-episode-updates-per-episode", type=int, default=1)
     parser.add_argument("--episode-broad-share", type=float, default=0.50)
     parser.add_argument("--rule-scenario-q-weight", type=float, default=25.0)
+    parser.add_argument("--fixed-rule-scenario-q-weight", type=float, default=0.0)
     parser.add_argument("--rule-calm-anchor-weight", type=float, default=5.0)
     parser.add_argument("--rule-calm-residual-weight", type=float, default=5.0)
     parser.add_argument("--rule-scenario-burnin", type=int, default=5)
     parser.add_argument("--rule-scenario-horizon", type=int, default=10)
     parser.add_argument("--rule-scenario-loss-interval", type=int, default=25)
+    parser.add_argument("--fixed-rule-scenario-loss-interval", type=int, default=100)
     parser.add_argument("--best-scenario-q-weight", type=float, default=1.0)
     parser.add_argument("--best-calm-anchor-weight", type=float, default=1.0)
     parser.add_argument("--best-calm-residual-weight", type=float, default=1.0)

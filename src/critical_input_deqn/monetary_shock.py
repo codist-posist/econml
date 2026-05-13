@@ -48,11 +48,13 @@ from .train import (
     _pricing_sum_targets,
     _progress_range,
     _report_progress,
+    _report_train_postfix,
     _residual_matrix_diagnostics,
     _restore_best_state,
     _rule_scenario_additions,
     _scenario_q_diagnostics,
     _should_apply_scenario_loss,
+    _should_update_train_postfix,
     _top_residual_summary,
     _validation_nodes,
     exact_condition_diagnostics,
@@ -537,9 +539,8 @@ def train_rule_shock_episode(
             opt.step()
             last_mat = mat.detach()
             last_loss = loss.detach()
-        if last_mat is not None and last_loss is not None and (
-            episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
-        ):
+        should_validate = episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
+        if last_mat is not None and last_loss is not None and should_validate:
             with torch.no_grad():
                 val_res, _ = rule_shock_residuals(
                     val_z,
@@ -627,6 +628,19 @@ def train_rule_shock_episode(
                 metrics,
                 step=episode,
                 total=n_episodes,
+                stop_hits=stop_hits,
+                enabled=train_cfg.show_progress,
+            )
+        elif (
+            last_mat is not None
+            and last_loss is not None
+            and _should_update_train_postfix(episode, log_every)
+        ):
+            _report_train_postfix(
+                progress,
+                last_mat,
+                last_loss,
+                step=episode,
                 stop_hits=stop_hits,
                 enabled=train_cfg.show_progress,
             )

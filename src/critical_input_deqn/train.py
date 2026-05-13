@@ -270,6 +270,38 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     print(message, flush=True)
 
 
+def _should_update_train_postfix(step: int, log_every: int) -> bool:
+    """Refresh cheap train-only progress between expensive validation passes."""
+
+    interval = max(1, min(10, int(log_every) // 10 if int(log_every) > 1 else 1))
+    return int(step) == 1 or int(step) % interval == 0
+
+
+def _report_train_postfix(
+    progress,
+    mat: torch.Tensor,
+    loss: torch.Tensor,
+    *,
+    step: int,
+    stop_hits: int,
+    enabled: bool,
+    stage: str | None = None,
+) -> None:
+    if not enabled or not hasattr(progress, "set_postfix"):
+        return
+    with torch.no_grad():
+        train_rms = float(torch.sqrt(mat.detach().pow(2).mean()).cpu())
+        loss_value = float(loss.detach().cpu())
+    payload = {
+        "train_rms": f"{train_rms:.2e}",
+        "loss": f"{loss_value:.2e}",
+        "stop": int(stop_hits),
+    }
+    if stage:
+        payload["stage"] = str(stage)
+    progress.set_postfix(payload)
+
+
 def _announce_training(
     *,
     kind: str,
@@ -1518,7 +1550,8 @@ def train_natural(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
         opt.step()
-        if step == 1 or step % int(log_every) == 0 or step == n_steps:
+        should_validate = step == 1 or step % int(log_every) == 0 or step == n_steps
+        if should_validate:
             with torch.no_grad():
                 val_res, _ = natural_residuals(
                     val_z_n,
@@ -1557,6 +1590,15 @@ def train_natural(
             else:
                 stop_hits = 0
             _report_progress(progress, metrics, step=step, total=n_steps, stop_hits=stop_hits, enabled=train_cfg.show_progress)
+        elif _should_update_train_postfix(step, log_every):
+            _report_train_postfix(
+                progress,
+                mat.detach(),
+                loss.detach(),
+                step=step,
+                stop_hits=stop_hits,
+                enabled=train_cfg.show_progress,
+            )
     _restore_best_state(net, best_state)
     return net, log
 
@@ -1628,7 +1670,8 @@ def train_rule(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
         opt.step()
-        if step == 1 or step % int(log_every) == 0 or step == n_steps:
+        should_validate = step == 1 or step % int(log_every) == 0 or step == n_steps
+        if should_validate:
             with torch.no_grad():
                 val_res, _ = rule_residuals(
                     val_z,
@@ -1701,6 +1744,15 @@ def train_rule(
             else:
                 stop_hits = 0
             _report_progress(progress, metrics, step=step, total=n_steps, stop_hits=stop_hits, enabled=train_cfg.show_progress)
+        elif _should_update_train_postfix(step, log_every):
+            _report_train_postfix(
+                progress,
+                mat.detach(),
+                loss.detach(),
+                step=step,
+                stop_hits=stop_hits,
+                enabled=train_cfg.show_progress,
+            )
     _restore_best_state(net, best_state)
     return net, log
 
@@ -1817,9 +1869,8 @@ def train_rule_episode(
             opt.step()
             last_mat = mat.detach()
             last_loss = loss.detach()
-        if last_mat is not None and last_loss is not None and (
-            episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
-        ):
+        should_validate = episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
+        if last_mat is not None and last_loss is not None and should_validate:
             with torch.no_grad():
                 val_res, _ = rule_residuals(
                     val_z,
@@ -1899,6 +1950,19 @@ def train_rule_episode(
             else:
                 stop_hits = 0
             _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
+        elif (
+            last_mat is not None
+            and last_loss is not None
+            and _should_update_train_postfix(episode, log_every)
+        ):
+            _report_train_postfix(
+                progress,
+                last_mat,
+                last_loss,
+                step=episode,
+                stop_hits=stop_hits,
+                enabled=train_cfg.show_progress,
+            )
     _restore_best_state(net, best_state)
     return net, log
 
@@ -2055,9 +2119,8 @@ def train_optimal_episode(
             opt.step()
             last_mat = obj_mat.detach()
             last_loss = loss.detach()
-        if last_mat is not None and last_loss is not None and (
-            episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
-        ):
+        should_validate = episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
+        if last_mat is not None and last_loss is not None and should_validate:
             val_raw = net(val_state)
             val_res, _ = residual_fn(
                 val_state,
@@ -2142,6 +2205,20 @@ def train_optimal_episode(
             _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
             if str(train_cfg.device).startswith("cuda") and torch.cuda.is_available():
                 torch.cuda.empty_cache()
+        elif (
+            last_mat is not None
+            and last_loss is not None
+            and _should_update_train_postfix(episode, log_every)
+        ):
+            _report_train_postfix(
+                progress,
+                last_mat,
+                last_loss,
+                step=episode,
+                stop_hits=stop_hits,
+                enabled=train_cfg.show_progress,
+                stage=_optimal_training_stage(episode, train_cfg),
+            )
     _restore_best_state(net, best_state)
     return net, log
 
