@@ -87,10 +87,24 @@ def _load_natural(path: Path, *, device: str, dtype: torch.dtype, fallback_cfg: 
     return net, metadata
 
 
+def _resolve_natural_checkpoint(path: Path | None) -> Path:
+    if path is not None:
+        return path
+    candidates = [
+        Path("baseline_artifacts/critical_input_deqn/natural/checkpoints/natural_best.pt"),
+        Path("baseline_artifacts/critical_input_deqn/natural/natural.pt"),
+        Path("baseline_artifacts/critical_input_deqn/natural.pt"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError("No natural checkpoint found: " + ", ".join(str(p) for p in candidates))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train Taylor-rule DEQN networks with a monetary-policy shock state.")
     parser.add_argument("--output-dir", type=Path, default=Path("baseline_artifacts/critical_input_deqn/rule_monetary_shock"))
-    parser.add_argument("--natural-checkpoint", type=Path, default=Path("baseline_artifacts/critical_input_deqn/natural/natural.pt"))
+    parser.add_argument("--natural-checkpoint", type=Path, default=None)
     parser.add_argument("--policies", default="fixed,ba", help="Comma-separated list: fixed,ba,bottleneck,repair_aware")
     parser.add_argument("--experiment", default="baseline")
     parser.add_argument("--params-json", type=Path, default=None)
@@ -150,8 +164,9 @@ def main() -> None:
         small_bp_annualized=args.small_bp_annualized,
         large_bp_annualized=args.large_bp_annualized,
     )
+    natural_checkpoint = _resolve_natural_checkpoint(args.natural_checkpoint)
     natural_net, natural_metadata = _load_natural(
-        args.natural_checkpoint,
+        natural_checkpoint,
         device=args.device,
         dtype=dtype,
         fallback_cfg=net_cfg,
@@ -198,7 +213,7 @@ def main() -> None:
             "device": args.device,
         },
         "policies": _policies(args.policies),
-        "natural_checkpoint": str(args.natural_checkpoint),
+        "natural_checkpoint": str(natural_checkpoint),
         "natural_metadata": natural_metadata,
         "policy_stop": {policy: _resolved_stop(args, policy) for policy in _policies(args.policies)},
     }

@@ -974,9 +974,11 @@ def _normal_optimal_state(
 
 def _optimal_training_scenario_states(
     net: MLP,
+    nodes,
     *,
     kind: str,
     params: BaselineParams,
+    qmc_cfg: QMCConfig,
     train_cfg: TrainConfig,
 ) -> tuple[torch.Tensor, list[str]]:
     """Deterministic no-event/crisis states for optimal-policy value diagnostics."""
@@ -999,8 +1001,16 @@ def _optimal_training_scenario_states(
     with torch.no_grad():
         for t in range(1, total):
             out = _decode_optimal_for_kind(net(z), key, params=params)
-            st = unpack_rule_state(z[..., :7])
-            drv = derive_free(st, out, params, R=torch.full_like(out["C"], float(params.bar_R)))
+            _, drv = private_residuals_free(
+                z,
+                out,
+                net,
+                nodes,
+                params=params,
+                qmc_cfg=qmc_cfg,
+                fb_epsilon=train_cfg.fb_epsilon_final,
+                commitment=key == "commitment",
+            )
             add_D, add_X = _rule_scenario_additions(
                 t=t,
                 pulse=burnin,
@@ -1045,7 +1055,14 @@ def _optimal_scenario_residuals(
     fb_epsilon: float,
 ) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], list[str]]:
     key = kind.lower()
-    z, names = _optimal_training_scenario_states(net, kind=key, params=params, train_cfg=train_cfg)
+    z, names = _optimal_training_scenario_states(
+        net,
+        nodes,
+        kind=key,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        train_cfg=train_cfg,
+    )
     out = _decode_optimal_for_kind(net(z), key, params=params)
     res, drv = private_residuals_free(
         z,

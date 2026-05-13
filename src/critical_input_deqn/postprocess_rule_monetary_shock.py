@@ -27,6 +27,18 @@ def _first_existing(paths: list[Path]) -> Path:
     raise FileNotFoundError("None of these checkpoints exists: " + ", ".join(str(p) for p in paths))
 
 
+def _resolve_natural_checkpoint(path: Path | None) -> Path:
+    if path is not None:
+        return path
+    return _first_existing(
+        [
+            Path("baseline_artifacts/critical_input_deqn/natural/checkpoints/natural_best.pt"),
+            Path("baseline_artifacts/critical_input_deqn/natural/natural.pt"),
+            Path("baseline_artifacts/critical_input_deqn/natural.pt"),
+        ]
+    )
+
+
 def _shock_cfg_from_metadata(metadata: Mapping[str, object], fallback: MonetaryShockConfig) -> MonetaryShockConfig:
     data = metadata.get("shock_config", {})
     if not isinstance(data, Mapping):
@@ -200,7 +212,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Postprocess one-time monetary-shock IRFs for Taylor-rule DEQN networks.")
     parser.add_argument("--artifact-root", type=Path, default=Path("baseline_artifacts/critical_input_deqn/rule_monetary_shock"))
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--natural-checkpoint", type=Path, default=Path("baseline_artifacts/critical_input_deqn/natural/natural.pt"))
+    parser.add_argument("--natural-checkpoint", type=Path, default=None)
     parser.add_argument("--experiment", default="baseline")
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--policies", default="fixed,ba")
@@ -221,10 +233,11 @@ def main() -> None:
             f"Unknown policy names: {bad}. Use fixed, ba, bottleneck, repair_aware, or a comma-separated subset."
         )
     output_dir = args.output_dir or (args.artifact_root / "postprocess")
+    natural_checkpoint = _resolve_natural_checkpoint(args.natural_checkpoint)
     run_postprocess_rule_monetary_shock(
         artifact_root=args.artifact_root,
         output_dir=output_dir,
-        natural_checkpoint=args.natural_checkpoint,
+        natural_checkpoint=natural_checkpoint,
         experiment=args.experiment,
         params_json=args.params_json,
         policies=policies,

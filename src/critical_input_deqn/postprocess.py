@@ -22,7 +22,7 @@ from .config import (
     NetworkConfig,
 )
 from .experiments import params_from_metadata, resolve_params
-from .economics import adaptation_enabled, derive_free, derive_rule, psi_prime, unpack_rule_state
+from .economics import adaptation_enabled, derive_rule, psi_prime, unpack_rule_state
 from .episode import simulate_rule_episode
 from .optimal import decode_commitment, decode_discretion, private_residuals_free, simulate_optimal_episode
 from .qmc import make_qmc_nodes
@@ -378,18 +378,17 @@ def simulate_optimal_ir_scenarios(
             else:
                 out = decode_discretion(policy_net(z), params=params)
             if nodes is None or qmc_cfg is None:
-                drv = derive_free(st, out, params, R=torch.full_like(out["C"], float(params.bar_R)))
-            else:
-                _, drv = private_residuals_free(
-                    z,
-                    out,
-                    policy_net,
-                    nodes,
-                    params=params,
-                    qmc_cfg=qmc_cfg,
-                    fb_epsilon=0.0,
-                    commitment=kind == "commitment",
-                )
+                raise ValueError("Optimal-policy IRFs require QMC nodes to recover the Euler-implied policy rate.")
+            _, drv = private_residuals_free(
+                z,
+                out,
+                policy_net,
+                nodes,
+                params=params,
+                qmc_cfg=qmc_cfg,
+                fb_epsilon=0.0,
+                commitment=kind == "commitment",
+            )
             add_D, add_X = _scenario_additions(scenarios, t=t, device=z.device, dtype=z.dtype)
             z_phys_next = _deterministic_physical_step(
                 z_phys,
@@ -463,31 +462,30 @@ def evaluate_optimal_path(
         raise ValueError("kind must be discretion or commitment.")
     out_n = decode_natural_outputs(natural_net(z_phys[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
     if nodes is None or qmc_cfg is None:
-        drv = derive_free(st, out, params, R=torch.full_like(out["C"], float(params.bar_R)))
-    else:
-        drv_parts: dict[str, list[torch.Tensor]] = {}
-        n = z.shape[0]
-        for start in range(0, n, int(chunk_size)):
-            end = min(start + int(chunk_size), n)
-            z_chunk = z[start:end]
-            out_chunk = {name: value[start:end] for name, value in out.items()}
-            _, drv_chunk = private_residuals_free(
-                z_chunk,
-                out_chunk,
-                policy_net,
-                nodes,
-                params=params,
-                qmc_cfg=qmc_cfg,
-                fb_epsilon=0.0,
-                commitment=kind == "commitment",
-            )
-            for name, value in drv_chunk.items():
-                if name in {"z_next", "out_next"} or not torch.is_tensor(value):
-                    continue
-                if value.shape[:1] != (end - start,):
-                    continue
-                drv_parts.setdefault(name, []).append(value)
-        drv = {name: torch.cat(parts, dim=0) for name, parts in drv_parts.items()}
+        raise ValueError("Optimal-policy path evaluation requires QMC nodes to recover the Euler-implied policy rate.")
+    drv_parts: dict[str, list[torch.Tensor]] = {}
+    n = z.shape[0]
+    for start in range(0, n, int(chunk_size)):
+        end = min(start + int(chunk_size), n)
+        z_chunk = z[start:end]
+        out_chunk = {name: value[start:end] for name, value in out.items()}
+        _, drv_chunk = private_residuals_free(
+            z_chunk,
+            out_chunk,
+            policy_net,
+            nodes,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            fb_epsilon=0.0,
+            commitment=kind == "commitment",
+        )
+        for name, value in drv_chunk.items():
+            if name in {"z_next", "out_next"} or not torch.is_tensor(value):
+                continue
+            if value.shape[:1] != (end - start,):
+                continue
+            drv_parts.setdefault(name, []).append(value)
+    drv = {name: torch.cat(parts, dim=0) for name, parts in drv_parts.items()}
     data: TensorDict = {}
     data.update(_state_dict(z, state_names))
     data.update(out)
