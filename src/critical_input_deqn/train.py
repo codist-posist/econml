@@ -340,6 +340,53 @@ def _optimal_objective_matrix(
     return torch.stack(pieces, dim=-1)
 
 
+def _optimal_training_residuals_for_stage(
+    z: torch.Tensor,
+    raw: torch.Tensor,
+    net: MLP,
+    nodes,
+    *,
+    kind: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    fb_epsilon: float,
+    stage: str,
+) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    key = kind.lower()
+    if stage == "feas":
+        out = _decode_optimal_for_kind(raw, key, params=params)
+        private, drv = private_residuals_free(
+            z,
+            out,
+            net,
+            nodes,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            fb_epsilon=fb_epsilon,
+            commitment=key == "commitment",
+        )
+        return {f"priv_{name}": value for name, value in private.items()}, drv
+    if key == "discretion":
+        return discretion_residuals(
+            z,
+            raw,
+            net,
+            nodes,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            fb_epsilon=fb_epsilon,
+        )
+    return commitment_residuals(
+        z,
+        raw,
+        net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        fb_epsilon=fb_epsilon,
+    )
+
+
 def _copy_state_dict_to_cpu(net: nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.detach().cpu().clone() for name, value in net.state_dict().items()}
 
@@ -1881,14 +1928,16 @@ def train_optimal_episode(
                 )
             z = torch.cat(pieces, dim=0) if len(pieces) > 1 else pieces[0]
             raw = net(z)
-            res, _ = residual_fn(
+            res, _ = _optimal_training_residuals_for_stage(
                 z,
                 raw,
                 net,
                 nodes,
+                kind=key,
                 params=params,
                 qmc_cfg=qmc_cfg,
                 fb_epsilon=train_cfg.fb_epsilon_start,
+                stage=stage,
             )
             obj_mat = _optimal_objective_matrix(res, train_cfg, stage=stage)
             loss = residual_loss(obj_mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
@@ -1922,6 +1971,8 @@ def train_optimal_episode(
                 fb_epsilon=train_cfg.fb_epsilon_final,
             )
             val_mat = stack_residuals(val_res).detach()
+            val_top = _top_residual_summary(val_res)
+            del val_raw, val_res
             scenario_val_res, _, scenario_names = _optimal_scenario_residuals(
                 net,
                 val_nodes,
@@ -1933,8 +1984,9 @@ def train_optimal_episode(
             )
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["stage"] = _optimal_training_stage(episode, train_cfg)
-            metrics["val_top"] = _top_residual_summary(val_res)
+            metrics["val_top"] = val_top
             scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
+            del scenario_val_res, scenario_names
             metrics.update(scenario_diag)
             calm_diag = _optimal_calm_anchor_diagnostics(
                 net,
@@ -1988,6 +2040,8 @@ def train_optimal_episode(
             else:
                 stop_hits = 0
             _report_progress(progress, metrics, step=episode, total=n_episodes, stop_hits=stop_hits, enabled=train_cfg.show_progress)
+            if str(train_cfg.device).startswith("cuda") and torch.cuda.is_available():
+                torch.cuda.empty_cache()
     _restore_best_state(net, best_state)
     return net, log
 
