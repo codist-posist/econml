@@ -356,13 +356,23 @@ def simulate_rule_ir_scenarios(
     with torch.no_grad():
         for t in range(1, total):
             st = unpack_rule_state(z)
-            out_n = natural_benchmark_outputs(
-                z[..., :6],
-                natural_net,
+            uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
+            if uses_natural_y_ref or policy.lower() == "ba":
+                out_n = natural_benchmark_outputs(
+                    z[..., :6],
+                    natural_net,
+                    params=params,
+                    need_rate=policy.lower() == "ba",
+                )
+            else:
+                y_ref = torch.full_like(z[..., 0], float(params.steady_state_output))
+                out_n = {"Y_n": y_ref, "R_n_real": torch.full_like(y_ref, float(params.bar_R))}
+            out = decode_rule_outputs(
+                rule_net(z),
+                RULE_OUTPUT_NAMES,
                 params=params,
-                need_rate=policy.lower() == "ba",
+                y_ref=out_n["Y_n"] if uses_natural_y_ref else None,
             )
-            out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
             drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
             add_D, add_X = _scenario_additions(scenarios, t=t, device=z.device, dtype=z.dtype)
             z = _deterministic_physical_step(
@@ -462,7 +472,13 @@ def evaluate_rule_path(
         params=params,
         need_rate=policy.lower() == "ba",
     )
-    out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
+    uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
+    out = decode_rule_outputs(
+        rule_net(z),
+        RULE_OUTPUT_NAMES,
+        params=params,
+        y_ref=out_n["Y_n"] if uses_natural_y_ref else None,
+    )
     drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
     data: TensorDict = {}
     data.update(_state_dict(z, RULE_STATE_NAMES))

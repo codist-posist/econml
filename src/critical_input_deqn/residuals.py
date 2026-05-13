@@ -92,15 +92,21 @@ def rule_residuals(
     st = unpack_rule_state(z)
     z_n = z[..., :6]
     policy_key = policy.lower()
-    out_n = natural_benchmark_outputs(
-        z_n,
-        natural_net,
-        params=params,
-        need_rate=policy_key == "ba",
-    )
+    uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
+    need_current_rate = policy_key == "ba"
+    if uses_natural_y_ref or need_current_rate:
+        out_n = natural_benchmark_outputs(
+            z_n,
+            natural_net,
+            params=params,
+            need_rate=need_current_rate,
+        )
+    else:
+        y_ref = torch.full_like(z[..., 0], float(params.steady_state_output))
+        out_n = {"Y_n": y_ref, "R_n_real": torch.full_like(y_ref, float(params.bar_R))}
     Y_n = out_n["Y_n"]
     R_n = out_n.get("R_n_real", torch.full_like(Y_n, float(params.bar_R)))
-    out = decode_rule_outputs(raw, RULE_OUTPUT_NAMES, params=params, y_ref=Y_n)
+    out = decode_rule_outputs(raw, RULE_OUTPUT_NAMES, params=params, y_ref=Y_n if uses_natural_y_ref else None)
     drv = derive_rule(st, out, params, Y_n=Y_n, R_n=R_n, policy=policy)
 
     z_next = transition_rule_states(st, drv["A_next"], drv["Delta"], nodes, params, qmc_cfg)
@@ -108,7 +114,11 @@ def rule_residuals(
     raw_next = rule_net(z_next.reshape(B * S, K))
     z_next_flat = z_next.reshape(B * S, K)
     st_next = unpack_rule_state(z_next_flat)
-    if getattr(natural_net, "is_natural_oracle", False):
+    if not uses_natural_y_ref:
+        out_next = decode_rule_outputs(raw_next, RULE_OUTPUT_NAMES, params=params, y_ref=None)
+        Y_n_next = torch.full_like(out_next["Y"], float(params.steady_state_output))
+        R_n_next = torch.full_like(out_next["Y"], float(params.bar_R))
+    elif getattr(natural_net, "is_natural_oracle", False):
         out_n_next = natural_benchmark_outputs(
             z_next_flat[..., :6],
             natural_net,

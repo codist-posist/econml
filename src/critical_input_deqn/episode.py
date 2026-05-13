@@ -25,13 +25,23 @@ def random_rule_step(
     """
 
     st = unpack_rule_state(z)
-    out_n = natural_benchmark_outputs(
-        z[..., :6],
-        natural_net,
+    uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
+    if uses_natural_y_ref or policy.lower() == "ba":
+        out_n = natural_benchmark_outputs(
+            z[..., :6],
+            natural_net,
+            params=params,
+            need_rate=policy.lower() == "ba",
+        )
+    else:
+        y_ref = torch.full_like(z[..., 0], float(params.steady_state_output))
+        out_n = {"Y_n": y_ref, "R_n_real": torch.full_like(y_ref, float(params.bar_R))}
+    out = decode_rule_outputs(
+        rule_net(z),
+        RULE_OUTPUT_NAMES,
         params=params,
-        need_rate=policy.lower() == "ba",
+        y_ref=out_n["Y_n"] if uses_natural_y_ref else None,
     )
-    out = decode_rule_outputs(rule_net(z), RULE_OUTPUT_NAMES, params=params, y_ref=out_n["Y_n"])
     drv = derive_rule(st, out, params, Y_n=out_n["Y_n"], R_n=out_n["R_n_real"], policy=policy)
 
     lam_D = torch.exp(st.ell_D)
