@@ -254,8 +254,6 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     if full_weight is not None and math.isfinite(float(full_weight)):
         payload["full_w"] = f"{float(full_weight):.2f}"
         message += f" fullW={float(full_weight):.2f}"
-    if hasattr(progress, "set_postfix"):
-        progress.set_postfix(payload)
     val_top = metrics.get("val_top")
     if val_top:
         message += f" top_val={val_top}"
@@ -265,6 +263,16 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     q_d1 = metrics.get("scenario_Q.D_1x.event")
     if q_d1 is not None:
         message += f" qD1={float(q_d1):.2e}"
+    activation_max = metrics.get("scenario_repair_activation.max")
+    if activation_max is not None and math.isfinite(float(activation_max)):
+        payload["act_max"] = f"{float(activation_max):.2e}"
+        message += f" actMax={float(activation_max):.2e}"
+    repair_max = metrics.get("scenario_I_A.max")
+    if repair_max is not None and math.isfinite(float(repair_max)):
+        payload["I_A_max"] = f"{float(repair_max):.2e}"
+        message += f" Imax={float(repair_max):.2e}"
+    if hasattr(progress, "set_postfix"):
+        progress.set_postfix(payload)
     if metrics.get("new_best"):
         message += " best=*"
     print(message, flush=True)
@@ -1157,6 +1165,72 @@ def _scenario_q_diagnostics(res: Dict[str, torch.Tensor], names: list[str], *, q
     return diag
 
 
+def _scenario_mechanism_diagnostics(
+    drv: Dict[str, torch.Tensor],
+    names: list[str],
+    *,
+    params: BaselineParams,
+) -> Dict[str, float]:
+    if not adaptation_enabled(params) or "Q_A" not in drv:
+        return {}
+    q = drv["Q_A"].detach().reshape(-1)
+    diag: Dict[str, float] = {
+        "scenario_Q_A.mean": float(q.mean().cpu()),
+        "scenario_Q_A.min": float(q.min().cpu()),
+        "scenario_Q_A.max": float(q.max().cpu()),
+    }
+    if {"Omega_A", "p_a"}.issubset(drv):
+        threshold = (
+            drv["Omega_A"].detach().reshape(-1)
+            * drv["p_a"].detach().reshape(-1)
+            * float(params.psi_A)
+        ).clamp_min(1e-12)
+        activation = q / threshold
+        diag.update(
+            {
+                "scenario_repair_threshold.mean": float(threshold.mean().cpu()),
+                "scenario_repair_activation.mean": float(activation.mean().cpu()),
+                "scenario_repair_activation.min": float(activation.min().cpu()),
+                "scenario_repair_activation.max": float(activation.max().cpu()),
+            }
+        )
+    else:
+        threshold = None
+        activation = None
+    if "I_A" in drv:
+        repair = drv["I_A"].detach().reshape(-1)
+        diag.update(
+            {
+                "scenario_I_A.mean": float(repair.mean().cpu()),
+                "scenario_I_A.max": float(repair.max().cpu()),
+                "scenario_repair_positive.freq": float((repair > 1e-5).to(repair.dtype).mean().cpu()),
+            }
+        )
+    if {"M_zero_rent", "mbar"}.issubset(drv):
+        pressure = drv["M_zero_rent"].detach().reshape(-1) / torch.clamp(
+            drv["mbar"].detach().reshape(-1),
+            min=1e-12,
+        )
+        diag.update(
+            {
+                "scenario_cap_pressure.mean": float(pressure.mean().cpu()),
+                "scenario_cap_pressure.max": float(pressure.max().cpu()),
+            }
+        )
+    wanted = {f"{label}.{tag}" for label, tag in _RULE_SCENARIO_POINTS}
+    for i, name in enumerate(names):
+        if name not in wanted or i >= q.numel():
+            continue
+        diag[f"scenario_Q_A.{name}"] = float(q[i].cpu())
+        if activation is not None and i < activation.numel():
+            diag[f"scenario_repair_activation.{name}"] = float(activation[i].cpu())
+        if "I_A" in drv:
+            repair = drv["I_A"].detach().reshape(-1)
+            if i < repair.numel():
+                diag[f"scenario_I_A.{name}"] = float(repair[i].cpu())
+    return diag
+
+
 def _optimal_calm_anchor_loss(
     net: MLP,
     *,
@@ -1685,7 +1759,7 @@ def train_rule(
                     policy=policy,
                 )
                 val_mat = stack_residuals(val_res).detach()
-                scenario_val_res, _, scenario_names = _rule_scenario_residuals(
+                scenario_val_res, scenario_val_drv, scenario_names = _rule_scenario_residuals(
                     net,
                     natural_net,
                     val_nodes,
@@ -1698,7 +1772,9 @@ def train_rule(
             metrics = _log_metrics(step, mat.detach(), log, loss.detach(), val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
             scenario_diag = _rule_scenario_q_diagnostics(scenario_val_res, scenario_names)
+            mechanism_diag = _scenario_mechanism_diagnostics(scenario_val_drv, scenario_names, params=params)
             metrics.update(scenario_diag)
+            metrics.update(mechanism_diag)
             calm_diag = _rule_calm_anchor_diagnostics(
                 net,
                 natural_net,
@@ -1727,7 +1803,16 @@ def train_rule(
                 train_cfg,
                 extra={"kind": "rule", "policy": policy.lower()},
             )
-            log.extra_metrics.append({"step": float(step), **scenario_diag, **calm_diag, **calm_resid_diag, "selection_score": float(metrics.get("selection_score", float("nan")))})
+            log.extra_metrics.append(
+                {
+                    "step": float(step),
+                    **scenario_diag,
+                    **mechanism_diag,
+                    **calm_diag,
+                    **calm_resid_diag,
+                    "selection_score": float(metrics.get("selection_score", float("nan"))),
+                }
+            )
             _maybe_save_training_state(
                 step=step,
                 net=net,
@@ -1884,7 +1969,7 @@ def train_rule_episode(
                     policy=policy,
                 )
                 val_mat = stack_residuals(val_res).detach()
-                scenario_val_res, _, scenario_names = _rule_scenario_residuals(
+                scenario_val_res, scenario_val_drv, scenario_names = _rule_scenario_residuals(
                     net,
                     natural_net,
                     val_nodes,
@@ -1897,7 +1982,9 @@ def train_rule_episode(
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
             scenario_diag = _rule_scenario_q_diagnostics(scenario_val_res, scenario_names)
+            mechanism_diag = _scenario_mechanism_diagnostics(scenario_val_drv, scenario_names, params=params)
             metrics.update(scenario_diag)
+            metrics.update(mechanism_diag)
             calm_diag = _rule_calm_anchor_diagnostics(
                 net,
                 natural_net,
@@ -1926,7 +2013,16 @@ def train_rule_episode(
                 train_cfg,
                 extra={"kind": "rule", "policy": policy.lower(), "current_state": current_state},
             )
-            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag, **calm_resid_diag, "selection_score": float(metrics.get("selection_score", float("nan")))})
+            log.extra_metrics.append(
+                {
+                    "step": float(episode),
+                    **scenario_diag,
+                    **mechanism_diag,
+                    **calm_diag,
+                    **calm_resid_diag,
+                    "selection_score": float(metrics.get("selection_score", float("nan"))),
+                }
+            )
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -2134,7 +2230,7 @@ def train_optimal_episode(
             val_mat = stack_residuals(val_res).detach()
             val_top = _top_residual_summary(val_res)
             del val_raw, val_res
-            scenario_val_res, _, scenario_names = _optimal_scenario_residuals(
+            scenario_val_res, scenario_val_drv, scenario_names = _optimal_scenario_residuals(
                 net,
                 val_nodes,
                 kind=key,
@@ -2148,8 +2244,10 @@ def train_optimal_episode(
             metrics["full_weight"] = _optimal_full_weight(episode, train_cfg) if metrics["stage"] == "full" else 0.0
             metrics["val_top"] = val_top
             scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
-            del scenario_val_res, scenario_names
+            mechanism_diag = _scenario_mechanism_diagnostics(scenario_val_drv, scenario_names, params=params)
+            del scenario_val_res, scenario_val_drv, scenario_names
             metrics.update(scenario_diag)
+            metrics.update(mechanism_diag)
             calm_diag = _optimal_calm_anchor_diagnostics(
                 net,
                 kind=key,
@@ -2182,6 +2280,7 @@ def train_optimal_episode(
                     "stage": metrics["stage"],
                     "full_weight": metrics["full_weight"],
                     **scenario_diag,
+                    **mechanism_diag,
                     **calm_diag,
                     **calm_resid_diag,
                     "selection_score": float(metrics.get("selection_score", float("nan"))),
@@ -2283,7 +2382,7 @@ def evaluate_rule(
             policy=policy,
         )
         mat = stack_residuals(res)
-        scenario_res, _, scenario_names = _rule_scenario_residuals(
+        scenario_res, scenario_drv, scenario_names = _rule_scenario_residuals(
             net,
             natural_net,
             nodes,
@@ -2300,6 +2399,7 @@ def evaluate_rule(
             **residual_diagnostics(res),
             **exact_condition_diagnostics(drv, params),
             **_rule_scenario_q_diagnostics(scenario_res, scenario_names),
+            **_scenario_mechanism_diagnostics(scenario_drv, scenario_names, params=params),
         }
 
 
@@ -2340,7 +2440,7 @@ def evaluate_optimal(
         fb_epsilon=train_cfg.fb_epsilon_final,
     )
     mat = stack_residuals(res)
-    scenario_res, _, scenario_names = _optimal_scenario_residuals(
+    scenario_res, scenario_drv, scenario_names = _optimal_scenario_residuals(
         net,
         nodes,
         kind=key,
@@ -2356,4 +2456,5 @@ def evaluate_optimal(
         **residual_diagnostics(res),
         **exact_condition_diagnostics(drv, params),
         **_scenario_q_diagnostics(scenario_res, scenario_names, q_key="Q"),
+        **_scenario_mechanism_diagnostics(scenario_drv, scenario_names, params=params),
     }

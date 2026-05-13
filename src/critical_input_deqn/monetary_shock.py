@@ -52,6 +52,7 @@ from .train import (
     _residual_matrix_diagnostics,
     _restore_best_state,
     _rule_scenario_additions,
+    _scenario_mechanism_diagnostics,
     _scenario_q_diagnostics,
     _should_apply_scenario_loss,
     _should_update_train_postfix,
@@ -555,7 +556,7 @@ def train_rule_shock_episode(
                     policy=policy,
                 )
                 val_mat = stack_residuals(val_res).detach()
-                scenario_val_res, _, scenario_names = _rule_shock_scenario_residuals(
+                scenario_val_res, scenario_val_drv, scenario_names = _rule_shock_scenario_residuals(
                     net,
                     natural_net,
                     val_nodes,
@@ -569,7 +570,9 @@ def train_rule_shock_episode(
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["val_top"] = _top_residual_summary(val_res)
             scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
+            mechanism_diag = _scenario_mechanism_diagnostics(scenario_val_drv, scenario_names, params=params)
             metrics.update(scenario_diag)
+            metrics.update(mechanism_diag)
             calm_diag = _rule_shock_calm_anchor_diagnostics(
                 net,
                 natural_net,
@@ -600,7 +603,16 @@ def train_rule_shock_episode(
                 train_cfg,
                 extra={"kind": "rule_monetary_shock", "policy": policy.lower(), "current_state": current_state},
             )
-            log.extra_metrics.append({"step": float(episode), **scenario_diag, **calm_diag, **calm_resid_diag, "selection_score": float(metrics.get("selection_score", float("nan")))})
+            log.extra_metrics.append(
+                {
+                    "step": float(episode),
+                    **scenario_diag,
+                    **mechanism_diag,
+                    **calm_diag,
+                    **calm_resid_diag,
+                    "selection_score": float(metrics.get("selection_score", float("nan"))),
+                }
+            )
             _maybe_save_training_state(
                 step=episode,
                 net=net,
@@ -684,7 +696,7 @@ def evaluate_rule_shock(
             policy=policy,
         )
         mat = stack_residuals(res)
-        scenario_res, _, scenario_names = _rule_shock_scenario_residuals(
+        scenario_res, scenario_drv, scenario_names = _rule_shock_scenario_residuals(
             net,
             natural_net,
             nodes,
@@ -702,6 +714,7 @@ def evaluate_rule_shock(
             **residual_diagnostics(res),
             **exact_condition_diagnostics(drv, params),
             **_scenario_q_diagnostics(scenario_res, scenario_names, q_key="Q"),
+            **_scenario_mechanism_diagnostics(scenario_drv, scenario_names, params=params),
         }
 
 
