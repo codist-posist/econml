@@ -11,7 +11,7 @@ from .config import (
     DISCRETION_OUTPUT_NAMES,
     OPT_CONTROL_NAMES,
     OPT_MULTIPLIER_NAMES,
-    PRIVATE_RESIDUAL_NAMES,
+    OPT_PRIVATE_RESIDUAL_NAMES,
     QMCConfig,
 )
 from .economics import (
@@ -30,6 +30,7 @@ from .transforms import decode_optimal_outputs
 
 
 TensorDict = Dict[str, torch.Tensor]
+_EULER_RATE_FIXED_POINT_ITERS = 2
 
 
 def period_utility(C: torch.Tensor, N: torch.Tensor, p: BaselineParams) -> torch.Tensor:
@@ -69,27 +70,56 @@ def private_residuals_free(
     fb_epsilon: float,
     commitment: bool = False,
 ) -> Tuple[TensorDict, TensorDict]:
-    """Private implementability residuals with the policy rate as a control."""
+    """Private implementability residuals with the policy rate Euler-implied.
+
+    This follows the author DEQN convention: discretion/commitment networks do
+    not output the nominal policy rate.  Instead, the gross rate is recovered
+    from the household Euler equation.  Because in this model R also affects
+    repair costs and therefore A_{t+1}, we close the scalar feedback with a
+    small differentiable fixed-point iteration.
+    """
 
     z_phys = z[..., :7]
     st = unpack_rule_state(z_phys)
-    drv = derive_free(st, out, params)
+    R = torch.full_like(out["C"], float(params.bar_R))
 
-    z_next_phys = transition_physical_states(st, drv["A_next"], drv["Delta"], nodes, params, qmc_cfg)
-    B, S, K = z_next_phys.shape
-    if commitment:
-        p_next = torch.stack([out[name] for name in COMMITMENT_PROMISE_NAMES], dim=-1)
-        p_next = p_next[:, None, :].expand(B, S, len(COMMITMENT_PROMISE_NAMES))
-        z_next = torch.cat([z_next_phys, p_next], dim=-1)
-        raw_next = policy_net(z_next.reshape(B * S, K + len(COMMITMENT_PROMISE_NAMES)))
-        out_next = decode_commitment(raw_next, params=params)
-    else:
-        z_next = z_next_phys
-        raw_next = policy_net(z_next.reshape(B * S, K))
-        out_next = decode_discretion(raw_next, params=params)
+    drv: TensorDict
+    z_next: torch.Tensor
+    z_next_phys: torch.Tensor
+    out_next: TensorDict
+    B = S = K = 0
+    for _ in range(_EULER_RATE_FIXED_POINT_ITERS):
+        drv = derive_free(st, out, params, R=R)
+        z_next, z_next_phys, out_next, B, S, K = _optimal_next_outputs(
+            st,
+            out,
+            drv,
+            policy_net,
+            nodes,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            commitment=commitment,
+        )
+        R = _euler_implied_gross_rate(out, drv, out_next, B, S, params)
+
+    drv = derive_free(st, out, params, R=R)
+    z_next, z_next_phys, out_next, B, S, K = _optimal_next_outputs(
+        st,
+        out,
+        drv,
+        policy_net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        commitment=commitment,
+    )
+    R_check = _euler_implied_gross_rate(out, drv, out_next, B, S, params)
+    euler_rate_residual = torch.log(torch.clamp(R / torch.clamp(R_check, min=1e-12), min=1e-12))
 
     st_next = unpack_rule_state(z_next_phys.reshape(B * S, K))
-    drv_next = derive_free(st_next, out_next, params)
+    # The Q recursion needs next-period marginal benefits, which do not depend
+    # on next-period repair financing.  Avoid a nested next-next Euler solve.
+    drv_next = derive_free(st_next, out_next, params, R=torch.full_like(out_next["C"], float(params.bar_R)))
 
     C = out["C"]
     Lambda = drv["Lambda"]
@@ -105,12 +135,6 @@ def private_residuals_free(
     benefit_A_next = -(mc_A_next * drv_next["Delta"] * out_next["Y"]).reshape(B, S)
 
     res: TensorDict = {}
-    res["hh_euler"] = torch.log(
-        torch.clamp(
-            _mean_over_nodes(float(params.beta) * out["R"][:, None] * Lambda_next / Lambda[:, None] / Pi_next),
-            min=1e-12,
-        )
-    )
     res["resource"] = (
         out["Y"]
         - out["C"]
@@ -140,7 +164,48 @@ def private_residuals_free(
         ) / (1.0 + out["Q_A"].abs())
     else:
         res["Q"] = out["Q_A"]
-    return res, {**out, **drv, "z_next": z_next, "out_next": out_next}
+    return res, {**out, **drv, "z_next": z_next, "out_next": out_next, "R_euler_check": R_check, "euler_rate_residual": euler_rate_residual}
+
+
+def _optimal_next_outputs(
+    st: State,
+    out: TensorDict,
+    drv: TensorDict,
+    policy_net,
+    nodes: QMCNodes,
+    *,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    commitment: bool,
+) -> tuple[torch.Tensor, torch.Tensor, TensorDict, int, int, int]:
+    z_next_phys = transition_physical_states(st, drv["A_next"], drv["Delta"], nodes, params, qmc_cfg)
+    B, S, K = z_next_phys.shape
+    if commitment:
+        p_next = torch.stack([out[name] for name in COMMITMENT_PROMISE_NAMES], dim=-1)
+        p_next = p_next[:, None, :].expand(B, S, len(COMMITMENT_PROMISE_NAMES))
+        z_next = torch.cat([z_next_phys, p_next], dim=-1)
+        raw_next = policy_net(z_next.reshape(B * S, K + len(COMMITMENT_PROMISE_NAMES)))
+        out_next = decode_commitment(raw_next, params=params)
+    else:
+        z_next = z_next_phys
+        raw_next = policy_net(z_next.reshape(B * S, K))
+        out_next = decode_discretion(raw_next, params=params)
+    return z_next, z_next_phys, out_next, B, S, K
+
+
+def _euler_implied_gross_rate(
+    out: TensorDict,
+    drv: TensorDict,
+    out_next: TensorDict,
+    B: int,
+    S: int,
+    params: BaselineParams,
+) -> torch.Tensor:
+    Lambda = drv["Lambda"]
+    Lambda_next = out_next["C"].pow(-float(params.sigma)).reshape(B, S)
+    Pi_next = out_next["Pi"].reshape(B, S)
+    sdf = _mean_over_nodes(float(params.beta) * Lambda_next / Lambda[:, None] / Pi_next)
+    return 1.0 / torch.clamp(sdf, min=1e-12)
 
 
 def transition_physical_states(
@@ -185,7 +250,7 @@ def transition_physical_states(
 
 
 def private_residual_matrix(res: TensorDict) -> torch.Tensor:
-    return torch.stack([res[name] for name in PRIVATE_RESIDUAL_NAMES], dim=-1)
+    return torch.stack([res[name] for name in OPT_PRIVATE_RESIDUAL_NAMES], dim=-1)
 
 
 def stationarity_from_lagrangian(
@@ -252,15 +317,14 @@ def commitment_promise_term(z: torch.Tensor, out: TensorDict, drv: TensorDict, p
     carried lagged consumption.
     """
 
-    pE, pS, pF, pQ = [z[..., 7 + i] for i in range(4)]
+    pS, pF, pQ = [z[..., 7 + i] for i in range(len(COMMITMENT_PROMISE_NAMES))]
     st = unpack_rule_state(z[..., :7])
     Lambda = drv["Lambda"]
     p_x_A = p_x_derivative_A(st.A, drv["p_m_eff"], drv["p_d"], params)
     mc_A = mc_derivative_A(drv["mc"], drv["p_x"], p_x_A, params)
     benefit_A = -(mc_A * drv["Delta"] * out["Y"])
     return (
-        pE * Lambda / out["Pi"]
-        + pS * Lambda * out["Pi"].pow(float(params.epsilon)) * out["S_p"]
+        pS * Lambda * out["Pi"].pow(float(params.epsilon)) * out["S_p"]
         + pF * Lambda * out["Pi"].pow(float(params.epsilon) - 1.0) * out["F_p"]
         + pQ * Lambda * (benefit_A + (1.0 - float(params.delta_A)) * out["Q_A"])
     )
@@ -273,7 +337,6 @@ def commitment_promise_map(out: TensorDict, drv: TensorDict, params: BaselinePar
     inv_lambda = 1.0 / torch.clamp(Lambda, min=1e-12)
     return torch.stack(
         [
-            out["mu_hh_euler"] * out["R"] * inv_lambda,
             out["mu_calvo_S"] * inv_lambda,
             out["mu_calvo_F"] * inv_lambda,
             out["mu_Q"] * inv_lambda,
@@ -326,9 +389,16 @@ def commitment_residuals(
     return res, drv
 
 
-def random_physical_step(z_phys: torch.Tensor, out: TensorDict, *, params: BaselineParams) -> torch.Tensor:
+def random_physical_step(
+    z_phys: torch.Tensor,
+    out: TensorDict,
+    *,
+    params: BaselineParams,
+    drv: TensorDict | None = None,
+) -> torch.Tensor:
     st = unpack_rule_state(z_phys)
-    drv = derive_free(st, out, params)
+    if drv is None:
+        drv = derive_free(st, out, params, R=torch.full_like(out["C"], float(params.bar_R)))
     lam_D = torch.exp(st.ell_D)
     lam_X = torch.exp(st.ell_X)
     n_D = torch.poisson(torch.clamp(lam_D, min=1e-12))
@@ -362,6 +432,8 @@ def simulate_optimal_episode(
     kind: str,
     params: BaselineParams,
     length: int,
+    nodes: QMCNodes | None = None,
+    qmc_cfg: QMCConfig | None = None,
 ) -> torch.Tensor:
     states = [initial_z]
     z = initial_z
@@ -369,10 +441,34 @@ def simulate_optimal_episode(
         for _ in range(1, int(length)):
             if kind == "discretion":
                 out = decode_discretion(policy_net(z), params=params)
-                z = random_physical_step(z, out, params=params)
+                drv = None
+                if nodes is not None and qmc_cfg is not None:
+                    _, drv = private_residuals_free(
+                        z,
+                        out,
+                        policy_net,
+                        nodes,
+                        params=params,
+                        qmc_cfg=qmc_cfg,
+                        fb_epsilon=0.0,
+                        commitment=False,
+                    )
+                z = random_physical_step(z, out, params=params, drv=drv)
             elif kind == "commitment":
                 out = decode_commitment(policy_net(z), params=params)
-                z_phys = random_physical_step(z[..., :7], out, params=params)
+                drv = None
+                if nodes is not None and qmc_cfg is not None:
+                    _, drv = private_residuals_free(
+                        z,
+                        out,
+                        policy_net,
+                        nodes,
+                        params=params,
+                        qmc_cfg=qmc_cfg,
+                        fb_epsilon=0.0,
+                        commitment=True,
+                    )
+                z_phys = random_physical_step(z[..., :7], out, params=params, drv=drv)
                 p_next = torch.stack([out[name] for name in COMMITMENT_PROMISE_NAMES], dim=-1)
                 z = torch.cat([z_phys, p_next], dim=-1)
             else:

@@ -15,6 +15,7 @@ from .config import (
     COMMITMENT_STATE_NAMES,
     DISCRETION_OUTPUT_NAMES,
     NATURAL_OUTPUT_NAMES,
+    QMCConfig,
     RULE_OUTPUT_NAMES,
     RULE_STATE_NAMES,
     BaselineParams,
@@ -23,7 +24,8 @@ from .config import (
 from .experiments import params_from_metadata, resolve_params
 from .economics import adaptation_enabled, derive_free, derive_rule, psi_prime, unpack_rule_state
 from .episode import simulate_rule_episode
-from .optimal import decode_commitment, decode_discretion, simulate_optimal_episode
+from .optimal import decode_commitment, decode_discretion, private_residuals_free, simulate_optimal_episode
+from .qmc import make_qmc_nodes
 from .sampling import sample_rule_states
 from .train import (
     _initial_optimal_states,
@@ -350,13 +352,16 @@ def simulate_optimal_ir_scenarios(
     relief_lag: int,
     device: str,
     dtype: torch.dtype,
+    nodes=None,
+    qmc_cfg: QMCConfig | None = None,
 ) -> tuple[list[str], torch.Tensor]:
     pulse = int(burnin)
     scenarios = _default_ir_scenarios(params, pulse=pulse, relief_lag=relief_lag)
     labels = list(scenarios.keys())
     z_phys = _normal_initial_rule_state(len(labels), params=params, device=device, dtype=dtype)
     if kind == "commitment":
-        promises = torch.tensor(COMMITMENT_PROMISE_INIT_MEAN, device=device, dtype=dtype)[None, :].expand(len(labels), 4)
+        n_promises = len(COMMITMENT_PROMISE_INIT_MEAN)
+        promises = torch.tensor(COMMITMENT_PROMISE_INIT_MEAN, device=device, dtype=dtype)[None, :].expand(len(labels), n_promises)
         z = torch.cat([z_phys, promises], dim=-1)
     elif kind == "discretion":
         z = z_phys
@@ -372,7 +377,19 @@ def simulate_optimal_ir_scenarios(
                 out = decode_commitment(policy_net(z), params=params)
             else:
                 out = decode_discretion(policy_net(z), params=params)
-            drv = derive_free(st, out, params)
+            if nodes is None or qmc_cfg is None:
+                drv = derive_free(st, out, params, R=torch.full_like(out["C"], float(params.bar_R)))
+            else:
+                _, drv = private_residuals_free(
+                    z,
+                    out,
+                    policy_net,
+                    nodes,
+                    params=params,
+                    qmc_cfg=qmc_cfg,
+                    fb_epsilon=0.0,
+                    commitment=kind == "commitment",
+                )
             add_D, add_X = _scenario_additions(scenarios, t=t, device=z.device, dtype=z.dtype)
             z_phys_next = _deterministic_physical_step(
                 z_phys,
@@ -383,10 +400,7 @@ def simulate_optimal_ir_scenarios(
                 params=params,
             )
             if kind == "commitment":
-                promises_next = torch.stack(
-                    [out["promise_E"], out["promise_S"], out["promise_F"], out["promise_Q"]],
-                    dim=-1,
-                )
+                promises_next = torch.stack([out[name] for name in COMMITMENT_STATE_NAMES[7:]], dim=-1)
                 z = torch.cat([z_phys_next, promises_next], dim=-1)
             else:
                 z = z_phys_next
@@ -431,6 +445,9 @@ def evaluate_optimal_path(
     policy_net,
     natural_net,
     params: BaselineParams,
+    nodes=None,
+    qmc_cfg: QMCConfig | None = None,
+    chunk_size: int = 512,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     T, B, K = states.shape
     z = states.reshape(T * B, K)
@@ -445,7 +462,32 @@ def evaluate_optimal_path(
     else:
         raise ValueError("kind must be discretion or commitment.")
     out_n = decode_natural_outputs(natural_net(z_phys[..., :6]), NATURAL_OUTPUT_NAMES, params=params)
-    drv = derive_free(st, out, params)
+    if nodes is None or qmc_cfg is None:
+        drv = derive_free(st, out, params, R=torch.full_like(out["C"], float(params.bar_R)))
+    else:
+        drv_parts: dict[str, list[torch.Tensor]] = {}
+        n = z.shape[0]
+        for start in range(0, n, int(chunk_size)):
+            end = min(start + int(chunk_size), n)
+            z_chunk = z[start:end]
+            out_chunk = {name: value[start:end] for name, value in out.items()}
+            _, drv_chunk = private_residuals_free(
+                z_chunk,
+                out_chunk,
+                policy_net,
+                nodes,
+                params=params,
+                qmc_cfg=qmc_cfg,
+                fb_epsilon=0.0,
+                commitment=kind == "commitment",
+            )
+            for name, value in drv_chunk.items():
+                if name in {"z_next", "out_next"} or not torch.is_tensor(value):
+                    continue
+                if value.shape[:1] != (end - start,):
+                    continue
+                drv_parts.setdefault(name, []).append(value)
+        drv = {name: torch.cat(parts, dim=0) for name, parts in drv_parts.items()}
     data: TensorDict = {}
     data.update(_state_dict(z, state_names))
     data.update(out)
@@ -578,6 +620,8 @@ def run_postprocess(
 
     torch.manual_seed(int(seed))
     z0 = sample_rule_states(batch_size, params=params, device=device, dtype=dtype, seed=seed)
+    opt_qmc_cfg = QMCConfig(n_train=64, n_val=64, seed=int(seed) + 909)
+    opt_nodes = make_qmc_nodes(opt_qmc_cfg.n_train, cfg=opt_qmc_cfg, device=device, dtype=dtype)
     with torch.no_grad():
         for policy, loaded in rule_policies.items():
             states = simulate_rule_episode(z0, loaded.net, natural.net, policy=policy, params=params, length=length)
@@ -591,13 +635,23 @@ def run_postprocess(
             save_policy_artifacts(policy=policy, states_np=states_np, outputs_np=outputs_np, out_dir=output_dir)
 
         z0_disc = z0
-        states_disc = simulate_optimal_episode(z0_disc, discretion.net, kind="discretion", params=params, length=length)
+        states_disc = simulate_optimal_episode(
+            z0_disc,
+            discretion.net,
+            kind="discretion",
+            params=params,
+            length=length,
+            nodes=opt_nodes,
+            qmc_cfg=opt_qmc_cfg,
+        )
         states_np, outputs_np = evaluate_optimal_path(
             states_disc,
             kind="discretion",
             policy_net=discretion.net,
             natural_net=natural.net,
             params=params,
+            nodes=opt_nodes,
+            qmc_cfg=opt_qmc_cfg,
         )
         save_policy_artifacts(policy="discretion", states_np=states_np, outputs_np=outputs_np, out_dir=output_dir)
 
@@ -609,13 +663,23 @@ def run_postprocess(
             dtype=dtype,
             promise_init_scale=1.0,
         )
-        states_com = simulate_optimal_episode(z0_com, commitment.net, kind="commitment", params=params, length=length)
+        states_com = simulate_optimal_episode(
+            z0_com,
+            commitment.net,
+            kind="commitment",
+            params=params,
+            length=length,
+            nodes=opt_nodes,
+            qmc_cfg=opt_qmc_cfg,
+        )
         states_np, outputs_np = evaluate_optimal_path(
             states_com,
             kind="commitment",
             policy_net=commitment.net,
             natural_net=natural.net,
             params=params,
+            nodes=opt_nodes,
+            qmc_cfg=opt_qmc_cfg,
         )
         save_policy_artifacts(policy="commitment", states_np=states_np, outputs_np=outputs_np, out_dir=output_dir)
 
@@ -653,6 +717,8 @@ def run_postprocess(
                     relief_lag=ir_relief_lag,
                     device=device,
                     dtype=dtype,
+                    nodes=opt_nodes,
+                    qmc_cfg=opt_qmc_cfg,
                 )
                 states_np, outputs_np = evaluate_optimal_path(
                     ir_states,
@@ -660,6 +726,8 @@ def run_postprocess(
                     policy_net=loaded.net,
                     natural_net=natural.net,
                     params=params,
+                    nodes=opt_nodes,
+                    qmc_cfg=opt_qmc_cfg,
                 )
                 save_ir_artifacts(policy=kind, labels=labels, states_np=states_np, outputs_np=outputs_np, out_dir=output_dir)
 

@@ -415,11 +415,20 @@ def derive_free(
     st: State,
     out: Dict[str, torch.Tensor],
     p: BaselineParams,
+    *,
+    R: torch.Tensor | None = None,
 ) -> Dict[str, torch.Tensor]:
-    """Derived objects when the gross policy rate is an implementability variable."""
+    """Derived objects for optimal policies.
+
+    If ``R`` is omitted, the function falls back to ``out["R"]`` for backward
+    compatibility with old checkpoints.  New discretion/commitment policies
+    pass the Euler-implied gross policy rate explicitly.
+    """
 
     C, Y = out["C"], out["Y"]
-    R, Pi = out["R"], out["Pi"]
+    if R is None:
+        R = out["R"]
+    Pi = out["Pi"]
     S_p, F_p = out["S_p"], out["F_p"]
     pm, mbar = external_conditions(st, p)
     p_d = torch.full_like(C, float(p.p_d))

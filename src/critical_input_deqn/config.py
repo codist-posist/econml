@@ -198,19 +198,23 @@ PRIVATE_RESIDUAL_NAMES = (
 OPT_CONTROL_NAMES = (
     "C",
     "Y",
-    "R",
     "Pi",
     "Q_A",
     "S_p",
     "F_p",
 )
 
-OPT_MULTIPLIER_NAMES = tuple(f"mu_{name}" for name in PRIVATE_RESIDUAL_NAMES)
+# In the author DEQN code the nominal policy rate is not an optimal-policy
+# network output: it is recovered from the household Euler equation.  The
+# optimal FOC block therefore uses multipliers only for the remaining private
+# implementability constraints.
+OPT_PRIVATE_RESIDUAL_NAMES = tuple(name for name in PRIVATE_RESIDUAL_NAMES if name != "hh_euler")
+
+OPT_MULTIPLIER_NAMES = tuple(f"mu_{name}" for name in OPT_PRIVATE_RESIDUAL_NAMES)
 
 DISCRETION_OUTPUT_NAMES = OPT_CONTROL_NAMES + ("V",) + OPT_MULTIPLIER_NAMES
 
 COMMITMENT_PROMISE_NAMES = (
-    "promise_E",
     "promise_S",
     "promise_F",
     "promise_Q",
@@ -227,14 +231,12 @@ _AUTHOR_GAMMA = 2.0
 _AUTHOR_C_SCALE = _AUTHOR_C_OLD**_AUTHOR_GAMMA
 
 COMMITMENT_PROMISE_INIT_MEAN = (
-    0.0,  # promise_E: Euler-promise analogue; no direct author value
     -0.019182 * _AUTHOR_C_SCALE,  # scaled pricing-promise analogue of vartheta_old
     0.016500 * _AUTHOR_C_SCALE,  # scaled pricing-promise analogue of rho_old
     0.0,  # promise_Q: repair promise; no analogue in Galo--Nuno
 )
 
 COMMITMENT_PROMISE_INIT_STD = (
-    0.010,  # centered cloud for the Euler promise
     0.027 * _AUTHOR_C_SCALE,
     0.023 * _AUTHOR_C_SCALE,
     0.010,  # centered cloud for the new repair promise

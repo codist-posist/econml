@@ -7,7 +7,7 @@ from typing import Iterable
 import numpy as np
 import torch
 
-from .config import BaselineParams, NetworkConfig
+from .config import BaselineParams, NetworkConfig, QMCConfig
 from .experiments import params_from_metadata
 from .postprocess import (
     evaluate_optimal_path,
@@ -22,6 +22,7 @@ from .train import (
     make_natural_net,
     make_rule_net,
 )
+from .qmc import make_qmc_nodes
 
 
 def latest_step_checkpoint(folder: Path, name: str) -> Path | None:
@@ -378,7 +379,11 @@ def optimal_ir_mechanism_diagnostics(
                 if key in metrics:
                     print(f"{key}: {float(metrics[key]):.4e}")
 
+    opt_qmc_cfg = QMCConfig(n_train=64, seed=777)
+    opt_nodes = make_qmc_nodes(64, cfg=opt_qmc_cfg, device=device, dtype=dtype_t)
     labels, states = simulate_optimal_ir_scenarios(
+        nodes=opt_nodes,
+        qmc_cfg=opt_qmc_cfg,
         kind=kind,
         policy_net=policy_net,
         params=params,
@@ -389,7 +394,15 @@ def optimal_ir_mechanism_diagnostics(
         device=device,
         dtype=dtype_t,
     )
-    _, defs = evaluate_optimal_path(states, kind=kind, policy_net=policy_net, natural_net=natural_net, params=params)
+    _, defs = evaluate_optimal_path(
+        states,
+        kind=kind,
+        policy_net=policy_net,
+        natural_net=natural_net,
+        params=params,
+        nodes=opt_nodes,
+        qmc_cfg=opt_qmc_cfg,
+    )
     defs = _enrich_common(defs, params)
     defs_by_label = {label: {k: np.asarray(v)[:, i] for k, v in defs.items()} for i, label in enumerate(labels)}
 

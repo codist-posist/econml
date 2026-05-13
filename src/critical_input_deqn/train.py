@@ -14,9 +14,11 @@ from .config import (
     COMMITMENT_PROMISE_INIT_STD,
     COMMITMENT_OUTPUT_NAMES,
     COMMITMENT_PROMISE_NAMES,
+    COMMITMENT_STATE_NAMES,
     DISCRETION_OUTPUT_NAMES,
     NATURAL_OUTPUT_NAMES,
     RULE_OUTPUT_NAMES,
+    RULE_STATE_NAMES,
     NetworkConfig,
     QMCConfig,
     TrainConfig,
@@ -74,11 +76,11 @@ def make_rule_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cp
 
 
 def make_discretion_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cpu", dtype: torch.dtype = torch.float64) -> MLP:
-    return MLP(7, len(DISCRETION_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
+    return MLP(len(RULE_STATE_NAMES), len(DISCRETION_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
 
 
 def make_commitment_net(net_cfg: NetworkConfig = NetworkConfig(), *, device: str = "cpu", dtype: torch.dtype = torch.float64) -> MLP:
-    return MLP(11, len(COMMITMENT_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
+    return MLP(len(COMMITMENT_STATE_NAMES), len(COMMITMENT_OUTPUT_NAMES), net_cfg).to(device=device, dtype=dtype)
 
 
 def commitment_promise_init_tensors(
@@ -97,10 +99,11 @@ def initialize_commitment_promises(net: MLP, *, scale: float = 1.0) -> None:
     last = net.net[-1]
     if not isinstance(last, nn.Linear):
         return
-    start = len(COMMITMENT_OUTPUT_NAMES) - 4
+    n_promises = len(COMMITMENT_PROMISE_NAMES)
+    start = len(COMMITMENT_OUTPUT_NAMES) - n_promises
     mean, _ = commitment_promise_init_tensors(device=last.bias.device, dtype=last.bias.dtype, scale=scale)
     with torch.no_grad():
-        last.bias[start : start + 4].copy_(mean)
+        last.bias[start : start + n_promises].copy_(mean)
 
 
 def freeze(module: nn.Module) -> None:
@@ -872,7 +875,7 @@ def _optimal_training_scenario_states(
         for t in range(1, total):
             out = _decode_optimal_for_kind(net(z), key, params=params)
             st = unpack_rule_state(z[..., :7])
-            drv = derive_free(st, out, params)
+            drv = derive_free(st, out, params, R=torch.full_like(out["C"], float(params.bar_R)))
             add_D, add_X = _rule_scenario_additions(
                 t=t,
                 pulse=burnin,
@@ -975,7 +978,7 @@ def _optimal_calm_anchor_terms(
         promise_init_scale=train_cfg.promise_init_scale,
     )
     out = _decode_optimal_for_kind(net(z), kind, params=params)
-    drv = derive_free(unpack_rule_state(z[..., :7]), out, params)
+    drv = derive_free(unpack_rule_state(z[..., :7]), out, params, R=torch.full_like(out["C"], float(params.bar_R)))
     pressure = drv["M_zero_rent"] / torch.clamp(drv["mbar"], min=1e-12)
     target_pressure = torch.full_like(pressure, 1.0 / (1.0 + float(params.normal_capacity_slack)))
     repair_scale = max(float(params.repair_capacity), 1e-6)
@@ -1194,6 +1197,9 @@ def exact_condition_diagnostics(data: Dict[str, torch.Tensor], params: BaselineP
                 _add_tensor_diagnostics(diag, "exact_cap_product_scaled", cap_rent_scaled * cap_gap_rel)
             _add_tensor_diagnostics(diag, "exact_cap_chi_negative", torch.relu(-chi))
             _add_tensor_diagnostics(diag, "exact_cap_gap_negative", torch.relu(-cap_gap))
+
+        if "euler_rate_residual" in data:
+            _add_tensor_diagnostics(diag, "exact_euler_rate_residual", data["euler_rate_residual"])
 
         if not natural and adaptation_enabled(params) and {"I_A", "Q_A", "Omega_A", "p_a"}.issubset(data):
             I = data.get("I_A_effective", data["I_A"])
@@ -1734,7 +1740,11 @@ def _initial_optimal_states(
     z = sample_rule_states(n, params=params, device=device, dtype=dtype)
     if kind == "commitment":
         mean, std = commitment_promise_init_tensors(device=z.device, dtype=z.dtype, scale=promise_init_scale)
-        promises = mean[None, :] + std[None, :] * torch.randn((z.shape[0], 4), device=z.device, dtype=z.dtype)
+        promises = mean[None, :] + std[None, :] * torch.randn(
+            (z.shape[0], len(COMMITMENT_PROMISE_NAMES)),
+            device=z.device,
+            dtype=z.dtype,
+        )
         z = torch.cat([z, promises], dim=-1)
     return z
 
