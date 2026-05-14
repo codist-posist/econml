@@ -90,7 +90,7 @@ def main() -> None:
     parser.add_argument("--experiment", default="baseline")
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--natural-checkpoint", type=Path, default=None)
-    parser.add_argument("--natural-benchmark", choices=("network", "oracle"), default="network")
+    parser.add_argument("--natural-benchmark", choices=("network", "oracle"), default="oracle")
     parser.add_argument("--natural-oracle-nodes", type=int, default=32)
     parser.add_argument("--natural-oracle-chunk-size", type=int, default=8192)
     parser.add_argument(
@@ -175,6 +175,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--log-every", type=int, default=100)
     args = parser.parse_args()
+    if args.natural_benchmark == "oracle" and args.natural_checkpoint is None:
+        args.skip_natural_network = True
     if args.skip_natural_network and args.natural_benchmark != "oracle":
         raise ValueError("--skip-natural-network requires --natural-benchmark oracle.")
     if args.skip_natural_network and args.natural_checkpoint is not None:
