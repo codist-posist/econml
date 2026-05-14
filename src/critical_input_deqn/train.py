@@ -1921,20 +1921,41 @@ def _adapt_legacy_policy_output_state_dict(state_dict: Dict[str, torch.Tensor], 
             (8, 12),  # mu_Q
         ]
     elif target_rows == len(COMMITMENT_OUTPUT_NAMES) and source_rows == target_rows - 2:
-        # Reduced commitment head: no S_p control and no mu_price_index.
+        # Recent commitment head before adding physical envelope costates:
+        # C,Y,Pi,Q_A,S_p,F_p,mu_resource,mu_price_index,mu_calvo_S,mu_calvo_F,mu_Q,promises
+        # -> C,Y,Pi,Q_A,S_p,F_p,xi_A,xi_log_Delta,mu_resource,...,promises.
+        mapping = [
+            (0, 0),  # C
+            (1, 1),  # Y
+            (2, 2),  # Pi
+            (3, 3),  # Q_A
+            (4, 4),  # S_p
+            (5, 5),  # F_p
+            (6, 8),  # mu_resource
+            (7, 9),  # mu_price_index
+            (8, 10),  # mu_calvo_S
+            (9, 11),  # mu_calvo_F
+            (10, 12),  # mu_Q
+            (11, 13),  # promise_S
+            (12, 14),  # promise_F
+            (13, 15),  # promise_Q
+        ]
+    elif target_rows == len(COMMITMENT_OUTPUT_NAMES) and source_rows == target_rows - 4:
+        # Reduced commitment head: no S_p control, no physical costates, and
+        # no mu_price_index.
         mapping = [
             (0, 0),  # C
             (1, 1),  # Y
             (2, 2),  # Pi
             (3, 3),  # Q_A
             (4, 5),  # F_p
-            (5, 6),  # mu_resource
-            (6, 8),  # mu_calvo_S
-            (7, 9),  # mu_calvo_F
-            (8, 10),  # mu_Q
-            (9, 11),  # promise_S
-            (10, 12),  # promise_F
-            (11, 13),  # promise_Q
+            (5, 8),  # mu_resource
+            (6, 10),  # mu_calvo_S
+            (7, 11),  # mu_calvo_F
+            (8, 12),  # mu_Q
+            (9, 13),  # promise_S
+            (10, 14),  # promise_F
+            (11, 15),  # promise_Q
         ]
     if mapping is None:
         return state_dict

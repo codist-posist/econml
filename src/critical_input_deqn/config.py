@@ -246,6 +246,8 @@ DISCRETION_COSTATE_NAMES = (
 
 DISCRETION_OUTPUT_NAMES = OPT_CONTROL_NAMES + DISCRETION_COSTATE_NAMES + OPT_MULTIPLIER_NAMES
 
+COMMITMENT_COSTATE_NAMES = DISCRETION_COSTATE_NAMES
+
 COMMITMENT_PROMISE_NAMES = (
     "promise_S",
     "promise_F",
@@ -274,6 +276,11 @@ COMMITMENT_PROMISE_INIT_STD = (
     0.010,  # centered cloud for the new repair promise
 )
 
-COMMITMENT_OUTPUT_NAMES = OPT_CONTROL_NAMES + OPT_MULTIPLIER_NAMES + COMMITMENT_PROMISE_NAMES
+# Commitment has the same physical predetermined states as discretion.  The
+# inherited Ramsey promises are additional states, but the physical continuation
+# values still need explicit envelope costates.
+COMMITMENT_OUTPUT_NAMES = (
+    OPT_CONTROL_NAMES + COMMITMENT_COSTATE_NAMES + OPT_MULTIPLIER_NAMES + COMMITMENT_PROMISE_NAMES
+)
 
 COMMITMENT_STATE_NAMES = RULE_STATE_NAMES + COMMITMENT_PROMISE_NAMES

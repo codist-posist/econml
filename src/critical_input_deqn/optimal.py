@@ -299,13 +299,16 @@ def discretion_envelope_residuals(
     params: BaselineParams,
     qmc_cfg: QMCConfig,
     fb_epsilon: float,
+    commitment: bool = False,
 ) -> Tuple[TensorDict, TensorDict]:
-    """Envelope residuals for the two endogenous predetermined states.
+    """Envelope residuals for the two endogenous predetermined physical states.
 
     The envelope derivative holds the current controls and multipliers fixed,
     as in the envelope theorem, while allowing current states to move current
     feasibility objects and next-period states.  Future costates enter as
     continuation prices and are detached in the current FOC/envelope step.
+    In commitment, inherited promise terms are part of the current Hamiltonian,
+    but the promise states themselves do not replace physical costates.
     """
 
     z_req = z.detach().clone().requires_grad_(True)
@@ -318,12 +321,14 @@ def discretion_envelope_residuals(
         params=params,
         qmc_cfg=qmc_cfg,
         fb_epsilon=fb_epsilon,
-        commitment=False,
+        commitment=commitment,
     )
     U = period_utility(out_const["C"], drv["N"], params)
     H = private_residual_matrix(priv)
     mu = multipliers(out_const)
     envelope_objective = U + (mu * H).sum(dim=-1) + _discretion_costate_continuation(drv, params)
+    if commitment:
+        envelope_objective = envelope_objective + commitment_promise_term(z_req, out_const, drv, params)
     grad_z = torch.autograd.grad(
         envelope_objective.sum(),
         z_req,
@@ -388,10 +393,12 @@ def discretion_residuals(
 def commitment_promise_term(z: torch.Tensor, out: TensorDict, drv: TensorDict, params: BaselineParams) -> torch.Tensor:
     """Inherited scaled-promise term in the Ramsey stationarity conditions.
 
-    The promise states already contain the previous-period discount factor,
-    inverse marginal-utility normalizer, residual normalization, and sign of
-    the forward-looking term.  Multiplying by current Lambda and the current
-    forward-looking object reconstructs the lagged Ramsey term.
+    The promise states contain the previous-period inverse marginal-utility
+    normalizer, residual normalization, and sign of the forward-looking term.
+    The beta in the period-t residual is accounted for by the current-value
+    time shift, so the carried promise does not include an extra beta.
+    Multiplying by current Lambda and the current forward-looking object
+    reconstructs the lagged Ramsey term.
     """
 
     pS, pF, pQ = [z[..., 7 + i] for i in range(len(COMMITMENT_PROMISE_NAMES))]
@@ -412,11 +419,15 @@ def commitment_promise_map(out: TensorDict, drv: TensorDict, params: BaselinePar
 
     The multipliers are attached to the normalized private residuals used in
     ``private_residuals_free``.  The carried promise therefore includes the
-    forward-looking coefficient and that residual normalization:
+    current-value forward-looking coefficient and that residual normalization:
 
-    calvo_S: -theta * beta / (Lambda_t * S_t)
-    calvo_F: -theta * beta / (Lambda_t * F_t)
-    Q:       -beta / (Lambda_t * (1 + |Q_t|))
+    calvo_S: -theta / (Lambda_t * S_t)
+    calvo_F: -theta / (Lambda_t * F_t)
+    Q:       -1 / (Lambda_t * (1 + |Q_t|))
+
+    The beta in the original forward-looking residual is already accounted for
+    by the shift from the period-t current-value multiplier to the period-t+1
+    promise term; adding another beta here would double-discount the promise.
 
     With this scaling the next-period promise term can be written compactly as
     p_S * Lambda * Pi^epsilon * S
@@ -426,13 +437,12 @@ def commitment_promise_map(out: TensorDict, drv: TensorDict, params: BaselinePar
 
     Lambda = drv["Lambda"]
     inv_lambda = 1.0 / torch.clamp(Lambda, min=1e-12)
-    theta_beta = float(params.theta) * float(params.beta)
-    beta = float(params.beta)
+    theta = float(params.theta)
     return torch.stack(
         [
-            -theta_beta * out["mu_calvo_S"] * inv_lambda / torch.clamp(out["S_p"], min=1e-12),
-            -theta_beta * out["mu_calvo_F"] * inv_lambda / torch.clamp(out["F_p"], min=1e-12),
-            -beta * out["mu_Q"] * inv_lambda / (1.0 + out["Q_A"].abs()),
+            -theta * out["mu_calvo_S"] * inv_lambda / torch.clamp(out["S_p"], min=1e-12),
+            -theta * out["mu_calvo_F"] * inv_lambda / torch.clamp(out["F_p"], min=1e-12),
+            -out["mu_Q"] * inv_lambda / (1.0 + out["Q_A"].abs()),
         ],
         dim=-1,
     )
@@ -468,8 +478,18 @@ def commitment_residuals(
     # promises.  Re-evaluating the full next-period private residual block here
     # would create a nested B x S x S expectation tensor and double-count that
     # promise recursion.
-    lagrangian = U + promise_term + (mu * H).sum(dim=-1)
+    lagrangian = U + promise_term + (mu * H).sum(dim=-1) + _discretion_costate_continuation(drv, params)
     stat = stationarity_from_lagrangian(lagrangian, out)
+    env, env_diag = discretion_envelope_residuals(
+        zc,
+        out,
+        policy_net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        fb_epsilon=fb_epsilon,
+        commitment=True,
+    )
 
     selected_mu = commitment_promise_map(out, drv, params)
     promised = torch.stack([out[name] for name in COMMITMENT_PROMISE_NAMES], dim=-1)
@@ -477,9 +497,10 @@ def commitment_residuals(
 
     res: TensorDict = {f"priv_{k}": v for k, v in priv.items()}
     res.update(stat)
+    res.update(env)
     for i, name in enumerate(COMMITMENT_PROMISE_NAMES):
         res[name] = promise_resid[..., i]
-    return res, drv
+    return res, {**drv, **env_diag}
 
 
 def random_physical_step(
