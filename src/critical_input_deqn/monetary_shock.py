@@ -741,19 +741,6 @@ def _normal_initial_rule_shock_state(
     return torch.stack([D, X, ell_D, ell_X, log_Z, A, log_Delta, eps_R], dim=-1)
 
 
-def _bottleneck_initial_rule_shock_state(
-    batch_size: int,
-    *,
-    params: BaselineParams,
-    device: str,
-    dtype: torch.dtype,
-    d_multiplier: float = 3.0,
-) -> torch.Tensor:
-    z = _normal_initial_rule_shock_state(batch_size, params=params, device=device, dtype=dtype)
-    z[..., 0] = float(d_multiplier) * float(params.mark_D)
-    return z
-
-
 def _deterministic_rule_shock_step(
     z: torch.Tensor,
     *,
@@ -1145,14 +1132,12 @@ def simulate_rule_monetary_ir_scenarios(
         f"D_3x_mp_{int(shock_cfg.large_bp_annualized)}bp": {pulse: large},
     }
     labels = list(scenarios.keys())
-    normal_n = 3
-    z = torch.cat(
-        [
-            _normal_initial_rule_shock_state(normal_n, params=params, device=device, dtype=dtype),
-            _bottleneck_initial_rule_shock_state(len(labels) - normal_n, params=params, device=device, dtype=dtype),
-        ],
-        dim=0,
+    d3_scenario = torch.tensor(
+        [label.startswith("D_3x") for label in labels],
+        device=device,
+        dtype=torch.bool,
     )
+    z = _normal_initial_rule_shock_state(len(labels), params=params, device=device, dtype=dtype)
     states = [z]
     total = int(burnin) + int(horizon)
     with torch.no_grad():
@@ -1180,11 +1165,15 @@ def simulate_rule_monetary_ir_scenarios(
                 device=z.device,
                 dtype=z.dtype,
             )
+            add_D = torch.zeros_like(add_eps)
+            if int(t) == pulse:
+                add_D = torch.where(d3_scenario, torch.full_like(add_D, 3.0 * float(params.mark_D)), add_D)
             z = _deterministic_rule_shock_step(
                 z,
                 A_next=drv["A_next"],
                 Delta_next=drv["Delta"],
                 add_eps_R=add_eps,
+                add_D=add_D,
                 params=params,
                 shock_cfg=shock_cfg,
             )

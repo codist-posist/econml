@@ -146,10 +146,10 @@ def _monetary_mechanism_rows(
         I0 = series("I_A", base)
         if chi0 is None or I0 is None:
             continue
-        region = (chi0 > 1e-6) & (I0 > 1e-5) & (I0 < repair_capacity - 1e-5)
+        active_region = (chi0 > 1e-6) & (I0 > 1e-5) & (I0 < repair_capacity - 1e-5)
         cap_bind = series("cap_binding_indicator", base)
         if cap_bind is not None:
-            region = region & (cap_bind > 0.5)
+            active_region = active_region & (cap_bind > 0.5)
 
         deltas: dict[str, np.ndarray] = {}
         for name in ("R", "Pi", "chi", "I_A", "M", "M_zero_rent", "output_gap"):
@@ -158,16 +158,23 @@ def _monetary_mechanism_rows(
             if current is not None and base_values is not None:
                 deltas[name] = current - base_values
 
+        dR = deltas.get("R")
         dPi = deltas.get("Pi")
         dchi = deltas.get("chi")
         dI = deltas.get("I_A")
+        tightening_region = (dR > 1e-10) if dR is not None else np.ones_like(active_region, dtype=bool)
+        region = active_region & tightening_region
         row: dict[str, float | str] = {
             "policy": policy,
             "scenario": label,
             "base_scenario": base,
+            "binding_active_region_count": float(np.sum(active_region)),
+            "binding_active_region_share": float(np.mean(active_region)) if active_region.size else float("nan"),
+            "tightening_region_count": float(np.sum(tightening_region)),
+            "tightening_region_share": float(np.mean(tightening_region)) if tightening_region.size else float("nan"),
             "active_region_count": float(np.sum(region)),
             "active_region_share": float(np.mean(region)) if region.size else float("nan"),
-            "mean_delta_R_active": _masked_mean(deltas["R"], region) if "R" in deltas else float("nan"),
+            "mean_delta_R_active": _masked_mean(dR, region) if dR is not None else float("nan"),
             "mean_delta_Pi_active": _masked_mean(dPi, region) if dPi is not None else float("nan"),
             "mean_delta_chi_active": _masked_mean(dchi, region) if dchi is not None else float("nan"),
             "mean_delta_I_A_active": _masked_mean(dI, region) if dI is not None else float("nan"),
