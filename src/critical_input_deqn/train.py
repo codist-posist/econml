@@ -40,6 +40,7 @@ from .economics import (
 )
 from .optimal import (
     EULER_RATE_FIXED_POINT_ITERS,
+    EULER_RATE_FIXED_POINT_TOL,
     commitment_residuals,
     decode_commitment,
     decode_discretion,
@@ -1378,7 +1379,11 @@ def _optimal_euler_drv_for_states(
         Lambda_next = out_next["C"].pow(-float(params.sigma)).reshape(B, S)
         Pi_next = out_next["Pi"].reshape(B, S)
         sdf = (float(params.beta) * Lambda_next / torch.clamp(drv["Lambda"], min=1e-12)[:, None] / Pi_next).mean(dim=1)
-        R = 1.0 / torch.clamp(sdf, min=1e-12)
+        R_next = 1.0 / torch.clamp(sdf, min=1e-12)
+        step_resid = torch.log(torch.clamp(R_next / torch.clamp(R, min=1e-12), min=1e-12))
+        R = R_next
+        if bool((step_resid.detach().abs().max() < EULER_RATE_FIXED_POINT_TOL).cpu()):
+            break
     return derive_free(st, out, params, R=R)
 
 

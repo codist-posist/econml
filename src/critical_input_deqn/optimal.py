@@ -30,7 +30,8 @@ from .transforms import decode_optimal_outputs
 
 
 TensorDict = Dict[str, torch.Tensor]
-EULER_RATE_FIXED_POINT_ITERS = 6
+EULER_RATE_FIXED_POINT_ITERS = 12
+EULER_RATE_FIXED_POINT_TOL = 1e-10
 
 
 def period_utility(C: torch.Tensor, N: torch.Tensor, p: BaselineParams) -> torch.Tensor:
@@ -100,7 +101,11 @@ def private_residuals_free(
             qmc_cfg=qmc_cfg,
             commitment=commitment,
         )
-        R = _euler_implied_gross_rate(out, drv, out_next, B, S, params)
+        R_next = _euler_implied_gross_rate(out, drv, out_next, B, S, params)
+        step_resid = torch.log(torch.clamp(R_next / torch.clamp(R, min=1e-12), min=1e-12))
+        R = R_next
+        if bool((step_resid.detach().abs().max() < EULER_RATE_FIXED_POINT_TOL).cpu()):
+            break
 
     drv = derive_free(st, out, params, R=R)
     z_next, z_next_phys, out_next, B, S, K = _optimal_next_outputs(

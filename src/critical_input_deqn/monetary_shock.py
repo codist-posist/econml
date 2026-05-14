@@ -65,7 +65,7 @@ from .train import (
     residual_loss,
     save_checkpoint,
 )
-from .transforms import decode_rule_outputs, steady_decode_targets
+from .transforms import decode_rule_outputs
 from .transitions import transition_rule_states
 
 
@@ -108,6 +108,34 @@ def natural_from_rule_shock_states(z: torch.Tensor) -> torch.Tensor:
     """Flexible-price benchmark uses the physical state, not the policy shock."""
 
     return z[..., :6]
+
+
+def _uses_natural_y_ref(params: BaselineParams) -> bool:
+    return abs(float(params.phi_y)) > 1e-14
+
+
+def _rule_shock_natural_reference(
+    z: torch.Tensor,
+    natural_net,
+    *,
+    params: BaselineParams,
+    policy: str,
+    qmc_cfg: QMCConfig | None = None,
+) -> dict[str, torch.Tensor]:
+    """Natural-output/rate references needed by an augmented Taylor rule."""
+
+    need_y = _uses_natural_y_ref(params)
+    need_rate = policy.lower() == "ba"
+    if need_y or need_rate:
+        return natural_benchmark_outputs(
+            natural_from_rule_shock_states(z),
+            natural_net,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            need_rate=need_rate,
+        )
+    y_ref = torch.full_like(z[..., 0], float(params.steady_state_output))
+    return {"Y_n": y_ref, "R_n_real": torch.full_like(y_ref, float(params.bar_R))}
 
 
 def sample_rule_shock_states(
@@ -198,18 +226,8 @@ def rule_shock_residuals(
     """Residuals for Taylor rules with a transitory monetary-policy shock."""
 
     st, eps_R = unpack_rule_shock_state(z)
-    z_n = natural_from_rule_shock_states(z)
-    uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
-    if uses_natural_y_ref or policy.lower() == "ba":
-        out_n = natural_benchmark_outputs(
-            z_n,
-            natural_net,
-            params=params,
-            need_rate=policy.lower() == "ba",
-        )
-    else:
-        y_ref = torch.full_like(z[..., 0], float(params.steady_state_output))
-        out_n = {"Y_n": y_ref, "R_n_real": torch.full_like(y_ref, float(params.bar_R))}
+    uses_natural_y_ref = _uses_natural_y_ref(params)
+    out_n = _rule_shock_natural_reference(z, natural_net, params=params, policy=policy, qmc_cfg=qmc_cfg)
     Y_n = out_n["Y_n"]
     R_n = out_n["R_n_real"]
     out = decode_rule_outputs(raw, RULE_OUTPUT_NAMES, params=params, y_ref=Y_n if uses_natural_y_ref else None)
@@ -236,19 +254,15 @@ def rule_shock_residuals(
     B, S, K = z_next.shape
     z_next_flat = z_next.reshape(B * S, K)
     st_next, eps_next = unpack_rule_shock_state(z_next_flat)
-    if uses_natural_y_ref:
-        out_n_next = natural_benchmark_outputs(
-            natural_from_rule_shock_states(z_next_flat),
-            natural_net,
-            params=params,
-            qmc_cfg=qmc_cfg,
-            need_rate=False,
-        )
-        y_next_ref = out_n_next["Y_n"]
-        r_next_ref = out_n_next["R_n_real"]
-    else:
-        y_next_ref = torch.full((z_next_flat.shape[0],), float(params.steady_state_output), device=z_next_flat.device, dtype=z_next_flat.dtype)
-        r_next_ref = torch.full_like(y_next_ref, float(params.bar_R))
+    out_n_next = _rule_shock_natural_reference(
+        z_next_flat,
+        natural_net,
+        params=params,
+        policy=policy,
+        qmc_cfg=qmc_cfg,
+    )
+    y_next_ref = out_n_next["Y_n"]
+    r_next_ref = out_n_next["R_n_real"]
     out_next = decode_rule_outputs(
         rule_net(z_next_flat),
         RULE_OUTPUT_NAMES,
@@ -335,17 +349,8 @@ def random_rule_shock_step(
     """One simulated augmented Taylor-state transition."""
 
     st, eps_R = unpack_rule_shock_state(z)
-    uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
-    if uses_natural_y_ref or policy.lower() == "ba":
-        out_n = natural_benchmark_outputs(
-            natural_from_rule_shock_states(z),
-            natural_net,
-            params=params,
-            need_rate=policy.lower() == "ba",
-        )
-    else:
-        y_ref = torch.full_like(z[..., 0], float(params.steady_state_output))
-        out_n = {"Y_n": y_ref, "R_n_real": torch.full_like(y_ref, float(params.bar_R))}
+    uses_natural_y_ref = _uses_natural_y_ref(params)
+    out_n = _rule_shock_natural_reference(z, natural_net, params=params, policy=policy)
     out = decode_rule_outputs(
         rule_net(z),
         RULE_OUTPUT_NAMES,
@@ -736,6 +741,19 @@ def _normal_initial_rule_shock_state(
     return torch.stack([D, X, ell_D, ell_X, log_Z, A, log_Delta, eps_R], dim=-1)
 
 
+def _bottleneck_initial_rule_shock_state(
+    batch_size: int,
+    *,
+    params: BaselineParams,
+    device: str,
+    dtype: torch.dtype,
+    d_multiplier: float = 3.0,
+) -> torch.Tensor:
+    z = _normal_initial_rule_shock_state(batch_size, params=params, device=device, dtype=dtype)
+    z[..., 0] = float(d_multiplier) * float(params.mark_D)
+    return z
+
+
 def _deterministic_rule_shock_step(
     z: torch.Tensor,
     *,
@@ -785,17 +803,8 @@ def _rule_shock_training_scenario_states(
     with torch.no_grad():
         for t in range(1, total):
             st, eps_R = unpack_rule_shock_state(z)
-            uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
-            if uses_natural_y_ref or policy.lower() == "ba":
-                out_n = natural_benchmark_outputs(
-                    natural_from_rule_shock_states(z),
-                    natural_net,
-                    params=params,
-                    need_rate=policy.lower() == "ba",
-                )
-            else:
-                y_ref = torch.full_like(z[..., 0], float(params.steady_state_output))
-                out_n = {"Y_n": y_ref, "R_n_real": torch.full_like(y_ref, float(params.bar_R))}
+            uses_natural_y_ref = _uses_natural_y_ref(params)
+            out_n = _rule_shock_natural_reference(z, natural_net, params=params, policy=policy)
             out = decode_rule_outputs(
                 rule_net(z),
                 RULE_OUTPUT_NAMES,
@@ -908,19 +917,8 @@ def _rule_shock_calm_anchor_terms(
 ) -> list[torch.Tensor]:
     z = _normal_initial_rule_shock_state(1, params=params, device=train_cfg.device, dtype=train_cfg.dtype)
     st, eps_R = unpack_rule_shock_state(z)
-    uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
-    if uses_natural_y_ref or policy.lower() == "ba":
-        out_n = natural_benchmark_outputs(
-            natural_from_rule_shock_states(z),
-            natural_net,
-            params=params,
-            need_rate=policy.lower() == "ba",
-        )
-    else:
-        targets = steady_decode_targets(params)
-        C_n = torch.full_like(z[..., 0], float(targets["C"]))
-        Y_n = torch.full_like(z[..., 0], float(targets["Y"]))
-        out_n = {"C_n": C_n, "Y_n": Y_n, "R_n_real": torch.full_like(Y_n, float(params.bar_R))}
+    uses_natural_y_ref = _uses_natural_y_ref(params)
+    out_n = _rule_shock_natural_reference(z, natural_net, params=params, policy=policy)
     out = decode_rule_outputs(
         rule_net(z),
         RULE_OUTPUT_NAMES,
@@ -1142,25 +1140,26 @@ def simulate_rule_monetary_ir_scenarios(
         "no_shock": {},
         f"mp_{int(shock_cfg.small_bp_annualized)}bp": {pulse: small},
         f"mp_{int(shock_cfg.large_bp_annualized)}bp": {pulse: large},
+        "D_3x_no_shock": {},
+        f"D_3x_mp_{int(shock_cfg.small_bp_annualized)}bp": {pulse: small},
+        f"D_3x_mp_{int(shock_cfg.large_bp_annualized)}bp": {pulse: large},
     }
     labels = list(scenarios.keys())
-    z = _normal_initial_rule_shock_state(len(labels), params=params, device=device, dtype=dtype)
+    normal_n = 3
+    z = torch.cat(
+        [
+            _normal_initial_rule_shock_state(normal_n, params=params, device=device, dtype=dtype),
+            _bottleneck_initial_rule_shock_state(len(labels) - normal_n, params=params, device=device, dtype=dtype),
+        ],
+        dim=0,
+    )
     states = [z]
     total = int(burnin) + int(horizon)
     with torch.no_grad():
         for t in range(1, total):
             st, eps_R = unpack_rule_shock_state(z)
-            uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
-            if uses_natural_y_ref or policy.lower() == "ba":
-                out_n = natural_benchmark_outputs(
-                    natural_from_rule_shock_states(z),
-                    natural_net,
-                    params=params,
-                    need_rate=policy.lower() == "ba",
-                )
-            else:
-                y_ref = torch.full_like(z[..., 0], float(params.steady_state_output))
-                out_n = {"Y_n": y_ref, "R_n_real": torch.full_like(y_ref, float(params.bar_R))}
+            uses_natural_y_ref = _uses_natural_y_ref(params)
+            out_n = _rule_shock_natural_reference(z, natural_net, params=params, policy=policy)
             out = decode_rule_outputs(
                 rule_net(z),
                 RULE_OUTPUT_NAMES,
@@ -1285,13 +1284,8 @@ def evaluate_rule_shock_path(
     T, B, K = states.shape
     z = states.reshape(T * B, K)
     st, eps_R = unpack_rule_shock_state(z)
-    uses_natural_y_ref = abs(float(params.phi_y)) > 1e-14
-    out_n = natural_benchmark_outputs(
-        natural_from_rule_shock_states(z),
-        natural_net,
-        params=params,
-        need_rate=policy.lower() == "ba",
-    )
+    uses_natural_y_ref = _uses_natural_y_ref(params)
+    out_n = _rule_shock_natural_reference(z, natural_net, params=params, policy=policy)
     out = decode_rule_outputs(
         rule_net(z),
         RULE_OUTPUT_NAMES,

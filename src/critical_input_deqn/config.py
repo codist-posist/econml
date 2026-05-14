@@ -19,6 +19,8 @@ class BaselineParams:
     epsilon: float = 7.0
     theta: float = 0.75
     rho: float = 0.20
+    # Equal-price imported share within the intermediate-input CES composite,
+    # not the import-expenditure share of final output.
     target_import_cost_share: float = 0.30
     target_min_import_cost_share: float = 0.10
     steady_state_output: float = 0.6223362929574802

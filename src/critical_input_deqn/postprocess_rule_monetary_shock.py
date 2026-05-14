@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -81,10 +82,10 @@ def _load_rule_shock(path: Path, *, device: str, dtype: torch.dtype) -> tuple[to
 
 def _peak_ir_summary(outputs: dict[str, np.ndarray], labels: list[str]) -> dict[str, dict[str, float]]:
     variables = ("R", "Pi", "chi", "I_A", "A", "output_gap", "eps_R", "R_shock_multiplier")
-    base = "no_shock"
     summary: dict[str, dict[str, float]] = {}
     for label in labels:
-        if label == base:
+        base = _monetary_base_label(label, labels)
+        if base is None:
             continue
         row: dict[str, float] = {}
         for variable in variables:
@@ -98,6 +99,109 @@ def _peak_ir_summary(outputs: dict[str, np.ndarray], labels: list[str]) -> dict[
             row[f"{variable}.abs_peak"] = float(diff[np.argmax(np.abs(diff))])
         summary[label] = row
     return summary
+
+
+def _monetary_base_label(label: str, labels: list[str]) -> str | None:
+    if label == "no_shock" or label.endswith("_no_shock"):
+        return None
+    if "_mp_" in label:
+        prefix = label.split("_mp_", 1)[0]
+        candidate = f"{prefix}_no_shock"
+        if candidate in labels:
+            return candidate
+    return "no_shock" if "no_shock" in labels else None
+
+
+def _masked_mean(arr: np.ndarray, mask: np.ndarray) -> float:
+    if mask.size == 0 or not bool(np.any(mask)):
+        return float("nan")
+    return float(np.nanmean(np.asarray(arr, dtype=float)[mask]))
+
+
+def _masked_freq(cond: np.ndarray, mask: np.ndarray) -> float:
+    if mask.size == 0 or not bool(np.any(mask)):
+        return float("nan")
+    return float(np.nanmean(np.asarray(cond, dtype=bool)[mask]))
+
+
+def _monetary_mechanism_rows(
+    outputs: dict[str, np.ndarray],
+    labels: list[str],
+    *,
+    policy: str,
+    params,
+) -> list[dict[str, float | str]]:
+    rows: list[dict[str, float | str]] = []
+    repair_capacity = float(params.repair_capacity)
+    for label in labels:
+        base = _monetary_base_label(label, labels)
+        if base is None:
+            continue
+
+        def series(name: str, scenario: str = label) -> np.ndarray | None:
+            value = outputs.get(f"{scenario}__{name}")
+            return None if value is None else np.asarray(value, dtype=float)
+
+        chi0 = series("chi", base)
+        I0 = series("I_A", base)
+        if chi0 is None or I0 is None:
+            continue
+        region = (chi0 > 1e-6) & (I0 > 1e-5) & (I0 < repair_capacity - 1e-5)
+        cap_bind = series("cap_binding_indicator", base)
+        if cap_bind is not None:
+            region = region & (cap_bind > 0.5)
+
+        deltas: dict[str, np.ndarray] = {}
+        for name in ("R", "Pi", "chi", "I_A", "M", "M_zero_rent", "output_gap"):
+            current = series(name, label)
+            base_values = series(name, base)
+            if current is not None and base_values is not None:
+                deltas[name] = current - base_values
+
+        dPi = deltas.get("Pi")
+        dchi = deltas.get("chi")
+        dI = deltas.get("I_A")
+        row: dict[str, float | str] = {
+            "policy": policy,
+            "scenario": label,
+            "base_scenario": base,
+            "active_region_count": float(np.sum(region)),
+            "active_region_share": float(np.mean(region)) if region.size else float("nan"),
+            "mean_delta_R_active": _masked_mean(deltas["R"], region) if "R" in deltas else float("nan"),
+            "mean_delta_Pi_active": _masked_mean(dPi, region) if dPi is not None else float("nan"),
+            "mean_delta_chi_active": _masked_mean(dchi, region) if dchi is not None else float("nan"),
+            "mean_delta_I_A_active": _masked_mean(dI, region) if dI is not None else float("nan"),
+            "mean_delta_M_active": _masked_mean(deltas["M"], region) if "M" in deltas else float("nan"),
+            "mean_delta_M_zero_rent_active": (
+                _masked_mean(deltas["M_zero_rent"], region) if "M_zero_rent" in deltas else float("nan")
+            ),
+            "pr_delta_Pi_negative_active": _masked_freq(dPi < 0.0, region) if dPi is not None else float("nan"),
+            "pr_delta_chi_negative_active": _masked_freq(dchi < 0.0, region) if dchi is not None else float("nan"),
+            "pr_delta_I_A_negative_active": _masked_freq(dI < 0.0, region) if dI is not None else float("nan"),
+            "pr_tradeoff_all_three_active": (
+                _masked_freq((dPi < 0.0) & (dchi < 0.0) & (dI < 0.0), region)
+                if dPi is not None and dchi is not None and dI is not None
+                else float("nan")
+            ),
+        }
+        rows.append(row)
+    return rows
+
+
+def _write_csv(path: Path, rows: list[dict[str, float | str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    fields: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fields:
+                fields.append(key)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _save_flat_ir(
@@ -182,6 +286,7 @@ def run_postprocess_rule_monetary_shock(
     output_dir.mkdir(parents=True, exist_ok=True)
     files: list[str] = []
     summaries: dict[str, dict[str, dict[str, float]]] = {}
+    mechanism_rows: list[dict[str, float | str]] = []
     for policy in policies:
         path = _first_existing(
             [
@@ -238,6 +343,7 @@ def run_postprocess_rule_monetary_shock(
             output_dir=output_dir,
         )
         summaries[policy] = _peak_ir_summary(flat_outputs, labels)
+        mechanism_rows.extend(_monetary_mechanism_rows(flat_outputs, labels, policy=policy, params=params))
         files.extend(
             [
                 f"IR_{policy}_monetary_shock_states.npz",
@@ -260,11 +366,19 @@ def run_postprocess_rule_monetary_shock(
             "scenario_type": "one_time_monetary_policy_shock",
         },
         "files": sorted(set(files)),
+        "summary_files": [
+            "monetary_shock_peak_summary.json",
+            "monetary_shock_mechanism_summary.csv",
+            "monetary_shock_mechanism_summary.json",
+        ],
     }
     with (output_dir / "monetary_shock_manifest.json").open("w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2, sort_keys=True)
     with (output_dir / "monetary_shock_peak_summary.json").open("w", encoding="utf-8") as fh:
         json.dump(summaries, fh, indent=2, sort_keys=True)
+    with (output_dir / "monetary_shock_mechanism_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(mechanism_rows, fh, indent=2, sort_keys=True)
+    _write_csv(output_dir / "monetary_shock_mechanism_summary.csv", mechanism_rows)
 
 
 def main() -> None:

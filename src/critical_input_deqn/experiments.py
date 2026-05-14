@@ -128,8 +128,8 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     "no_cap": ExperimentSpec(
         name="no_cap",
         group="counterfactual",
-        description="Imported-input cap is effectively slack, so scarcity rent should vanish.",
-        overrides={"nu_qD": 0.0, "nu_qX": 0.0, "bar_m": 1.0e6},
+        description="Imported-input cap is effectively slack while the external price process is retained.",
+        overrides={"bar_m": 1.0e6},
     ),
     "no_adaptation": ExperimentSpec(
         name="no_adaptation",

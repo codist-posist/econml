@@ -292,7 +292,7 @@ _CALIBRATION_DISCIPLINE: dict[str, str] = {
     "epsilon": "Desired steady markup epsilon/(epsilon-1).",
     "theta": "Quarterly Calvo non-reset probability.",
     "rho": "CES substitutability between imported and domestic input services.",
-    "target_import_cost_share": "Equal-price imported-input cost share before adaptation.",
+    "target_import_cost_share": "Equal-price imported-input share within the intermediate composite before adaptation.",
     "target_min_import_cost_share": "Long-run lower bound on imported-input cost share.",
     "steady_state_output": "Derived calm-output normalization from the static block.",
     "omega0": "Derived CES share matching target_import_cost_share.",
@@ -481,6 +481,78 @@ def numerical_robustness_rows(base_root: Path, *, policy: str) -> list[dict[str,
     return rows
 
 
+_SUPPORT_BOUNDS: dict[str, tuple[float, float]] = {
+    "D": (0.0, 2.0),
+    "X": (0.0, 1.0),
+    "A": (0.0, 1.2),
+    "log_Delta_prev": (0.0, float(np.log1p(0.02))),
+}
+
+
+def support_diagnostic_rows(base_root: Path, experiments: Iterable[str]) -> list[dict[str, float | str]]:
+    rows: list[dict[str, float | str]] = []
+    variables = ("D", "X", "ell_D", "ell_X", "log_Z", "A", "log_Delta_prev")
+    for experiment in experiments:
+        root = _postprocess_dir(base_root, experiment)
+        if not root.exists():
+            continue
+        for policy in POLICIES:
+            path = root / f"{policy}_states.npz"
+            if not path.exists():
+                continue
+            states = _load_npz(path)
+            for variable in variables:
+                values = states.get(variable)
+                if values is None:
+                    continue
+                arr = np.asarray(values, dtype=float).reshape(-1)
+                arr = arr[np.isfinite(arr)]
+                if arr.size == 0:
+                    continue
+                lower, upper = _SUPPORT_BOUNDS.get(variable, (float("nan"), float("nan")))
+                outside = (
+                    float(np.mean((arr < lower) | (arr > upper)))
+                    if np.isfinite(lower) and np.isfinite(upper)
+                    else float("nan")
+                )
+                rows.append(
+                    {
+                        "experiment": experiment,
+                        "policy": policy,
+                        "state": variable,
+                        "min": float(np.min(arr)),
+                        "p01": float(np.nanpercentile(arr, 1.0)),
+                        "p50": float(np.nanpercentile(arr, 50.0)),
+                        "p99": float(np.nanpercentile(arr, 99.0)),
+                        "max": float(np.max(arr)),
+                        "training_support_min": lower,
+                        "training_support_max": upper,
+                        "outside_training_support_frequency": outside,
+                    }
+                )
+    return rows
+
+
+def monetary_shock_mechanism_rows(base_root: Path) -> list[dict[str, float | str]]:
+    path = base_root / "rule_monetary_shock" / "postprocess" / "monetary_shock_mechanism_summary.csv"
+    if not path.exists():
+        return []
+    rows: list[dict[str, float | str]] = []
+    with path.open("r", newline="", encoding="utf-8") as fh:
+        for raw in csv.DictReader(fh):
+            row: dict[str, float | str] = {}
+            for key, value in raw.items():
+                if value is None:
+                    row[key] = ""
+                    continue
+                try:
+                    row[key] = float(value)
+                except ValueError:
+                    row[key] = value
+            rows.append(row)
+    return rows
+
+
 def make_tables(base_root: Path, output_dir: Path, *, policy_for_decomposition: str = "repair_aware") -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, str] = {}
@@ -555,6 +627,15 @@ def make_tables(base_root: Path, output_dir: Path, *, policy_for_decomposition: 
     robustness_path = output_dir / f"table_7_numerical_robustness_{policy_for_decomposition}.csv"
     _write_csv(robustness_path, robustness_rows)
     written["table_7"] = str(robustness_path)
+
+    support_path = output_dir / "table_8_state_support_diagnostics.csv"
+    support_experiments = _unique(["baseline"] + TABLE_EXPERIMENTS["counterfactual"] + TABLE_EXPERIMENTS["sensitivity"])
+    _write_csv(support_path, support_diagnostic_rows(base_root, support_experiments))
+    written["table_8"] = str(support_path)
+
+    monetary_path = output_dir / "table_9_monetary_shock_tradeoff_diagnostics.csv"
+    _write_csv(monetary_path, monetary_shock_mechanism_rows(base_root))
+    written["table_9"] = str(monetary_path)
     return written
 
 

@@ -142,8 +142,11 @@ Each non-baseline variant changes model primitives and therefore should be
 solved as its own DEQN economy, not evaluated only with baseline weights.  The
 registered variants include:
 
-- core mechanism variants: `price_only`, `quantity_only`;
-- counterfactuals: `no_cap`, `no_adaptation`, `no_financing`, `no_relief`;
+- core mechanism variants: `price_only` removes the quantity-cap channel while
+  retaining procurement-price shocks, and `quantity_only` removes the direct
+  procurement-price channel while retaining the physical cap channel;
+- counterfactuals: `no_cap` keeps the external price process but makes the cap
+  slack, plus `no_adaptation`, `no_financing`, `no_relief`;
 - sensitivity variants: `deep_crisis`, `persistent_crisis`, `fast_relief`,
   `fragile_relief`, granular crisis-depth/persistence variants, granular
   relief-arrival/relief-durability variants, bottleneck-tightness variants,
