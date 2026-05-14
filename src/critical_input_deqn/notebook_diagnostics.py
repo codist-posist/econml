@@ -272,7 +272,7 @@ def rule_ir_mechanism_diagnostics(
         print("checkpoint_step:", metadata.get("step"))
         metrics = metadata.get("metrics", {})
         if isinstance(metrics, dict):
-            for key in ["val_rms", "scenario_Q.rms", "calm_anchor.rms", "calm_residual.rms"]:
+            for key in ["val_rms", "scenario_Q.rms", "scenario_Q_pv.rms", "calm_anchor.rms", "calm_residual.rms"]:
                 if key in metrics:
                     print(f"{key}: {float(metrics[key]):.4e}")
 
@@ -422,7 +422,7 @@ def optimal_ir_mechanism_diagnostics(
         print("checkpoint_step:", metadata.get("step"))
         metrics = metadata.get("metrics", {})
         if isinstance(metrics, dict):
-            for key in ["val_rms", "scenario_Q.rms", "calm_anchor.rms", "calm_residual.rms"]:
+            for key in ["val_rms", "scenario_Q.rms", "scenario_Q_pv.rms", "calm_anchor.rms", "calm_residual.rms"]:
                 if key in metrics:
                     print(f"{key}: {float(metrics[key]):.4e}")
 

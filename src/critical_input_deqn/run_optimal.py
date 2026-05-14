@@ -43,6 +43,7 @@ def _selection_metadata(log) -> dict[str, object]:
         "best_val_max_abs": log.best_val_max_abs,
         "best_train_rms": log.best_train_rms,
         "best_scenario_q_rms": log.best_scenario_q_rms,
+        "best_q_nobubble_rms": log.best_q_nobubble_rms,
         "best_calm_anchor_rms": log.best_calm_anchor_rms,
         "best_calm_residual_rms": log.best_calm_residual_rms,
     }
@@ -143,6 +144,25 @@ def main() -> None:
         help="Apply the expensive scenario-Q training loss every K optimal-policy episodes.",
     )
     parser.add_argument("--best-scenario-q-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--q-nobubble-weight",
+        type=float,
+        default=5.0,
+        help="Extra weight on finite-horizon no-bubble Q_A present-value residuals at scenario states.",
+    )
+    parser.add_argument(
+        "--q-nobubble-horizon",
+        type=int,
+        default=12,
+        help="Finite path horizon for the no-bubble Q_A present-value residual.",
+    )
+    parser.add_argument(
+        "--q-nobubble-paths",
+        type=int,
+        default=64,
+        help="QMC paths used by the no-bubble Q_A present-value residual.",
+    )
+    parser.add_argument("--best-q-nobubble-weight", type=float, default=1.0)
     parser.add_argument("--best-calm-anchor-weight", type=float, default=1.0)
     parser.add_argument("--best-calm-residual-weight", type=float, default=1.0)
     parser.add_argument("--target-scenario-q-rms", type=float, default=1e-2)
@@ -233,6 +253,10 @@ def main() -> None:
         rule_scenario_horizon=args.scenario_horizon,
         rule_scenario_loss_interval=args.scenario_loss_interval,
         best_scenario_q_weight=args.best_scenario_q_weight,
+        optimal_q_nobubble_weight=args.q_nobubble_weight,
+        optimal_q_nobubble_horizon=args.q_nobubble_horizon,
+        optimal_q_nobubble_paths=args.q_nobubble_paths,
+        best_q_nobubble_weight=args.best_q_nobubble_weight,
         best_calm_anchor_weight=args.best_calm_anchor_weight,
         best_calm_residual_weight=args.best_calm_residual_weight,
         target_scenario_q_rms=args.target_scenario_q_rms,
@@ -281,6 +305,10 @@ def main() -> None:
             "scenario_horizon": args.scenario_horizon,
             "scenario_loss_interval": args.scenario_loss_interval,
             "best_scenario_q_weight": args.best_scenario_q_weight,
+            "q_nobubble_weight": args.q_nobubble_weight,
+            "q_nobubble_horizon": args.q_nobubble_horizon,
+            "q_nobubble_paths": args.q_nobubble_paths,
+            "best_q_nobubble_weight": args.best_q_nobubble_weight,
             "best_calm_anchor_weight": args.best_calm_anchor_weight,
             "best_calm_residual_weight": args.best_calm_residual_weight,
             "target_scenario_q_rms": args.target_scenario_q_rms,
@@ -304,7 +332,8 @@ def main() -> None:
         f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}, "
         f"feasibility_pretrain={args.feasibility_pretrain_steps}, "
         f"full_warmup={args.full_weight_warmup_steps}, "
-        f"stat_w={args.stationarity_loss_weight:g}, bellman_w={args.bellman_loss_weight:g}",
+        f"stat_w={args.stationarity_loss_weight:g}, bellman_w={args.bellman_loss_weight:g}, "
+        f"q_nobubble_w={args.q_nobubble_weight:g}",
         flush=True,
     )
     net, log = train_optimal_episode(

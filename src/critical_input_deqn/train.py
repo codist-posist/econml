@@ -25,11 +25,19 @@ from .config import (
 )
 from .networks import MLP
 from .natural_oracle import natural_benchmark_outputs
-from .qmc import make_qmc_nodes
+from .qmc import QMCNodes, make_qmc_nodes, poisson_icdf
 from .residuals import natural_residuals, rule_residuals, stack_residuals
 from .sampling import natural_from_rule_states, sample_rule_states
 from .episode import simulate_rule_episode
-from .economics import adaptation_enabled, derive_free, derive_rule, psi_prime, unpack_rule_state
+from .economics import (
+    adaptation_enabled,
+    derive_free,
+    derive_rule,
+    mc_derivative_A,
+    p_x_derivative_A,
+    psi_prime,
+    unpack_rule_state,
+)
 from .optimal import (
     commitment_residuals,
     decode_commitment,
@@ -59,6 +67,7 @@ class TrainLog:
     best_selection_score: float | None = None
     best_selection_criterion: str | None = None
     best_scenario_q_rms: float | None = None
+    best_q_nobubble_rms: float | None = None
     best_calm_anchor_rms: float | None = None
     best_calm_residual_rms: float | None = None
     extra_metrics: list[dict[str, float]] = field(default_factory=list)
@@ -267,6 +276,10 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     if q_rms is not None and math.isfinite(float(q_rms)):
         payload["q_rms"] = f"{float(q_rms):.2e}"
         message += f" qRMS={float(q_rms):.2e}"
+    q_pv_rms = metrics.get("scenario_Q_pv.rms")
+    if q_pv_rms is not None and math.isfinite(float(q_pv_rms)):
+        payload["q_pv"] = f"{float(q_pv_rms):.2e}"
+        message += f" qPV={float(q_pv_rms):.2e}"
     calm = metrics.get("calm_anchor.rms")
     if calm is not None and math.isfinite(float(calm)):
         payload["calm"] = f"{float(calm):.2e}"
@@ -505,6 +518,11 @@ def _checkpoint_selection_score(metrics: dict[str, float], cfg: TrainConfig) -> 
     if q_rms is not None and q_weight != 0.0:
         score += q_weight * q_rms
         parts.append(f"{q_weight:g}*scenario_Q.rms")
+    q_pv_rms = _metric_if_finite(metrics, "scenario_Q_pv.rms")
+    q_pv_weight = float(cfg.best_q_nobubble_weight)
+    if q_pv_rms is not None and q_pv_weight != 0.0:
+        score += q_pv_weight * q_pv_rms
+        parts.append(f"{q_pv_weight:g}*scenario_Q_pv.rms")
     calm_rms = _metric_if_finite(metrics, "calm_anchor.rms")
     calm_weight = float(cfg.best_calm_anchor_weight)
     if calm_rms is not None and calm_weight != 0.0:
@@ -599,6 +617,7 @@ def _maybe_update_best_state(
     log.best_val_max_abs = val_max
     log.best_train_rms = train_rms
     log.best_scenario_q_rms = _metric_if_finite(metrics, "scenario_Q.rms")
+    log.best_q_nobubble_rms = _metric_if_finite(metrics, "scenario_Q_pv.rms")
     log.best_calm_anchor_rms = _metric_if_finite(metrics, "calm_anchor.rms")
     log.best_calm_residual_rms = _metric_if_finite(metrics, "calm_residual.rms")
     metrics["new_best"] = True
@@ -1151,16 +1170,20 @@ def _optimal_scenario_residuals(
     qmc_cfg: QMCConfig,
     train_cfg: TrainConfig,
     fb_epsilon: float,
+    scenario_states: tuple[torch.Tensor, list[str]] | None = None,
 ) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], list[str]]:
     key = kind.lower()
-    z, names = _optimal_training_scenario_states(
-        net,
-        nodes,
-        kind=key,
-        params=params,
-        qmc_cfg=qmc_cfg,
-        train_cfg=train_cfg,
-    )
+    if scenario_states is None:
+        z, names = _optimal_training_scenario_states(
+            net,
+            nodes,
+            kind=key,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+        )
+    else:
+        z, names = scenario_states
     out = _decode_optimal_for_kind(net(z), key, params=params)
     res, drv = private_residuals_free(
         z,
@@ -1253,6 +1276,185 @@ def _scenario_mechanism_diagnostics(
             repair = drv["I_A"].detach().reshape(-1)
             if i < repair.numel():
                 diag[f"scenario_I_A.{name}"] = float(repair[i].cpu())
+    return diag
+
+
+def _qmc_node_prefix(nodes: QMCNodes, max_nodes: int) -> QMCNodes:
+    n = min(max(1, int(max_nodes)), int(nodes.n))
+    return QMCNodes(
+        eps_z=nodes.eps_z[:n],
+        eps_lam_D=nodes.eps_lam_D[:n],
+        eps_lam_X=nodes.eps_lam_X[:n],
+        u_N_D=nodes.u_N_D[:n],
+        u_N_X=nodes.u_N_X[:n],
+    )
+
+
+def _pathwise_physical_step(
+    z_phys: torch.Tensor,
+    drv: Dict[str, torch.Tensor],
+    nodes: QMCNodes,
+    *,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    batch_size: int,
+    n_paths: int,
+) -> torch.Tensor:
+    st = unpack_rule_state(z_phys.reshape(batch_size, n_paths, 7))
+    lam_D = torch.exp(st.ell_D)
+    lam_X = torch.exp(st.ell_X)
+    n_D = poisson_icdf(
+        nodes.u_N_D[None, :].expand(batch_size, n_paths),
+        lam_D,
+        qmc_cfg.poisson_max_count,
+    )
+    n_X = poisson_icdf(
+        nodes.u_N_X[None, :].expand(batch_size, n_paths),
+        lam_X,
+        qmc_cfg.poisson_max_count,
+    )
+    D_next = (1.0 - float(params.delta_D)) * st.D + n_D * float(params.mark_D)
+    X_next = (1.0 - float(params.delta_X)) * st.X + n_X * float(params.mark_X)
+    ell_D_next = (
+        (1.0 - float(params.rho_lambda_D)) * float(params.log_bar_lambda_D)
+        + float(params.rho_lambda_D) * st.ell_D
+        + float(params.kappa_D_lambda) * st.D
+        + float(params.sigma_lambda_D) * nodes.eps_lam_D[None, :]
+    )
+    ell_X_next = (
+        (1.0 - float(params.rho_lambda_X)) * float(params.log_bar_lambda_X)
+        + float(params.rho_lambda_X) * st.ell_X
+        + float(params.beta_X) * st.D
+        + float(params.sigma_lambda_X) * nodes.eps_lam_X[None, :]
+    )
+    log_Z_next = float(params.rho_z) * st.log_Z + float(params.sigma_z) * nodes.eps_z[None, :]
+    A_next = drv["A_next"].reshape(batch_size, n_paths)
+    log_Delta_next = torch.log(torch.clamp(drv["Delta"].reshape(batch_size, n_paths), min=1e-12))
+    return torch.stack(
+        [D_next, X_next, ell_D_next, ell_X_next, log_Z_next, A_next, log_Delta_next],
+        dim=-1,
+    ).reshape(batch_size * n_paths, 7)
+
+
+def _optimal_q_present_value_target(
+    net: MLP,
+    z_start: torch.Tensor,
+    nodes: QMCNodes,
+    *,
+    kind: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    horizon: int,
+) -> torch.Tensor:
+    """Finite-horizon pathwise present value for the repair value Q_A.
+
+    The one-step Q residual alone can admit self-supporting continuation
+    branches.  This auxiliary target imposes a no-bubble terminal convention:
+    Q_A should equal the finite present value of future repair benefits along
+    sampled paths, with the omitted tail set to zero.
+    """
+
+    key = kind.lower()
+    batch_size = int(z_start.shape[0])
+    n_paths = int(nodes.n)
+    z = z_start[:, None, :].expand(batch_size, n_paths, z_start.shape[-1]).reshape(batch_size * n_paths, -1)
+    pv = torch.zeros(batch_size * n_paths, device=z_start.device, dtype=z_start.dtype)
+    discount = torch.ones_like(pv)
+    rate = torch.full_like(pv, float(params.bar_R))
+    for _ in range(max(1, int(horizon))):
+        out = _decode_optimal_for_kind(net(z), key, params=params)
+        st = unpack_rule_state(z[..., :7])
+        drv = derive_free(st, out, params, R=rate)
+        z_next_phys = _pathwise_physical_step(
+            z[..., :7],
+            drv,
+            nodes,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            batch_size=batch_size,
+            n_paths=n_paths,
+        )
+        if key == "commitment":
+            promises = torch.stack([out[name] for name in COMMITMENT_PROMISE_NAMES], dim=-1)
+            z_next = torch.cat([z_next_phys, promises], dim=-1)
+        else:
+            z_next = z_next_phys
+        out_next = _decode_optimal_for_kind(net(z_next), key, params=params)
+        st_next = unpack_rule_state(z_next_phys)
+        drv_next = derive_free(st_next, out_next, params, R=torch.full_like(out_next["C"], float(params.bar_R)))
+        p_x_A_next = p_x_derivative_A(st_next.A, drv_next["p_m_eff"], drv_next["p_d"], params)
+        mc_A_next = mc_derivative_A(drv_next["mc"], drv_next["p_x"], p_x_A_next, params)
+        benefit_next = -(mc_A_next * drv_next["Delta"] * out_next["Y"])
+        mdisc = float(params.beta) * drv_next["Lambda"] / torch.clamp(drv["Lambda"], min=1e-12)
+        pv = pv + discount * mdisc * benefit_next
+        discount = discount * mdisc * (1.0 - float(params.delta_A))
+        z = z_next
+    return pv.reshape(batch_size, n_paths).mean(dim=1)
+
+
+def _optimal_q_nobubble_residuals(
+    net: MLP,
+    nodes: QMCNodes,
+    *,
+    kind: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    scenario_states: tuple[torch.Tensor, list[str]] | None = None,
+) -> tuple[torch.Tensor, Dict[str, torch.Tensor], list[str]]:
+    key = kind.lower()
+    if scenario_states is None:
+        z, names = _optimal_training_scenario_states(
+            net,
+            nodes,
+            kind=key,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+        )
+    else:
+        z, names = scenario_states
+    out = _decode_optimal_for_kind(net(z), key, params=params)
+    if not adaptation_enabled(params):
+        target = torch.zeros_like(out["Q_A"])
+    else:
+        path_nodes = _qmc_node_prefix(nodes, int(train_cfg.optimal_q_nobubble_paths))
+        target = _optimal_q_present_value_target(
+            net,
+            z,
+            path_nodes,
+            kind=key,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            horizon=int(train_cfg.optimal_q_nobubble_horizon),
+        ).detach()
+    denom = 1.0 + torch.maximum(out["Q_A"].abs(), target.abs())
+    resid = (out["Q_A"] - target) / torch.clamp(denom, min=1e-12)
+    return resid, {"Q_A": out["Q_A"], "Q_A_pv_target": target}, names
+
+
+def _optimal_q_nobubble_diagnostics(
+    resid: torch.Tensor,
+    data: Dict[str, torch.Tensor],
+    names: list[str],
+) -> Dict[str, float]:
+    r = resid.detach().reshape(-1)
+    target = data["Q_A_pv_target"].detach().reshape(-1)
+    q = data["Q_A"].detach().reshape(-1)
+    diag: Dict[str, float] = {
+        "scenario_Q_pv.rms": float(torch.sqrt(r.pow(2).mean()).cpu()),
+        "scenario_Q_pv.max_abs": float(r.abs().max().cpu()),
+        "scenario_Q_pv_target.mean": float(target.mean().cpu()),
+        "scenario_Q_pv_target.min": float(target.min().cpu()),
+        "scenario_Q_pv_target.max": float(target.max().cpu()),
+        "scenario_Q_minus_pv.mean": float((q - target).mean().cpu()),
+    }
+    wanted = {f"{label}.{tag}" for label, tag in _RULE_SCENARIO_POINTS}
+    for i, name in enumerate(names):
+        if name not in wanted or i >= r.numel():
+            continue
+        diag[f"scenario_Q_pv.{name}"] = float(r[i].abs().cpu())
+        diag[f"scenario_Q_pv_target.{name}"] = float(target[i].cpu())
     return diag
 
 
@@ -1402,7 +1604,19 @@ def _optimal_auxiliary_training_loss(
 ) -> torch.Tensor:
     pieces = []
     q_weight = float(train_cfg.rule_scenario_q_weight)
-    if q_weight > 0.0 and _should_apply_scenario_loss(step, train_cfg):
+    nobubble_weight = float(train_cfg.optimal_q_nobubble_weight)
+    apply_scenario = _should_apply_scenario_loss(step, train_cfg) and (q_weight > 0.0 or nobubble_weight > 0.0)
+    scenario_states = None
+    if apply_scenario:
+        scenario_states = _optimal_training_scenario_states(
+            net,
+            nodes,
+            kind=kind,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+        )
+    if q_weight > 0.0 and scenario_states is not None:
         scenario_res, _, _ = _optimal_scenario_residuals(
             net,
             nodes,
@@ -1411,9 +1625,24 @@ def _optimal_auxiliary_training_loss(
             qmc_cfg=qmc_cfg,
             train_cfg=train_cfg,
             fb_epsilon=fb_epsilon,
+            scenario_states=scenario_states,
         )
         q_resid = scenario_res["Q"].reshape(-1, 1)
         pieces.append(q_weight * residual_loss(q_resid, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta))
+    if nobubble_weight > 0.0 and scenario_states is not None:
+        q_pv_resid, _, _ = _optimal_q_nobubble_residuals(
+            net,
+            nodes,
+            kind=kind,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+            scenario_states=scenario_states,
+        )
+        pieces.append(
+            nobubble_weight
+            * residual_loss(q_pv_resid.reshape(-1, 1), loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+        )
     calm_weight = float(train_cfg.rule_calm_anchor_weight)
     if calm_weight > 0.0:
         pieces.append(calm_weight * _optimal_calm_anchor_loss(net, kind=kind, params=params, train_cfg=train_cfg))
@@ -2330,6 +2559,14 @@ def train_optimal_episode(
             val_mat = stack_residuals(val_res).detach()
             val_top = _top_residual_summary(val_res)
             del val_raw, val_res
+            scenario_states = _optimal_training_scenario_states(
+                net,
+                val_nodes,
+                kind=key,
+                params=params,
+                qmc_cfg=val_qmc_cfg,
+                train_cfg=train_cfg,
+            )
             scenario_val_res, scenario_val_drv, scenario_names = _optimal_scenario_residuals(
                 net,
                 val_nodes,
@@ -2338,6 +2575,7 @@ def train_optimal_episode(
                 qmc_cfg=val_qmc_cfg,
                 train_cfg=train_cfg,
                 fb_epsilon=train_cfg.fb_epsilon_final,
+                scenario_states=scenario_states,
             )
             metrics = _log_metrics(episode, last_mat, log, last_loss, val_mat)
             metrics["stage"] = _optimal_training_stage(episode, train_cfg)
@@ -2348,6 +2586,18 @@ def train_optimal_episode(
             del scenario_val_res, scenario_val_drv, scenario_names
             metrics.update(scenario_diag)
             metrics.update(mechanism_diag)
+            with torch.no_grad():
+                q_pv_resid, q_pv_data, q_pv_names = _optimal_q_nobubble_residuals(
+                    net,
+                    val_nodes,
+                    kind=key,
+                    params=params,
+                    qmc_cfg=val_qmc_cfg,
+                    train_cfg=train_cfg,
+                    scenario_states=scenario_states,
+                )
+                q_pv_diag = _optimal_q_nobubble_diagnostics(q_pv_resid, q_pv_data, q_pv_names)
+            metrics.update(q_pv_diag)
             calm_diag = _optimal_calm_anchor_diagnostics(
                 net,
                 kind=key,
@@ -2381,6 +2631,7 @@ def train_optimal_episode(
                     "full_weight": metrics["full_weight"],
                     **scenario_diag,
                     **mechanism_diag,
+                    **q_pv_diag,
                     **calm_diag,
                     **calm_resid_diag,
                     "selection_score": float(metrics.get("selection_score", float("nan"))),
@@ -2540,6 +2791,14 @@ def evaluate_optimal(
         fb_epsilon=train_cfg.fb_epsilon_final,
     )
     mat = stack_residuals(res)
+    scenario_states = _optimal_training_scenario_states(
+        net,
+        nodes,
+        kind=key,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        train_cfg=train_cfg,
+    )
     scenario_res, scenario_drv, scenario_names = _optimal_scenario_residuals(
         net,
         nodes,
@@ -2548,7 +2807,18 @@ def evaluate_optimal(
         qmc_cfg=qmc_cfg,
         train_cfg=train_cfg,
         fb_epsilon=train_cfg.fb_epsilon_final,
+        scenario_states=scenario_states,
     )
+    with torch.no_grad():
+        q_pv_resid, q_pv_data, q_pv_names = _optimal_q_nobubble_residuals(
+            net,
+            nodes,
+            kind=key,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            train_cfg=train_cfg,
+            scenario_states=scenario_states,
+        )
     return {
         "loss": float(mat.pow(2).mean().detach().cpu()),
         "rms": float(torch.sqrt(mat.pow(2).mean()).detach().cpu()),
@@ -2557,4 +2827,5 @@ def evaluate_optimal(
         **exact_condition_diagnostics(drv, params),
         **_scenario_q_diagnostics(scenario_res, scenario_names, q_key="Q"),
         **_scenario_mechanism_diagnostics(scenario_drv, scenario_names, params=params),
+        **_optimal_q_nobubble_diagnostics(q_pv_resid, q_pv_data, q_pv_names),
     }
