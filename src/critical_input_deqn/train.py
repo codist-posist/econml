@@ -1290,6 +1290,17 @@ def _qmc_node_prefix(nodes: QMCNodes, max_nodes: int) -> QMCNodes:
     )
 
 
+def _qmc_node_roll(nodes: QMCNodes, shift: int) -> QMCNodes:
+    s = int(shift)
+    return QMCNodes(
+        eps_z=torch.roll(nodes.eps_z, shifts=-s, dims=0),
+        eps_lam_D=torch.roll(nodes.eps_lam_D, shifts=-s, dims=0),
+        eps_lam_X=torch.roll(nodes.eps_lam_X, shifts=-s, dims=0),
+        u_N_D=torch.roll(nodes.u_N_D, shifts=-s, dims=0),
+        u_N_X=torch.roll(nodes.u_N_X, shifts=-s, dims=0),
+    )
+
+
 def _pathwise_physical_step(
     z_phys: torch.Tensor,
     drv: Dict[str, torch.Tensor],
@@ -1361,14 +1372,16 @@ def _optimal_q_present_value_target(
     pv = torch.zeros(batch_size * n_paths, device=z_start.device, dtype=z_start.dtype)
     discount = torch.ones_like(pv)
     rate = torch.full_like(pv, float(params.bar_R))
-    for _ in range(max(1, int(horizon))):
+    path_nodes = _qmc_node_prefix(nodes, n_paths)
+    for h in range(max(1, int(horizon))):
         out = _decode_optimal_for_kind(net(z), key, params=params)
         st = unpack_rule_state(z[..., :7])
         drv = derive_free(st, out, params, R=rate)
+        step_nodes = _qmc_node_roll(path_nodes, h)
         z_next_phys = _pathwise_physical_step(
             z[..., :7],
             drv,
-            nodes,
+            step_nodes,
             params=params,
             qmc_cfg=qmc_cfg,
             batch_size=batch_size,
