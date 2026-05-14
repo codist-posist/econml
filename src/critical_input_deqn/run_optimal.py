@@ -203,6 +203,12 @@ def main() -> None:
         help="Training-objective weight on optimal-policy stationarity residuals after feasibility pretraining.",
     )
     parser.add_argument(
+        "--envelope-loss-weight",
+        type=float,
+        default=0.10,
+        help="Training-objective weight on explicit discretion envelope-costate residuals after feasibility pretraining.",
+    )
+    parser.add_argument(
         "--promise-loss-weight",
         type=float,
         default=1.0,
@@ -270,6 +276,7 @@ def main() -> None:
         optimal_private_loss_weight=args.private_loss_weight,
         optimal_bellman_loss_weight=args.bellman_loss_weight,
         optimal_stationarity_loss_weight=args.stationarity_loss_weight,
+        optimal_envelope_loss_weight=args.envelope_loss_weight,
         optimal_promise_loss_weight=args.promise_loss_weight,
         optimal_full_weight_warmup_steps=args.full_weight_warmup_steps,
         dtype=dtype,
@@ -323,6 +330,7 @@ def main() -> None:
             "private_loss_weight": args.private_loss_weight,
             "bellman_loss_weight": args.bellman_loss_weight,
             "stationarity_loss_weight": args.stationarity_loss_weight,
+            "envelope_loss_weight": args.envelope_loss_weight,
             "promise_loss_weight": args.promise_loss_weight,
             "commitment_promise_init_mean": COMMITMENT_PROMISE_INIT_MEAN,
             "commitment_promise_init_std": COMMITMENT_PROMISE_INIT_STD,
@@ -338,7 +346,8 @@ def main() -> None:
         f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}, "
         f"feasibility_pretrain={args.feasibility_pretrain_steps}, "
         f"full_warmup={args.full_weight_warmup_steps}, "
-        f"stat_w={args.stationarity_loss_weight:g}, legacy_bellman_w={args.bellman_loss_weight:g}, "
+        f"stat_w={args.stationarity_loss_weight:g}, env_w={args.envelope_loss_weight:g}, "
+        f"legacy_bellman_w={args.bellman_loss_weight:g}, "
         f"q_nobubble_w={args.q_nobubble_weight:g}",
         flush=True,
     )

@@ -223,7 +223,7 @@ def decode_optimal_outputs(
             out[name] = _bounded_log_center(x, targets["S_p"], math.log(4.0))
         elif name == "F_p":
             out[name] = _bounded_log_center(x, targets["F_p"], math.log(4.0))
-        elif name.startswith("mu_"):
+        elif name.startswith("mu_") or name.startswith("xi_"):
             out[name] = _bounded_identity(x, 50.0)
         elif name.startswith("promise_"):
             out[name] = _bounded_identity(x, 5.0)

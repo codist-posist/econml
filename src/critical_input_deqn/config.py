@@ -148,6 +148,7 @@ class TrainConfig:
     # separate Bellman-value residual.
     optimal_bellman_loss_weight: float = 0.0
     optimal_stationarity_loss_weight: float = 0.10
+    optimal_envelope_loss_weight: float = 0.10
     optimal_promise_loss_weight: float = 1.0
     optimal_full_weight_warmup_steps: int = 1_000
     optimal_q_nobubble_weight: float = 0.0
@@ -234,10 +235,16 @@ OPT_PRIVATE_RESIDUAL_NAMES = tuple(name for name in PRIVATE_RESIDUAL_NAMES if na
 
 OPT_MULTIPLIER_NAMES = tuple(f"mu_{name}" for name in OPT_PRIVATE_RESIDUAL_NAMES)
 
-# Discretion uses the same author-style object as the Galo--Nuno code: policy
-# controls plus implementability multipliers.  There is deliberately no learned
-# Bellman value in the output head.
-DISCRETION_OUTPUT_NAMES = OPT_CONTROL_NAMES + OPT_MULTIPLIER_NAMES
+# Discretion uses an author-style FOC/envelope object: policy controls, explicit
+# costates for the two endogenous predetermined states, and implementability
+# multipliers.  There is deliberately no learned Bellman value in the output
+# head.
+DISCRETION_COSTATE_NAMES = (
+    "xi_A",
+    "xi_log_Delta",
+)
+
+DISCRETION_OUTPUT_NAMES = OPT_CONTROL_NAMES + DISCRETION_COSTATE_NAMES + OPT_MULTIPLIER_NAMES
 
 COMMITMENT_PROMISE_NAMES = (
     "promise_S",

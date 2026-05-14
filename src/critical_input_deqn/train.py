@@ -365,6 +365,7 @@ def _announce_training(
             f", feasibility_pretrain={int(train_cfg.optimal_feasibility_pretrain_steps)}, "
             f"full_warmup={int(train_cfg.optimal_full_weight_warmup_steps)}, "
             f"stat_w={float(train_cfg.optimal_stationarity_loss_weight):g}, "
+            f"env_w={float(train_cfg.optimal_envelope_loss_weight):g}, "
             f"legacy_bellman_w={float(train_cfg.optimal_bellman_loss_weight):g}, "
             f"promise_w={float(train_cfg.optimal_promise_loss_weight):g}"
         )
@@ -442,6 +443,8 @@ def _optimal_objective_matrix(
             weight = full_weight * float(train_cfg.optimal_bellman_loss_weight)
         elif name.startswith("stat_"):
             weight = full_weight * float(train_cfg.optimal_stationarity_loss_weight)
+        elif name.startswith("env_"):
+            weight = full_weight * float(train_cfg.optimal_envelope_loss_weight)
         elif name.startswith("promise_"):
             weight = full_weight * float(train_cfg.optimal_promise_loss_weight)
         pieces.append(value * weight)
@@ -1853,10 +1856,11 @@ def _adapt_legacy_policy_output_state_dict(state_dict: Dict[str, torch.Tensor], 
     if target_rows == len(RULE_OUTPUT_NAMES) and source_rows == target_rows - 1:
         # Reduced Taylor head: C,Y,Pi,Q_A,F_p -> C,Y,Pi,Q_A,S_p,F_p.
         mapping = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 5)]
-    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows + 1:
-        # Legacy discretion head included a learned Bellman value V.  The
-        # current author-style FOC system drops V and keeps only controls plus
-        # implementability multipliers.
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 1:
+        # Legacy discretion head included a learned Bellman value V and no
+        # explicit envelope costates:
+        # C,Y,Pi,Q_A,S_p,F_p,V,mu_resource,mu_price_index,mu_calvo_S,mu_calvo_F,mu_Q
+        # -> C,Y,Pi,Q_A,S_p,F_p,xi_A,xi_log_Delta,mu_resource,...
         mapping = [
             (0, 0),  # C
             (1, 1),  # Y
@@ -1864,13 +1868,31 @@ def _adapt_legacy_policy_output_state_dict(state_dict: Dict[str, torch.Tensor], 
             (3, 3),  # Q_A
             (4, 4),  # S_p
             (5, 5),  # F_p
-            (7, 6),  # mu_resource
-            (8, 7),  # mu_price_index
-            (9, 8),  # mu_calvo_S
-            (10, 9),  # mu_calvo_F
-            (11, 10),  # mu_Q
+            (7, 8),  # mu_resource
+            (8, 9),  # mu_price_index
+            (9, 10),  # mu_calvo_S
+            (10, 11),  # mu_calvo_F
+            (11, 12),  # mu_Q
         ]
-    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 1:
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 2:
+        # Recent discretion head after dropping V, before adding envelope
+        # costates:
+        # C,Y,Pi,Q_A,S_p,F_p,mu_resource,mu_price_index,mu_calvo_S,mu_calvo_F,mu_Q
+        # -> C,Y,Pi,Q_A,S_p,F_p,xi_A,xi_log_Delta,mu_resource,...
+        mapping = [
+            (0, 0),  # C
+            (1, 1),  # Y
+            (2, 2),  # Pi
+            (3, 3),  # Q_A
+            (4, 4),  # S_p
+            (5, 5),  # F_p
+            (6, 8),  # mu_resource
+            (7, 9),  # mu_price_index
+            (8, 10),  # mu_calvo_S
+            (9, 11),  # mu_calvo_F
+            (10, 12),  # mu_Q
+        ]
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 3:
         # Older reduced discretion head had no S_p control and no
         # mu_price_index, but still included V.
         mapping = [
@@ -1879,12 +1901,12 @@ def _adapt_legacy_policy_output_state_dict(state_dict: Dict[str, torch.Tensor], 
             (2, 2),  # Pi
             (3, 3),  # Q_A
             (4, 5),  # F_p
-            (6, 6),  # mu_resource
-            (7, 8),  # mu_calvo_S
-            (8, 9),  # mu_calvo_F
-            (9, 10),  # mu_Q
+            (6, 8),  # mu_resource
+            (7, 10),  # mu_calvo_S
+            (8, 11),  # mu_calvo_F
+            (9, 12),  # mu_Q
         ]
-    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 2:
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 4:
         # Reduced discretion head after dropping V: no S_p control and no
         # mu_price_index.
         mapping = [
@@ -1893,10 +1915,10 @@ def _adapt_legacy_policy_output_state_dict(state_dict: Dict[str, torch.Tensor], 
             (2, 2),  # Pi
             (3, 3),  # Q_A
             (4, 5),  # F_p
-            (5, 6),  # mu_resource
-            (6, 8),  # mu_calvo_S
-            (7, 9),  # mu_calvo_F
-            (8, 10),  # mu_Q
+            (5, 8),  # mu_resource
+            (6, 10),  # mu_calvo_S
+            (7, 11),  # mu_calvo_F
+            (8, 12),  # mu_Q
         ]
     elif target_rows == len(COMMITMENT_OUTPUT_NAMES) and source_rows == target_rows - 2:
         # Reduced commitment head: no S_p control and no mu_price_index.

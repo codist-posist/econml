@@ -151,6 +151,8 @@ def _append_optimal_training_args(cmd: list[str], args: argparse.Namespace) -> l
         str(args.optimal_bellman_loss_weight),
         "--stationarity-loss-weight",
         str(args.optimal_stationarity_loss_weight),
+        "--envelope-loss-weight",
+        str(args.optimal_envelope_loss_weight),
         "--promise-loss-weight",
         str(args.optimal_promise_loss_weight),
     ]
@@ -374,6 +376,7 @@ def main() -> None:
     parser.add_argument("--optimal-private-loss-weight", type=float, default=1.0)
     parser.add_argument("--optimal-bellman-loss-weight", type=float, default=0.0)
     parser.add_argument("--optimal-stationarity-loss-weight", type=float, default=0.10)
+    parser.add_argument("--optimal-envelope-loss-weight", type=float, default=0.10)
     parser.add_argument("--optimal-promise-loss-weight", type=float, default=1.0)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--checkpoint-every", type=int, default=1000)

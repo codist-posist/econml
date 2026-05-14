@@ -272,6 +272,78 @@ def stationarity_from_lagrangian(
     return stat
 
 
+def _discretion_costate_continuation(drv: TensorDict, params: BaselineParams) -> torch.Tensor:
+    """Continuation value term for the explicit discretion envelope states."""
+
+    z_next = drv["z_next"][..., :7]
+    out_next = drv["out_next"]
+    B, S, _ = z_next.shape
+    xi_A_next = out_next["xi_A"].reshape(B, S).detach()
+    xi_Delta_next = out_next["xi_log_Delta"].reshape(B, S).detach()
+    A_next = z_next[..., 5]
+    log_Delta_next = z_next[..., 6]
+    return float(params.beta) * _mean_over_nodes(xi_A_next * A_next + xi_Delta_next * log_Delta_next)
+
+
+def _normalized_envelope_residual(value: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    scale = 1.0 + torch.maximum(value.detach().abs(), target.detach().abs())
+    return (value - target) / scale
+
+
+def discretion_envelope_residuals(
+    z: torch.Tensor,
+    out: TensorDict,
+    policy_net,
+    nodes: QMCNodes,
+    *,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    fb_epsilon: float,
+) -> Tuple[TensorDict, TensorDict]:
+    """Envelope residuals for the two endogenous predetermined states.
+
+    The envelope derivative holds the current controls and multipliers fixed,
+    as in the envelope theorem, while allowing current states to move current
+    feasibility objects and next-period states.  Future costates enter as
+    continuation prices and are detached in the current FOC/envelope step.
+    """
+
+    z_req = z.detach().clone().requires_grad_(True)
+    out_const = {name: value.detach() for name, value in out.items()}
+    priv, drv = private_residuals_free(
+        z_req,
+        out_const,
+        policy_net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        fb_epsilon=fb_epsilon,
+        commitment=False,
+    )
+    U = period_utility(out_const["C"], drv["N"], params)
+    H = private_residual_matrix(priv)
+    mu = multipliers(out_const)
+    envelope_objective = U + (mu * H).sum(dim=-1) + _discretion_costate_continuation(drv, params)
+    grad_z = torch.autograd.grad(
+        envelope_objective.sum(),
+        z_req,
+        create_graph=True,
+        retain_graph=True,
+        allow_unused=False,
+    )[0]
+    target_A = grad_z[..., 5]
+    target_log_Delta = grad_z[..., 6]
+    residuals = {
+        "env_A": _normalized_envelope_residual(out["xi_A"], target_A),
+        "env_log_Delta": _normalized_envelope_residual(out["xi_log_Delta"], target_log_Delta),
+    }
+    diagnostics = {
+        "xi_A_target": target_A,
+        "xi_log_Delta_target": target_log_Delta,
+    }
+    return residuals, diagnostics
+
+
 def discretion_residuals(
     z: torch.Tensor,
     raw: torch.Tensor,
@@ -296,11 +368,21 @@ def discretion_residuals(
     U = period_utility(out["C"], drv["N"], params)
     H = private_residual_matrix(priv)
     mu = multipliers(out)
-    lagrangian = U + (mu * H).sum(dim=-1)
+    lagrangian = U + (mu * H).sum(dim=-1) + _discretion_costate_continuation(drv, params)
     stat = stationarity_from_lagrangian(lagrangian, out)
+    env, env_diag = discretion_envelope_residuals(
+        z,
+        out,
+        policy_net,
+        nodes,
+        params=params,
+        qmc_cfg=qmc_cfg,
+        fb_epsilon=fb_epsilon,
+    )
     res: TensorDict = {f"priv_{k}": v for k, v in priv.items()}
     res.update(stat)
-    return res, drv
+    res.update(env)
+    return res, {**drv, **env_diag}
 
 
 def commitment_promise_term(z: torch.Tensor, out: TensorDict, drv: TensorDict, params: BaselineParams) -> torch.Tensor:
