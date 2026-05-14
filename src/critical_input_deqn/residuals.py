@@ -114,7 +114,8 @@ def rule_residuals(
     raw_next = rule_net(z_next.reshape(B * S, K))
     z_next_flat = z_next.reshape(B * S, K)
     st_next = unpack_rule_state(z_next_flat)
-    if not uses_natural_y_ref:
+    need_next_rate = policy_key == "ba"
+    if not (uses_natural_y_ref or need_next_rate):
         out_next = decode_rule_outputs(raw_next, RULE_OUTPUT_NAMES, params=params, y_ref=None)
         Y_n_next = torch.full_like(out_next["Y"], float(params.steady_state_output))
         R_n_next = torch.full_like(out_next["Y"], float(params.bar_R))
@@ -124,15 +125,25 @@ def rule_residuals(
             natural_net,
             params=params,
             qmc_cfg=qmc_cfg,
-            need_rate=False,
+            need_rate=need_next_rate,
         )
-        out_next = decode_rule_outputs(raw_next, RULE_OUTPUT_NAMES, params=params, y_ref=out_n_next["Y_n"])
+        out_next = decode_rule_outputs(
+            raw_next,
+            RULE_OUTPUT_NAMES,
+            params=params,
+            y_ref=out_n_next["Y_n"] if uses_natural_y_ref else None,
+        )
         Y_n_next = out_n_next["Y_n"]
         R_n_next = out_n_next.get("R_n_real", torch.full_like(Y_n_next, float(params.bar_R)))
     else:
         raw_n_next = natural_net(z_next_flat[..., :6])
         out_n_next = decode_natural_outputs(raw_n_next, NATURAL_OUTPUT_NAMES, params=params)
-        out_next = decode_rule_outputs(raw_next, RULE_OUTPUT_NAMES, params=params, y_ref=out_n_next["Y_n"])
+        out_next = decode_rule_outputs(
+            raw_next,
+            RULE_OUTPUT_NAMES,
+            params=params,
+            y_ref=out_n_next["Y_n"] if uses_natural_y_ref else None,
+        )
         Y_n_next = out_n_next["Y_n"]
         R_n_next = out_n_next["R_n_real"]
     drv_next = derive_rule(
