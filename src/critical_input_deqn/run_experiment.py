@@ -372,7 +372,7 @@ def main() -> None:
     parser.add_argument("--optimal-feasibility-pretrain-steps", type=int, default=1_000)
     parser.add_argument("--optimal-full-weight-warmup-steps", type=int, default=1_000)
     parser.add_argument("--optimal-private-loss-weight", type=float, default=1.0)
-    parser.add_argument("--optimal-bellman-loss-weight", type=float, default=0.25)
+    parser.add_argument("--optimal-bellman-loss-weight", type=float, default=0.0)
     parser.add_argument("--optimal-stationarity-loss-weight", type=float, default=0.10)
     parser.add_argument("--optimal-promise-loss-weight", type=float, default=1.0)
     parser.add_argument("--lr", type=float, default=1e-4)

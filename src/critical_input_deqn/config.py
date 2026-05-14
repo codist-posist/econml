@@ -143,7 +143,10 @@ class TrainConfig:
     target_scenario_q_rms: float | None = 1e-2
     optimal_feasibility_pretrain_steps: int = 1_000
     optimal_private_loss_weight: float = 1.0
-    optimal_bellman_loss_weight: float = 0.25
+    # Kept only for legacy checkpoints/experiments.  The default
+    # discretion/commitment system is FOC/envelope based and does not train a
+    # separate Bellman-value residual.
+    optimal_bellman_loss_weight: float = 0.0
     optimal_stationarity_loss_weight: float = 0.10
     optimal_promise_loss_weight: float = 1.0
     optimal_full_weight_warmup_steps: int = 1_000
@@ -231,7 +234,10 @@ OPT_PRIVATE_RESIDUAL_NAMES = tuple(name for name in PRIVATE_RESIDUAL_NAMES if na
 
 OPT_MULTIPLIER_NAMES = tuple(f"mu_{name}" for name in OPT_PRIVATE_RESIDUAL_NAMES)
 
-DISCRETION_OUTPUT_NAMES = OPT_CONTROL_NAMES + ("V",) + OPT_MULTIPLIER_NAMES
+# Discretion uses the same author-style object as the Galo--Nuno code: policy
+# controls plus implementability multipliers.  There is deliberately no learned
+# Bellman value in the output head.
+DISCRETION_OUTPUT_NAMES = OPT_CONTROL_NAMES + OPT_MULTIPLIER_NAMES
 
 COMMITMENT_PROMISE_NAMES = (
     "promise_S",

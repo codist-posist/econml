@@ -293,17 +293,12 @@ def discretion_residuals(
         fb_epsilon=fb_epsilon,
         commitment=False,
     )
-    z_next = drv["z_next"]
-    B, S, _ = z_next.shape
-    V_next = drv["out_next"]["V"].reshape(B, S)
     U = period_utility(out["C"], drv["N"], params)
     H = private_residual_matrix(priv)
     mu = multipliers(out)
-    bellman = out["V"] - U - float(params.beta) * _mean_over_nodes(V_next)
-    lagrangian = U + (mu * H).sum(dim=-1) + float(params.beta) * _mean_over_nodes(V_next)
+    lagrangian = U + (mu * H).sum(dim=-1)
     stat = stationarity_from_lagrangian(lagrangian, out)
     res: TensorDict = {f"priv_{k}": v for k, v in priv.items()}
-    res["bellman"] = bellman
     res.update(stat)
     return res, drv
 

@@ -365,7 +365,7 @@ def _announce_training(
             f", feasibility_pretrain={int(train_cfg.optimal_feasibility_pretrain_steps)}, "
             f"full_warmup={int(train_cfg.optimal_full_weight_warmup_steps)}, "
             f"stat_w={float(train_cfg.optimal_stationarity_loss_weight):g}, "
-            f"bellman_w={float(train_cfg.optimal_bellman_loss_weight):g}, "
+            f"legacy_bellman_w={float(train_cfg.optimal_bellman_loss_weight):g}, "
             f"promise_w={float(train_cfg.optimal_promise_loss_weight):g}"
         )
     print(
@@ -1827,7 +1827,7 @@ def save_checkpoint(
 
 
 def _adapt_legacy_policy_output_state_dict(state_dict: Dict[str, torch.Tensor], net: nn.Module) -> Dict[str, torch.Tensor]:
-    """Map recent reduced-output checkpoints into the current independent-S_p heads."""
+    """Map recent output-head variants into the current policy heads."""
 
     target = net.state_dict()
     weight_keys = [key for key, value in target.items() if key.endswith(".weight") and value.ndim == 2]
@@ -1853,19 +1853,50 @@ def _adapt_legacy_policy_output_state_dict(state_dict: Dict[str, torch.Tensor], 
     if target_rows == len(RULE_OUTPUT_NAMES) and source_rows == target_rows - 1:
         # Reduced Taylor head: C,Y,Pi,Q_A,F_p -> C,Y,Pi,Q_A,S_p,F_p.
         mapping = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 5)]
-    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 2:
-        # Reduced discretion head: no S_p control and no mu_price_index.
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows + 1:
+        # Legacy discretion head included a learned Bellman value V.  The
+        # current author-style FOC system drops V and keeps only controls plus
+        # implementability multipliers.
+        mapping = [
+            (0, 0),  # C
+            (1, 1),  # Y
+            (2, 2),  # Pi
+            (3, 3),  # Q_A
+            (4, 4),  # S_p
+            (5, 5),  # F_p
+            (7, 6),  # mu_resource
+            (8, 7),  # mu_price_index
+            (9, 8),  # mu_calvo_S
+            (10, 9),  # mu_calvo_F
+            (11, 10),  # mu_Q
+        ]
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 1:
+        # Older reduced discretion head had no S_p control and no
+        # mu_price_index, but still included V.
         mapping = [
             (0, 0),  # C
             (1, 1),  # Y
             (2, 2),  # Pi
             (3, 3),  # Q_A
             (4, 5),  # F_p
-            (5, 6),  # V
-            (6, 7),  # mu_resource
-            (7, 9),  # mu_calvo_S
-            (8, 10),  # mu_calvo_F
-            (9, 11),  # mu_Q
+            (6, 6),  # mu_resource
+            (7, 8),  # mu_calvo_S
+            (8, 9),  # mu_calvo_F
+            (9, 10),  # mu_Q
+        ]
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 2:
+        # Reduced discretion head after dropping V: no S_p control and no
+        # mu_price_index.
+        mapping = [
+            (0, 0),  # C
+            (1, 1),  # Y
+            (2, 2),  # Pi
+            (3, 3),  # Q_A
+            (4, 5),  # F_p
+            (5, 6),  # mu_resource
+            (6, 8),  # mu_calvo_S
+            (7, 9),  # mu_calvo_F
+            (8, 10),  # mu_Q
         ]
     elif target_rows == len(COMMITMENT_OUTPUT_NAMES) and source_rows == target_rows - 2:
         # Reduced commitment head: no S_p control and no mu_price_index.

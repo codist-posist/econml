@@ -179,7 +179,7 @@ def main() -> None:
         "--full-weight-warmup-steps",
         type=int,
         default=1_000,
-        help="Episodes over which Bellman/stationarity/promise residual weights ramp in after feasibility pretraining.",
+        help="Episodes over which stationarity/promise residual weights ramp in after feasibility pretraining.",
     )
     parser.add_argument(
         "--private-loss-weight",
@@ -190,8 +190,11 @@ def main() -> None:
     parser.add_argument(
         "--bellman-loss-weight",
         type=float,
-        default=0.25,
-        help="Training-objective weight on the optimal-policy Bellman residual after feasibility pretraining.",
+        default=0.0,
+        help=(
+            "Legacy weight on an explicit Bellman residual. The current optimal-policy "
+            "system is FOC/envelope based and has no discretion V residual by default."
+        ),
     )
     parser.add_argument(
         "--stationarity-loss-weight",
@@ -335,7 +338,7 @@ def main() -> None:
         f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}, "
         f"feasibility_pretrain={args.feasibility_pretrain_steps}, "
         f"full_warmup={args.full_weight_warmup_steps}, "
-        f"stat_w={args.stationarity_loss_weight:g}, bellman_w={args.bellman_loss_weight:g}, "
+        f"stat_w={args.stationarity_loss_weight:g}, legacy_bellman_w={args.bellman_loss_weight:g}, "
         f"q_nobubble_w={args.q_nobubble_weight:g}",
         flush=True,
     )
