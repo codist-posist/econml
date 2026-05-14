@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -63,6 +64,21 @@ def _resolved_stop(args: argparse.Namespace) -> dict[str, float | int | None]:
             else defaults.get("min_steps_before_stop", 0)
         ),
     }
+
+
+def _argument_supplied(flag: str) -> bool:
+    return any(arg == flag or arg.startswith(flag + "=") for arg in sys.argv[1:])
+
+
+def _apply_commitment_safe_defaults(args: argparse.Namespace) -> None:
+    if args.kind != "commitment":
+        return
+    if not _argument_supplied("--lr"):
+        args.lr = 5e-5
+    if not _argument_supplied("--feasibility-pretrain-steps"):
+        args.feasibility_pretrain_steps = 1_500
+    if not _argument_supplied("--full-weight-warmup-steps"):
+        args.full_weight_warmup_steps = 2_500
 
 
 def main() -> None:
@@ -182,6 +198,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--log-every", type=int, default=100)
     args = parser.parse_args()
+    _apply_commitment_safe_defaults(args)
 
     params, experiment_meta = resolve_params(args.experiment, args.params_json)
     dtype = _dtype(args.dtype)
