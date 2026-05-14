@@ -122,13 +122,13 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     "price_only": ExperimentSpec(
         name="price_only",
         group="core_irf",
-        description="Import-price shock without an external quantity channel.",
+        description="Import-price shock with the external quantity channel removed and the cap kept slack.",
         overrides={"nu_qD": 0.0, "nu_qX": 0.0, "bar_m": 1.0e6},
     ),
     "no_cap": ExperimentSpec(
         name="no_cap",
         group="counterfactual",
-        description="Imported-input cap is effectively slack while the external price process is retained.",
+        description="Imported-input cap is effectively slack while the external price and quantity processes remain in the state.",
         overrides={"bar_m": 1.0e6},
     ),
     "no_adaptation": ExperimentSpec(

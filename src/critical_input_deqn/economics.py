@@ -186,8 +186,9 @@ def solve_import_rent(
 
     When ``implicit_grad`` is true, the returned binding-branch rent keeps the
     bisection value but replaces the algorithmic bisection derivative with the
-    implicit derivative from M_d(chi, a, Z)=mbar.  This is needed in optimal
-    policy FOCs, where controls move the scarcity rent through the static MCP.
+    implicit derivative from M_d(chi, a, Z)=mbar.  This is needed whenever
+    residual losses are differentiated through the static MCP, including both
+    rule-based DEQN training and optimal policy FOCs.
     """
 
     M_zero = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
@@ -352,6 +353,7 @@ def derive_rule(
     Y_n: torch.Tensor,
     R_n: torch.Tensor | None,
     policy: str,
+    implicit_chi_grad: bool = True,
 ) -> Dict[str, torch.Tensor]:
     C, Y = out["C"], out["Y"]
     Pi = out["Pi"]
@@ -422,7 +424,17 @@ def derive_rule(
     Omega_A = omega_A_cost(R, p)
     I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
     A_next = (1.0 - float(p.delta_A)) * st.A + I
-    chi, M_zero_rent, M_at_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
+    chi, M_zero_rent, M_at_rent = solve_import_rent(
+        st,
+        C,
+        Y,
+        Delta,
+        pm,
+        mbar,
+        p_d,
+        p,
+        implicit_grad=implicit_chi_grad,
+    )
     static = input_static_quantities(st, C, Y, Delta, pm, chi, p_d, p)
 
     return {
@@ -538,12 +550,28 @@ def derive_free(
     }
 
 
-def derive_natural(st: State, out: Dict[str, torch.Tensor], p: BaselineParams) -> Dict[str, torch.Tensor]:
+def derive_natural(
+    st: State,
+    out: Dict[str, torch.Tensor],
+    p: BaselineParams,
+    *,
+    implicit_chi_grad: bool = True,
+) -> Dict[str, torch.Tensor]:
     C, Y = out["C_n"], out["Y_n"]
     pm, mbar = external_conditions(st, p)
     p_d = torch.full_like(C, float(p.p_d))
     Delta = torch.ones_like(C)
-    chi, M_zero_rent, M_at_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
+    chi, M_zero_rent, M_at_rent = solve_import_rent(
+        st,
+        C,
+        Y,
+        Delta,
+        pm,
+        mbar,
+        p_d,
+        p,
+        implicit_grad=implicit_chi_grad,
+    )
     static = input_static_quantities(st, C, Y, Delta, pm, chi, p_d, p)
     return {
         "pm": pm,

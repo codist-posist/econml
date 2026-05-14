@@ -142,11 +142,13 @@ Each non-baseline variant changes model primitives and therefore should be
 solved as its own DEQN economy, not evaluated only with baseline weights.  The
 registered variants include:
 
-- core mechanism variants: `price_only` removes the quantity-cap channel while
-  retaining procurement-price shocks, and `quantity_only` removes the direct
-  procurement-price channel while retaining the physical cap channel;
-- counterfactuals: `no_cap` keeps the external price process but makes the cap
-  slack, plus `no_adaptation`, `no_financing`, `no_relief`;
+- core mechanism variants: `price_only` removes the quantity-cap channel and
+  keeps the cap slack while retaining procurement-price shocks, and
+  `quantity_only` removes the direct procurement-price channel while retaining
+  the physical cap channel;
+- counterfactuals: `no_cap` keeps the external price and quantity processes in
+  the state but makes the cap slack, plus `no_adaptation`, `no_financing`,
+  `no_relief`;
 - sensitivity variants: `deep_crisis`, `persistent_crisis`, `fast_relief`,
   `fragile_relief`, granular crisis-depth/persistence variants, granular
   relief-arrival/relief-durability variants, bottleneck-tightness variants,
@@ -155,6 +157,11 @@ registered variants include:
   `hawkish_policy`, `dovish_policy`, `output_gap_policy`,
   `weak_bottleneck_policy`, `strong_bottleneck_policy`,
   `weak_repair_aware_policy`, and `strong_repair_aware_policy`.
+
+The `price_only` and `no_cap` allocations can be numerically close when the cap
+is far from binding.  Their roles differ diagnostically: `price_only` removes
+the quantity-shock channel, while `no_cap` asks what remains of the full
+external process once the physical constraint cannot generate scarcity rents.
 
 One structured experiment can be run with:
 
