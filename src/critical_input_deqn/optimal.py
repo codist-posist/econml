@@ -388,10 +388,10 @@ def discretion_residuals(
 def commitment_promise_term(z: torch.Tensor, out: TensorDict, drv: TensorDict, params: BaselineParams) -> torch.Tensor:
     """Inherited scaled-promise term in the Ramsey stationarity conditions.
 
-    The promise states already contain the previous-period inverse marginal
-    utility normalizer.  Multiplying by current Lambda here gives the same
-    current-period scaling as a raw-promise implementation that separately
-    carried lagged consumption.
+    The promise states already contain the previous-period discount factor,
+    inverse marginal-utility normalizer, residual normalization, and sign of
+    the forward-looking term.  Multiplying by current Lambda and the current
+    forward-looking object reconstructs the lagged Ramsey term.
     """
 
     pS, pF, pQ = [z[..., 7 + i] for i in range(len(COMMITMENT_PROMISE_NAMES))]
@@ -408,15 +408,31 @@ def commitment_promise_term(z: torch.Tensor, out: TensorDict, drv: TensorDict, p
 
 
 def commitment_promise_map(out: TensorDict, drv: TensorDict, params: BaselineParams) -> torch.Tensor:
-    """Map current Ramsey multipliers into next-period scaled promise states."""
+    """Map current Ramsey multipliers into next-period scaled promise states.
+
+    The multipliers are attached to the normalized private residuals used in
+    ``private_residuals_free``.  The carried promise therefore includes the
+    forward-looking coefficient and that residual normalization:
+
+    calvo_S: -theta * beta / (Lambda_t * S_t)
+    calvo_F: -theta * beta / (Lambda_t * F_t)
+    Q:       -beta / (Lambda_t * (1 + |Q_t|))
+
+    With this scaling the next-period promise term can be written compactly as
+    p_S * Lambda * Pi^epsilon * S
+    + p_F * Lambda * Pi^(epsilon - 1) * F
+    + p_Q * Lambda * (benefit_A + (1 - delta_A) * Q_A).
+    """
 
     Lambda = drv["Lambda"]
     inv_lambda = 1.0 / torch.clamp(Lambda, min=1e-12)
+    theta_beta = float(params.theta) * float(params.beta)
+    beta = float(params.beta)
     return torch.stack(
         [
-            out["mu_calvo_S"] * inv_lambda,
-            out["mu_calvo_F"] * inv_lambda,
-            out["mu_Q"] * inv_lambda,
+            -theta_beta * out["mu_calvo_S"] * inv_lambda / torch.clamp(out["S_p"], min=1e-12),
+            -theta_beta * out["mu_calvo_F"] * inv_lambda / torch.clamp(out["F_p"], min=1e-12),
+            -beta * out["mu_Q"] * inv_lambda / (1.0 + out["Q_A"].abs()),
         ],
         dim=-1,
     )
