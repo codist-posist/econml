@@ -157,6 +157,12 @@ def main() -> None:
     parser.add_argument("--episode-updates-per-episode", type=int, default=2)
     parser.add_argument("--episode-broad-share", type=float, default=0.50)
     parser.add_argument("--rule-scenario-q-weight", type=float, default=25.0)
+    parser.add_argument("--rule-hh-euler-weight", type=float, default=1.25)
+    parser.add_argument("--rule-resource-weight", type=float, default=2.5)
+    parser.add_argument("--rule-price-index-weight", type=float, default=1.0)
+    parser.add_argument("--rule-calvo-s-weight", type=float, default=4.0)
+    parser.add_argument("--rule-calvo-f-weight", type=float, default=1.25)
+    parser.add_argument("--rule-q-weight", type=float, default=1.0)
     parser.add_argument("--rule-calm-anchor-weight", type=float, default=5.0)
     parser.add_argument("--rule-calm-residual-weight", type=float, default=5.0)
     parser.add_argument("--rule-scenario-burnin", type=int, default=5)
@@ -247,6 +253,12 @@ def main() -> None:
             "checkpoint_every": args.checkpoint_every,
             "checkpoint_keep": args.checkpoint_keep,
             "no_checkpoints": args.no_checkpoints,
+            "rule_hh_euler_weight": args.rule_hh_euler_weight,
+            "rule_resource_weight": args.rule_resource_weight,
+            "rule_price_index_weight": args.rule_price_index_weight,
+            "rule_calvo_s_weight": args.rule_calvo_s_weight,
+            "rule_calvo_f_weight": args.rule_calvo_f_weight,
+            "rule_q_weight": args.rule_q_weight,
             "rule_scenario_q_weight": args.rule_scenario_q_weight,
             "rule_calm_anchor_weight": args.rule_calm_anchor_weight,
             "rule_calm_residual_weight": args.rule_calm_residual_weight,
@@ -301,6 +313,12 @@ def main() -> None:
             checkpoint_name=f"{policy}_monetary_shock",
             checkpoint_every=args.checkpoint_every,
             checkpoint_keep=args.checkpoint_keep,
+            rule_hh_euler_weight=args.rule_hh_euler_weight,
+            rule_resource_weight=args.rule_resource_weight,
+            rule_price_index_weight=args.rule_price_index_weight,
+            rule_calvo_s_weight=args.rule_calvo_s_weight,
+            rule_calvo_f_weight=args.rule_calvo_f_weight,
+            rule_q_weight=args.rule_q_weight,
             rule_scenario_q_weight=args.rule_scenario_q_weight,
             rule_calm_anchor_weight=args.rule_calm_anchor_weight,
             rule_calm_residual_weight=args.rule_calm_residual_weight,

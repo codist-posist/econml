@@ -50,6 +50,7 @@ from .train import (
     _report_progress,
     _report_train_postfix,
     _residual_matrix_diagnostics,
+    _rule_residual_loss,
     _restore_best_state,
     _rule_scenario_additions,
     _scenario_mechanism_diagnostics,
@@ -520,8 +521,7 @@ def train_rule_shock_episode(
                 fb_epsilon=train_cfg.fb_epsilon_start,
                 policy=policy,
             )
-            mat = stack_residuals(res)
-            loss = residual_loss(mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+            mat, loss = _rule_residual_loss(res, train_cfg)
             loss = loss + _rule_shock_auxiliary_training_loss(
                 net,
                 natural_net,

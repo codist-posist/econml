@@ -134,6 +134,12 @@ def main() -> None:
         default=25.0,
         help="Extra weight on Q_A recursion residuals at deterministic no-event/crisis scenario states.",
     )
+    parser.add_argument("--rule-hh-euler-weight", type=float, default=1.25)
+    parser.add_argument("--rule-resource-weight", type=float, default=2.5)
+    parser.add_argument("--rule-price-index-weight", type=float, default=1.0)
+    parser.add_argument("--rule-calvo-s-weight", type=float, default=4.0)
+    parser.add_argument("--rule-calvo-f-weight", type=float, default=1.25)
+    parser.add_argument("--rule-q-weight", type=float, default=1.0)
     parser.add_argument(
         "--rule-calm-anchor-weight",
         type=float,
@@ -211,6 +217,12 @@ def main() -> None:
             "episode_length": args.episode_length,
             "episode_updates_per_episode": args.episode_updates_per_episode,
             "episode_broad_share": args.episode_broad_share,
+            "rule_hh_euler_weight": args.rule_hh_euler_weight,
+            "rule_resource_weight": args.rule_resource_weight,
+            "rule_price_index_weight": args.rule_price_index_weight,
+            "rule_calvo_s_weight": args.rule_calvo_s_weight,
+            "rule_calvo_f_weight": args.rule_calvo_f_weight,
+            "rule_q_weight": args.rule_q_weight,
             "rule_scenario_q_weight": args.rule_scenario_q_weight,
             "rule_calm_anchor_weight": args.rule_calm_anchor_weight,
             "rule_calm_residual_weight": args.rule_calm_residual_weight,
@@ -348,6 +360,12 @@ def main() -> None:
             checkpoint_keep=args.checkpoint_keep,
             dtype=dtype,
             device=args.device,
+            rule_hh_euler_weight=args.rule_hh_euler_weight,
+            rule_resource_weight=args.rule_resource_weight,
+            rule_price_index_weight=args.rule_price_index_weight,
+            rule_calvo_s_weight=args.rule_calvo_s_weight,
+            rule_calvo_f_weight=args.rule_calvo_f_weight,
+            rule_q_weight=args.rule_q_weight,
             rule_scenario_q_weight=args.rule_scenario_q_weight,
             rule_calm_anchor_weight=args.rule_calm_anchor_weight,
             rule_calm_residual_weight=args.rule_calm_residual_weight,

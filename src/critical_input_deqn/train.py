@@ -134,6 +134,31 @@ def residual_loss(
     return (values * weights.view(1, -1)).mean()
 
 
+def _rule_residual_weight_vector(
+    residuals: Dict[str, torch.Tensor],
+    train_cfg: TrainConfig,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    weights_by_name = {
+        "hh_euler": train_cfg.rule_hh_euler_weight,
+        "resource": train_cfg.rule_resource_weight,
+        "price_index": train_cfg.rule_price_index_weight,
+        "calvo_S": train_cfg.rule_calvo_s_weight,
+        "calvo_F": train_cfg.rule_calvo_f_weight,
+        "Q": train_cfg.rule_q_weight,
+    }
+    return torch.tensor([float(weights_by_name.get(name, 1.0)) for name in residuals.keys()], device=device, dtype=dtype)
+
+
+def _rule_residual_loss(residuals: Dict[str, torch.Tensor], train_cfg: TrainConfig) -> tuple[torch.Tensor, torch.Tensor]:
+    mat = stack_residuals(residuals)
+    weights = _rule_residual_weight_vector(residuals, train_cfg, device=mat.device, dtype=mat.dtype)
+    loss = residual_loss(mat, weights=weights, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+    return mat, loss
+
+
 def _mse_rms_max(resid: torch.Tensor) -> tuple[float, float, float]:
     with torch.no_grad():
         loss = float(resid.pow(2).mean().detach().cpu())
@@ -1772,8 +1797,7 @@ def train_rule(
             fb_epsilon=train_cfg.fb_epsilon_start,
             policy=policy,
         )
-        mat = stack_residuals(res)
-        loss = residual_loss(mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+        mat, loss = _rule_residual_loss(res, train_cfg)
         loss = loss + _rule_auxiliary_training_loss(
             net,
             natural_net,
@@ -1980,8 +2004,7 @@ def train_rule_episode(
                 fb_epsilon=train_cfg.fb_epsilon_start,
                 policy=policy,
             )
-            mat = stack_residuals(res)
-            loss = residual_loss(mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+            mat, loss = _rule_residual_loss(res, train_cfg)
             loss = loss + _rule_auxiliary_training_loss(
                 net,
                 natural_net,

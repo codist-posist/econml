@@ -125,6 +125,12 @@ class TrainConfig:
     device: str = "cpu"
     fb_epsilon_start: float = 1e-4
     fb_epsilon_final: float = 1e-8
+    rule_hh_euler_weight: float = 1.25
+    rule_resource_weight: float = 2.50
+    rule_price_index_weight: float = 1.00
+    rule_calvo_s_weight: float = 4.00
+    rule_calvo_f_weight: float = 1.25
+    rule_q_weight: float = 1.00
     rule_scenario_q_weight: float = 25.0
     rule_calm_anchor_weight: float = 5.0
     rule_calm_residual_weight: float = 5.0
