@@ -45,6 +45,7 @@ from .optimal import (
     discretion_residuals,
     private_residuals_free,
     simulate_optimal_episode,
+    transition_physical_states,
 )
 from .transforms import decode_natural_outputs, decode_rule_outputs, steady_decode_targets
 
@@ -1347,6 +1348,36 @@ def _pathwise_physical_step(
     ).reshape(batch_size * n_paths, 7)
 
 
+def _optimal_euler_drv_for_states(
+    net: MLP,
+    z: torch.Tensor,
+    out: Dict[str, torch.Tensor],
+    nodes: QMCNodes,
+    *,
+    kind: str,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+) -> Dict[str, torch.Tensor]:
+    key = kind.lower()
+    st = unpack_rule_state(z[..., :7])
+    R = torch.full_like(out["C"], float(params.bar_R))
+    for _ in range(2):
+        drv = derive_free(st, out, params, R=R)
+        z_next_phys = transition_physical_states(st, drv["A_next"], drv["Delta"], nodes, params, qmc_cfg)
+        B, S, K = z_next_phys.shape
+        if key == "commitment":
+            promises = torch.stack([out[name] for name in COMMITMENT_PROMISE_NAMES], dim=-1)
+            z_next = torch.cat([z_next_phys, promises[:, None, :].expand(B, S, len(COMMITMENT_PROMISE_NAMES))], dim=-1)
+        else:
+            z_next = z_next_phys
+        out_next = _decode_optimal_for_kind(net(z_next.reshape(B * S, z_next.shape[-1])), key, params=params)
+        Lambda_next = out_next["C"].pow(-float(params.sigma)).reshape(B, S)
+        Pi_next = out_next["Pi"].reshape(B, S)
+        sdf = (float(params.beta) * Lambda_next / torch.clamp(drv["Lambda"], min=1e-12)[:, None] / Pi_next).mean(dim=1)
+        R = 1.0 / torch.clamp(sdf, min=1e-12)
+    return derive_free(st, out, params, R=R)
+
+
 def _optimal_q_present_value_target(
     net: MLP,
     z_start: torch.Tensor,
@@ -1371,13 +1402,19 @@ def _optimal_q_present_value_target(
     z = z_start[:, None, :].expand(batch_size, n_paths, z_start.shape[-1]).reshape(batch_size * n_paths, -1)
     pv = torch.zeros(batch_size * n_paths, device=z_start.device, dtype=z_start.dtype)
     discount = torch.ones_like(pv)
-    rate = torch.full_like(pv, float(params.bar_R))
     path_nodes = _qmc_node_prefix(nodes, n_paths)
     for h in range(max(1, int(horizon))):
         out = _decode_optimal_for_kind(net(z), key, params=params)
-        st = unpack_rule_state(z[..., :7])
-        drv = derive_free(st, out, params, R=rate)
         step_nodes = _qmc_node_roll(path_nodes, h)
+        drv = _optimal_euler_drv_for_states(
+            net,
+            z,
+            out,
+            step_nodes,
+            kind=key,
+            params=params,
+            qmc_cfg=qmc_cfg,
+        )
         z_next_phys = _pathwise_physical_step(
             z[..., :7],
             drv,
@@ -1432,15 +1469,16 @@ def _optimal_q_nobubble_residuals(
         target = torch.zeros_like(out["Q_A"])
     else:
         path_nodes = _qmc_node_prefix(nodes, int(train_cfg.optimal_q_nobubble_paths))
-        target = _optimal_q_present_value_target(
-            net,
-            z,
-            path_nodes,
-            kind=key,
-            params=params,
-            qmc_cfg=qmc_cfg,
-            horizon=int(train_cfg.optimal_q_nobubble_horizon),
-        ).detach()
+        with torch.no_grad():
+            target = _optimal_q_present_value_target(
+                net,
+                z,
+                path_nodes,
+                kind=key,
+                params=params,
+                qmc_cfg=qmc_cfg,
+                horizon=int(train_cfg.optimal_q_nobubble_horizon),
+            )
     denom = 1.0 + torch.maximum(out["Q_A"].abs(), target.abs())
     resid = (out["Q_A"] - target) / torch.clamp(denom, min=1e-12)
     return resid, {"Q_A": out["Q_A"], "Q_A_pv_target": target}, names
