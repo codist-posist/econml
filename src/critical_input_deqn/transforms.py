@@ -148,16 +148,6 @@ def _calvo_admissible_pi_width(params: BaselineParams | None = None) -> float:
     return max(math.log(min(pi_hi, 1.30)), math.log(1.005))
 
 
-def _impose_calvo_index_identity(out: Dict[str, torch.Tensor], params: BaselineParams | None = None) -> None:
-    """Derive S_p from Pi and F_p so the price-index identity holds."""
-
-    if "F_p" not in out or "Pi" not in out:
-        return
-    p = params or BaselineParams()
-    p_star = calvo_index_implied_pstar(out["Pi"], p)
-    out["S_p"] = ((float(p.epsilon) - 1.0) / float(p.epsilon)) * p_star * out["F_p"]
-
-
 def decode_rule_outputs(
     raw: torch.Tensor,
     names: Iterable[str],
@@ -185,7 +175,6 @@ def decode_rule_outputs(
             out[name] = _bounded_log_center(x, targets["F_p"], math.log(4.0))
         else:
             out[name] = positive(x)
-    _impose_calvo_index_identity(out, params)
     return out
 
 
@@ -240,5 +229,4 @@ def decode_optimal_outputs(
             out[name] = _bounded_identity(x, 5.0)
         else:
             out[name] = x
-    _impose_calvo_index_identity(out, params)
     return out

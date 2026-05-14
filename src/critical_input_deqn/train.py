@@ -1546,14 +1546,8 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
-def _adapt_legacy_rule_output_state_dict(state_dict: Dict[str, torch.Tensor], net: nn.Module) -> Dict[str, torch.Tensor]:
-    """Map legacy rule checkpoints with an unused S_p output into the current head.
-
-    Older rule-policy networks emitted C, Y, Pi, Q_A, S_p, F_p, but S_p was
-    immediately overwritten by the Calvo price-index identity during decoding.
-    Current rule networks emit C, Y, Pi, Q_A, F_p.  For old checkpoints, keep
-    the economically active rows and drop the legacy S_p row.
-    """
+def _adapt_legacy_policy_output_state_dict(state_dict: Dict[str, torch.Tensor], net: nn.Module) -> Dict[str, torch.Tensor]:
+    """Map recent reduced-output checkpoints into the current independent-S_p heads."""
 
     target = net.state_dict()
     weight_keys = [key for key, value in target.items() if key.endswith(".weight") and value.ndim == 2]
@@ -1568,27 +1562,65 @@ def _adapt_legacy_rule_output_state_dict(state_dict: Dict[str, torch.Tensor], ne
     src_b = state_dict[bias_key]
     tgt_w = target[weight_key]
     tgt_b = target[bias_key]
-    if (
-        len(RULE_OUTPUT_NAMES) == 5
-        and tuple(tgt_w.shape[:1]) == (5,)
-        and tuple(tgt_b.shape) == (5,)
-        and src_w.ndim == 2
-        and tuple(src_w.shape[:1]) == (6,)
-        and src_w.shape[1] == tgt_w.shape[1]
-        and tuple(src_b.shape) == (6,)
-    ):
-        keep = torch.tensor([0, 1, 2, 3, 5], device=src_w.device)
-        migrated = dict(state_dict)
-        migrated[weight_key] = src_w.index_select(0, keep)
-        migrated[bias_key] = src_b.index_select(0, keep)
-        return migrated
-    return state_dict
+    if src_w.ndim != 2 or src_w.shape[1] != tgt_w.shape[1] or src_b.ndim != 1:
+        return state_dict
+    if src_w.shape[0] == tgt_w.shape[0] and src_b.shape[0] == tgt_b.shape[0]:
+        return state_dict
+
+    target_rows = int(tgt_w.shape[0])
+    source_rows = int(src_w.shape[0])
+    mapping: list[tuple[int, int]] | None = None
+    if target_rows == len(RULE_OUTPUT_NAMES) and source_rows == target_rows - 1:
+        # Reduced Taylor head: C,Y,Pi,Q_A,F_p -> C,Y,Pi,Q_A,S_p,F_p.
+        mapping = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 5)]
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 2:
+        # Reduced discretion head: no S_p control and no mu_price_index.
+        mapping = [
+            (0, 0),  # C
+            (1, 1),  # Y
+            (2, 2),  # Pi
+            (3, 3),  # Q_A
+            (4, 5),  # F_p
+            (5, 6),  # V
+            (6, 7),  # mu_resource
+            (7, 9),  # mu_calvo_S
+            (8, 10),  # mu_calvo_F
+            (9, 11),  # mu_Q
+        ]
+    elif target_rows == len(COMMITMENT_OUTPUT_NAMES) and source_rows == target_rows - 2:
+        # Reduced commitment head: no S_p control and no mu_price_index.
+        mapping = [
+            (0, 0),  # C
+            (1, 1),  # Y
+            (2, 2),  # Pi
+            (3, 3),  # Q_A
+            (4, 5),  # F_p
+            (5, 6),  # mu_resource
+            (6, 8),  # mu_calvo_S
+            (7, 9),  # mu_calvo_F
+            (8, 10),  # mu_Q
+            (9, 11),  # promise_S
+            (10, 12),  # promise_F
+            (11, 13),  # promise_Q
+        ]
+    if mapping is None:
+        return state_dict
+
+    new_w = tgt_w.detach().clone()
+    new_b = tgt_b.detach().clone()
+    for src_idx, tgt_idx in mapping:
+        new_w[tgt_idx].copy_(src_w[src_idx].to(device=new_w.device, dtype=new_w.dtype))
+        new_b[tgt_idx].copy_(src_b[src_idx].to(device=new_b.device, dtype=new_b.dtype))
+    migrated = dict(state_dict)
+    migrated[weight_key] = new_w
+    migrated[bias_key] = new_b
+    return migrated
 
 
 def load_model_state_dict(net: nn.Module, state_dict: Dict[str, torch.Tensor]) -> None:
     """Load a checkpoint state dict, including known architecture migrations."""
 
-    net.load_state_dict(_adapt_legacy_rule_output_state_dict(state_dict, net))
+    net.load_state_dict(_adapt_legacy_policy_output_state_dict(state_dict, net))
 
 
 def _cpu_detached(value):
