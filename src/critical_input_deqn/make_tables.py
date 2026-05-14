@@ -284,9 +284,69 @@ def _write_json(path: Path, payload: object) -> None:
         json.dump(payload, fh, indent=2, sort_keys=True)
 
 
+_CALIBRATION_DISCIPLINE: dict[str, str] = {
+    "beta": "Quarterly discount factor; fixes steady gross nominal rate with bar_pi.",
+    "sigma": "Intertemporal curvature.",
+    "varphi": "Frisch/labor disutility curvature.",
+    "alpha": "Intermediate-input cost share in production.",
+    "epsilon": "Desired steady markup epsilon/(epsilon-1).",
+    "theta": "Quarterly Calvo non-reset probability.",
+    "rho": "CES substitutability between imported and domestic input services.",
+    "target_import_cost_share": "Equal-price imported-input cost share before adaptation.",
+    "target_min_import_cost_share": "Long-run lower bound on imported-input cost share.",
+    "steady_state_output": "Derived calm-output normalization from the static block.",
+    "omega0": "Derived CES share matching target_import_cost_share.",
+    "kappa_a": "Speed at which installed adaptation lowers import intensity.",
+    "normal_capacity_slack": "Normal-times slack of physical imported-input capacity.",
+    "bar_m": "Derived normal capacity from calm zero-rent desired imports.",
+    "nu_pD": "Procurement-price increase after disruption events.",
+    "nu_pX": "Procurement-price relief after relief events.",
+    "nu_qD": "Physical-cap contraction after disruption events.",
+    "nu_qX": "Physical-cap relief after relief events.",
+    "delta_D": "Disruption half-life.",
+    "delta_X": "Relief half-life.",
+    "log_bar_lambda_D": "Baseline disruption-arrival intensity.",
+    "log_bar_lambda_X": "Baseline relief-arrival intensity.",
+    "rho_lambda_D": "Persistence of disruption-arrival intensity.",
+    "rho_lambda_X": "Persistence of relief-arrival intensity.",
+    "kappa_D_lambda": "Endogenous disaster-intensity feedback from current disruption stock.",
+    "beta_X": "Relief-intensity feedback from current disruption stock.",
+    "sigma_lambda_D": "Disruption-intensity innovation volatility.",
+    "sigma_lambda_X": "Relief-intensity innovation volatility.",
+    "mark_D": "Disruption event size.",
+    "mark_X": "Relief event size.",
+    "rho_z": "Technology persistence.",
+    "sigma_z": "Technology innovation volatility.",
+    "adaptation_enabled": "Switch for repair/adaptation counterfactuals.",
+    "delta_A": "Depreciation of installed adaptation.",
+    "repair_cost_share_10pct": "Target resource cost of installing a 10 percent import-intensity repair.",
+    "repair_convex_share_10pct": "Target convex-cost premium along the repair installation path.",
+    "repair_horizon_quarters": "Target horizon for installing the 10 percent repair.",
+    "repair_capacity": "Quarterly installation capacity; makes repair dynamic but feasible within a crisis.",
+    "psi_A": "Derived linear repair-cost slope from repair targets.",
+    "phi_A": "Derived convex repair-cost slope from repair targets.",
+    "vartheta_A": "Working-capital exposure of repair spending to the policy rate.",
+    "bar_pi": "Gross inflation target normalization.",
+    "phi_pi": "Taylor-rule inflation coefficient.",
+    "phi_y": "Taylor-rule output-gap coefficient.",
+    "phi_bottleneck": "Accommodative bottleneck/repair-support policy coefficient.",
+    "phi_repair": "Repair-margin support policy coefficient.",
+    "repair_margin_trigger": "Repair-aware rule activation threshold for Q_A over repair cost.",
+    "repair_cap_pressure_trigger": "Repair-aware rule activation threshold for cap pressure.",
+    "repair_support_max": "Saturation bound for repair-aware rate support.",
+}
+
+
 def calibration_rows() -> list[dict[str, str | float]]:
     params = asdict(params_from_overrides({}))
-    return [{"parameter": key, "baseline_value": value} for key, value in params.items()]
+    return [
+        {
+            "parameter": key,
+            "baseline_value": value,
+            "target_or_discipline": _CALIBRATION_DISCIPLINE.get(key, "Baseline structural value."),
+        }
+        for key, value in params.items()
+    ]
 
 
 def experiment_rows(names: Iterable[str]) -> list[dict[str, str | float]]:

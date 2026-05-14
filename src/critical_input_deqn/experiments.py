@@ -284,8 +284,8 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     "very_high_capacity": ExperimentSpec(
         name="very_high_capacity",
         group="sensitivity",
-        description="Higher absolute imported-input capacity.",
-        overrides={"bar_m": 0.080},
+        description="Substantially higher absolute imported-input capacity.",
+        overrides={"bar_m": 0.160},
     ),
     "low_substitutability": ExperimentSpec(
         name="low_substitutability",

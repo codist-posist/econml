@@ -30,7 +30,7 @@ from .transforms import decode_optimal_outputs
 
 
 TensorDict = Dict[str, torch.Tensor]
-_EULER_RATE_FIXED_POINT_ITERS = 2
+EULER_RATE_FIXED_POINT_ITERS = 6
 
 
 def period_utility(C: torch.Tensor, N: torch.Tensor, p: BaselineParams) -> torch.Tensor:
@@ -76,7 +76,7 @@ def private_residuals_free(
     not output the nominal policy rate.  Instead, the gross rate is recovered
     from the household Euler equation.  Because in this model R also affects
     repair costs and therefore A_{t+1}, we close the scalar feedback with a
-    small differentiable fixed-point iteration.
+    short differentiable fixed-point iteration.
     """
 
     z_phys = z[..., :7]
@@ -88,7 +88,7 @@ def private_residuals_free(
     z_next_phys: torch.Tensor
     out_next: TensorDict
     B = S = K = 0
-    for _ in range(_EULER_RATE_FIXED_POINT_ITERS):
+    for _ in range(EULER_RATE_FIXED_POINT_ITERS):
         drv = derive_free(st, out, params, R=R)
         z_next, z_next_phys, out_next, B, S, K = _optimal_next_outputs(
             st,

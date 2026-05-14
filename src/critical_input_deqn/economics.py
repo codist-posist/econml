@@ -175,16 +175,23 @@ def solve_import_rent(
     mbar: torch.Tensor,
     p_d: torch.Tensor,
     p: BaselineParams,
+    *,
+    implicit_grad: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Solve the one-dimensional imported-input MCP for the scarcity rent.
 
     If zero-rent desired demand is below the cap, the rent is exactly zero. If
     desired demand exceeds the cap, bisection finds the rent that makes desired
     demand equal available capacity.
+
+    When ``implicit_grad`` is true, the returned binding-branch rent keeps the
+    bisection value but replaces the algorithmic bisection derivative with the
+    implicit derivative from M_d(chi, a, Z)=mbar.  This is needed in optimal
+    policy FOCs, where controls move the scarcity rent through the static MCP.
     """
 
     M_zero = desired_import_at_zero_rent(st, C, Y, Delta, pm, p_d, p)
-    bind = M_zero > mbar
+    bind = M_zero.detach() > mbar.detach()
     chi = torch.zeros_like(C)
     M_at_rent = M_zero.clone()
     if bool(bind.detach().any().cpu()):
@@ -210,7 +217,56 @@ def solve_import_rent(
         M_hi = desired_import_given_rent(st_b, C_b, Y_b, Delta_b, pm_b, p_d_b, hi, p)
         chi = chi.index_put((bind,), hi)
         M_at_rent = M_at_rent.index_put((bind,), M_hi)
+    if implicit_grad:
+        chi = _implicit_import_rent_gradient(st, C, Y, Delta, pm, mbar, p_d, chi, bind, p)
+        M_at_rent = desired_import_given_rent(st, C, Y, Delta, pm, p_d, chi, p)
     return chi, M_zero, M_at_rent
+
+
+def _implicit_import_rent_gradient(
+    st: State,
+    C: torch.Tensor,
+    Y: torch.Tensor,
+    Delta: torch.Tensor,
+    pm: torch.Tensor,
+    mbar: torch.Tensor,
+    p_d: torch.Tensor,
+    chi_value: torch.Tensor,
+    bind: torch.Tensor,
+    p: BaselineParams,
+) -> torch.Tensor:
+    """Return ``chi_value`` with the binding-branch implicit MCP gradient."""
+
+    if not torch.is_grad_enabled() or not bool(bind.detach().any().cpu()):
+        return chi_value
+
+    grad_sources = [C, Y, Delta, pm, mbar, p_d, st.D, st.X, st.ell_D, st.ell_X, st.log_Z, st.A]
+    if st.log_Delta_prev is not None:
+        grad_sources.append(st.log_Delta_prev)
+    if not any(t.requires_grad for t in grad_sources):
+        return chi_value
+
+    chi_base = chi_value.detach()
+    chi_var = chi_base.clone().detach().requires_grad_(True)
+    desired = desired_import_given_rent(st, C, Y, Delta, pm, p_d, chi_var, p)
+    if not desired.requires_grad:
+        return chi_value
+
+    dM_dchi = torch.autograd.grad(
+        desired.sum(),
+        chi_var,
+        create_graph=True,
+        retain_graph=True,
+        allow_unused=False,
+    )[0]
+    eps = torch.full_like(dM_dchi, 1e-10)
+    sign = torch.where(dM_dchi < 0.0, -torch.ones_like(dM_dchi), torch.ones_like(dM_dchi))
+    denom = torch.where(dM_dchi.abs() > eps, dM_dchi, sign * eps)
+
+    residual = desired - mbar
+    zero_value_residual = residual - residual.detach()
+    chi_proxy = chi_base - zero_value_residual / denom
+    return torch.where(bind, chi_proxy, chi_base)
 
 
 def input_static_quantities(
@@ -415,6 +471,7 @@ def derive_free(
     p: BaselineParams,
     *,
     R: torch.Tensor | None = None,
+    implicit_chi_grad: bool = True,
 ) -> Dict[str, torch.Tensor]:
     """Derived objects for optimal policies.
 
@@ -438,7 +495,17 @@ def derive_free(
     Omega_A = omega_A_cost(R, p)
     I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
     A_next = (1.0 - float(p.delta_A)) * st.A + I
-    chi, M_zero_rent, M_at_rent = solve_import_rent(st, C, Y, Delta, pm, mbar, p_d, p)
+    chi, M_zero_rent, M_at_rent = solve_import_rent(
+        st,
+        C,
+        Y,
+        Delta,
+        pm,
+        mbar,
+        p_d,
+        p,
+        implicit_grad=implicit_chi_grad,
+    )
     static = input_static_quantities(st, C, Y, Delta, pm, chi, p_d, p)
 
     return {

@@ -92,8 +92,9 @@ Galo--Nuno code for the pricing-promise analogues
 (`vartheta_old=-0.019182`, `rho_old=0.016500`).  Because this implementation
 uses scaled promises rather than carrying `c_old` as a separate state, the
 pricing-promise means and standard deviations multiply the author raw values by
-`0.921336**2`.  The Euler and repair promises are centered clouds because they
-have no exact analogue in the original model.  The launcher option
+`0.921336**2`.  The repair-value promise is initialized as a centered cloud
+because it has no exact analogue in the original model; there is no Euler
+promise in the Euler-substituted implementation.  The launcher option
 `--promise-init-scale` scales the standard deviations around these means; it no
 longer sets arbitrary promise means.
 

@@ -39,6 +39,7 @@ from .economics import (
     unpack_rule_state,
 )
 from .optimal import (
+    EULER_RATE_FIXED_POINT_ITERS,
     commitment_residuals,
     decode_commitment,
     decode_discretion,
@@ -1364,7 +1365,7 @@ def _optimal_euler_drv_for_states(
     key = kind.lower()
     st = unpack_rule_state(z[..., :7])
     R = torch.full_like(out["C"], float(params.bar_R))
-    for _ in range(2):
+    for _ in range(EULER_RATE_FIXED_POINT_ITERS):
         drv = derive_free(st, out, params, R=R)
         z_next_phys = transition_physical_states(st, drv["A_next"], drv["Delta"], nodes, params, qmc_cfg)
         B, S, K = z_next_phys.shape
