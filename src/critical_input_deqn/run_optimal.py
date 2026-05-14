@@ -147,8 +147,11 @@ def main() -> None:
     parser.add_argument(
         "--q-nobubble-weight",
         type=float,
-        default=5.0,
-        help="Extra weight on finite-horizon no-bubble Q_A present-value residuals at scenario states.",
+        default=0.0,
+        help=(
+            "Experimental extra weight on finite-horizon no-bubble Q_A present-value residuals "
+            "at scenario states. Default is zero: report qPV diagnostics without training on them."
+        ),
     )
     parser.add_argument(
         "--q-nobubble-horizon",
@@ -162,7 +165,7 @@ def main() -> None:
         default=64,
         help="QMC paths used by the no-bubble Q_A present-value residual.",
     )
-    parser.add_argument("--best-q-nobubble-weight", type=float, default=1.0)
+    parser.add_argument("--best-q-nobubble-weight", type=float, default=0.0)
     parser.add_argument("--best-calm-anchor-weight", type=float, default=1.0)
     parser.add_argument("--best-calm-residual-weight", type=float, default=1.0)
     parser.add_argument("--target-scenario-q-rms", type=float, default=1e-2)

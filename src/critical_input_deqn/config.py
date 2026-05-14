@@ -147,10 +147,10 @@ class TrainConfig:
     optimal_stationarity_loss_weight: float = 0.10
     optimal_promise_loss_weight: float = 1.0
     optimal_full_weight_warmup_steps: int = 1_000
-    optimal_q_nobubble_weight: float = 5.0
+    optimal_q_nobubble_weight: float = 0.0
     optimal_q_nobubble_horizon: int = 12
     optimal_q_nobubble_paths: int = 64
-    best_q_nobubble_weight: float = 1.0
+    best_q_nobubble_weight: float = 0.0
 
 
 STOP_PROFILES = {
