@@ -90,6 +90,15 @@ def main() -> None:
     parser.add_argument("--params-json", type=Path, default=None)
     parser.add_argument("--steps", type=int, default=5_000)
     parser.add_argument("--batch-size", type=int, default=2048)
+    parser.add_argument(
+        "--full-batch-size",
+        type=int,
+        default=512,
+        help=(
+            "Row microbatch size for full optimal-policy FOC/envelope residuals. "
+            "The outer batch-size still controls sampling; this only limits CUDA memory after feasibility pretraining."
+        ),
+    )
     parser.add_argument("--sim-batch-size", type=int, default=512)
     parser.add_argument("--episode-length", type=int, default=20)
     parser.add_argument(
@@ -239,6 +248,7 @@ def main() -> None:
     stop = _resolved_stop(args)
     train_cfg = TrainConfig(
         batch_size=args.batch_size,
+        optimal_full_batch_size=args.full_batch_size,
         sim_batch_size=args.sim_batch_size,
         episode_length=args.episode_length,
         episode_updates_per_episode=args.episode_updates_per_episode,
@@ -291,6 +301,7 @@ def main() -> None:
         "qmc": asdict(qmc_cfg),
         "train": {
             "batch_size": args.batch_size,
+            "full_batch_size": args.full_batch_size,
             "sim_batch_size": args.sim_batch_size,
             "episode_length": args.episode_length,
             "episode_updates_per_episode": args.episode_updates_per_episode,
@@ -342,6 +353,7 @@ def main() -> None:
     print(
         f"Configured run_optimal: output_dir={args.output_dir}, kind={args.kind}, "
         f"device={args.device}, dtype={args.dtype}, steps={args.steps}, "
+        f"batch_size={args.batch_size}, full_batch_size={args.full_batch_size}, "
         f"qmc_train={args.qmc_train}, qmc_val={args.qmc_val}, "
         f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}, "
         f"feasibility_pretrain={args.feasibility_pretrain_steps}, "

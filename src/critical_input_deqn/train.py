@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import math
 from pathlib import Path
-from typing import Dict, Iterable
+from typing import Callable, Dict, Iterable
 
 import torch
 import torch.nn as nn
@@ -366,6 +366,7 @@ def _announce_training(
         optimal_bits = (
             f", feasibility_pretrain={int(train_cfg.optimal_feasibility_pretrain_steps)}, "
             f"full_warmup={int(train_cfg.optimal_full_weight_warmup_steps)}, "
+            f"full_batch_size={int(train_cfg.optimal_full_batch_size)}, "
             f"stat_w={float(train_cfg.optimal_stationarity_loss_weight):g}, "
             f"env_w={float(train_cfg.optimal_envelope_loss_weight):g}, "
             f"legacy_bellman_w={float(train_cfg.optimal_bellman_loss_weight):g}, "
@@ -500,6 +501,64 @@ def _optimal_training_residuals_for_stage(
         qmc_cfg=qmc_cfg,
         fb_epsilon=fb_epsilon,
     )
+
+
+def _optimal_full_microbatch_size(train_cfg: TrainConfig, n_rows: int) -> int:
+    size = int(getattr(train_cfg, "optimal_full_batch_size", 0) or n_rows)
+    return max(1, min(int(n_rows), size))
+
+
+def _append_detached_tensors(
+    store: dict[str, list[torch.Tensor]],
+    values: Dict[str, torch.Tensor],
+    *,
+    batch_rows: int,
+) -> None:
+    for name, value in values.items():
+        if not torch.is_tensor(value):
+            continue
+        if value.ndim == 0 or int(value.shape[0]) != int(batch_rows):
+            continue
+        store.setdefault(name, []).append(value.detach())
+
+
+def _cat_detached_tensors(store: dict[str, list[torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    return {name: torch.cat(parts, dim=0) for name, parts in store.items() if parts}
+
+
+def _optimal_full_residuals_chunked(
+    z: torch.Tensor,
+    net: MLP,
+    nodes: QMCNodes,
+    residual_fn: Callable[..., tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]],
+    *,
+    params: BaselineParams,
+    qmc_cfg: QMCConfig,
+    train_cfg: TrainConfig,
+    fb_epsilon: float,
+) -> tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], torch.Tensor]:
+    """Evaluate full optimal residuals in row chunks to avoid validation OOMs."""
+
+    chunk_size = _optimal_full_microbatch_size(train_cfg, int(z.shape[0]))
+    res_chunks: dict[str, list[torch.Tensor]] = {}
+    drv_chunks: dict[str, list[torch.Tensor]] = {}
+    mat_chunks: list[torch.Tensor] = []
+    for z_chunk in z.split(chunk_size, dim=0):
+        raw = net(z_chunk)
+        res, drv = residual_fn(
+            z_chunk,
+            raw,
+            net,
+            nodes,
+            params=params,
+            qmc_cfg=qmc_cfg,
+            fb_epsilon=fb_epsilon,
+        )
+        mat_chunks.append(stack_residuals(res).detach())
+        _append_detached_tensors(res_chunks, res, batch_rows=int(z_chunk.shape[0]))
+        _append_detached_tensors(drv_chunks, drv, batch_rows=int(z_chunk.shape[0]))
+        del raw, res, drv
+    return _cat_detached_tensors(res_chunks), _cat_detached_tensors(drv_chunks), torch.cat(mat_chunks, dim=0)
 
 
 def _copy_state_dict_to_cpu(net: nn.Module) -> dict[str, torch.Tensor]:
@@ -2629,26 +2688,46 @@ def train_optimal_episode(
                     )
                 )
             z = torch.cat(pieces, dim=0) if len(pieces) > 1 else pieces[0]
-            raw = net(z)
-            res, _ = _optimal_training_residuals_for_stage(
-                z,
-                raw,
-                net,
-                nodes,
-                kind=key,
-                params=params,
-                qmc_cfg=qmc_cfg,
-                fb_epsilon=train_cfg.fb_epsilon_start,
-                stage=stage,
+            opt.zero_grad(set_to_none=True)
+            base_loss_detached = torch.zeros((), device=z.device, dtype=z.dtype)
+            obj_chunks: list[torch.Tensor] = []
+            chunk_size = (
+                _optimal_full_microbatch_size(train_cfg, int(z.shape[0]))
+                if stage == "full"
+                else int(z.shape[0])
             )
-            if not all(bool(torch.isfinite(value).all().detach().cpu()) for value in res.values()):
-                bad = _nonfinite_residual_summary(res)
-                raise FloatingPointError(
-                    f"Non-finite {key} residuals at episode {episode} stage={stage}: {bad}"
+            for z_chunk in z.split(chunk_size, dim=0):
+                raw = net(z_chunk)
+                res, _ = _optimal_training_residuals_for_stage(
+                    z_chunk,
+                    raw,
+                    net,
+                    nodes,
+                    kind=key,
+                    params=params,
+                    qmc_cfg=qmc_cfg,
+                    fb_epsilon=train_cfg.fb_epsilon_start,
+                    stage=stage,
                 )
-            obj_mat = _optimal_objective_matrix(res, train_cfg, stage=stage, step=episode)
-            loss = residual_loss(obj_mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
-            loss = loss + _optimal_auxiliary_training_loss(
+                if not all(bool(torch.isfinite(value).all().detach().cpu()) for value in res.values()):
+                    bad = _nonfinite_residual_summary(res)
+                    raise FloatingPointError(
+                        f"Non-finite {key} residuals at episode {episode} stage={stage}: {bad}"
+                    )
+                obj_mat = _optimal_objective_matrix(res, train_cfg, stage=stage, step=episode)
+                chunk_loss = residual_loss(obj_mat, loss=train_cfg.loss, huber_delta=train_cfg.huber_delta)
+                if not bool(torch.isfinite(chunk_loss).detach().cpu()):
+                    bad = _nonfinite_residual_summary(res)
+                    raise FloatingPointError(
+                        f"Non-finite {key} loss at episode {episode} stage={stage}: {bad}"
+                    )
+                chunk_weight = float(z_chunk.shape[0]) / float(z.shape[0])
+                weighted_chunk_loss = chunk_loss * chunk_weight
+                weighted_chunk_loss.backward()
+                base_loss_detached = base_loss_detached + weighted_chunk_loss.detach()
+                obj_chunks.append(obj_mat.detach())
+                del raw, res, obj_mat, chunk_loss, weighted_chunk_loss
+            aux_loss = _optimal_auxiliary_training_loss(
                 net,
                 nodes,
                 kind=key,
@@ -2658,13 +2737,12 @@ def train_optimal_episode(
                 fb_epsilon=train_cfg.fb_epsilon_start,
                 step=episode,
             )
-            if not bool(torch.isfinite(loss).detach().cpu()):
-                bad = _nonfinite_residual_summary(res)
+            if not bool(torch.isfinite(aux_loss).detach().cpu()):
                 raise FloatingPointError(
-                    f"Non-finite {key} loss at episode {episode} stage={stage}: {bad}"
+                    f"Non-finite {key} auxiliary loss at episode {episode} stage={stage}"
                 )
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
+            aux_loss.backward()
+            loss = base_loss_detached + aux_loss.detach()
             grad_norm = torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
             if not bool(torch.isfinite(grad_norm).detach().cpu()):
                 opt.zero_grad(set_to_none=True)
@@ -2673,23 +2751,22 @@ def train_optimal_episode(
                     f"grad_norm={float(grad_norm.detach().cpu())}"
                 )
             opt.step()
-            last_mat = obj_mat.detach()
+            last_mat = torch.cat(obj_chunks, dim=0)
             last_loss = loss.detach()
         should_validate = episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
         if last_mat is not None and last_loss is not None and should_validate:
-            val_raw = net(val_state)
-            val_res, _ = residual_fn(
+            val_res, _, val_mat = _optimal_full_residuals_chunked(
                 val_state,
-                val_raw,
                 net,
                 val_nodes,
+                residual_fn,
                 params=params,
                 qmc_cfg=val_qmc_cfg,
+                train_cfg=train_cfg,
                 fb_epsilon=train_cfg.fb_epsilon_final,
             )
-            val_mat = stack_residuals(val_res).detach()
             val_top = _top_residual_summary(val_res)
-            del val_raw, val_res
+            del val_res
             scenario_states = _optimal_training_scenario_states(
                 net,
                 val_nodes,
@@ -2911,17 +2988,16 @@ def evaluate_optimal(
         dtype=train_cfg.dtype,
         promise_init_scale=train_cfg.promise_init_scale,
     )
-    raw = net(z)
-    res, drv = residual_fn(
+    res, drv, mat = _optimal_full_residuals_chunked(
         z,
-        raw,
         net,
         nodes,
+        residual_fn,
         params=params,
         qmc_cfg=qmc_cfg,
+        train_cfg=train_cfg,
         fb_epsilon=train_cfg.fb_epsilon_final,
     )
-    mat = stack_residuals(res)
     scenario_states = _optimal_training_scenario_states(
         net,
         nodes,

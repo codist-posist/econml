@@ -153,6 +153,7 @@ class TrainConfig:
     optimal_envelope_loss_weight: float = 0.10
     optimal_promise_loss_weight: float = 1.0
     optimal_full_weight_warmup_steps: int = 1_000
+    optimal_full_batch_size: int = 512
     optimal_q_nobubble_weight: float = 0.0
     optimal_q_nobubble_horizon: int = 12
     optimal_q_nobubble_paths: int = 64
