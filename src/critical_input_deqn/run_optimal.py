@@ -93,7 +93,7 @@ def main() -> None:
     parser.add_argument(
         "--full-batch-size",
         type=int,
-        default=512,
+        default=256,
         help=(
             "Row microbatch size for full optimal-policy FOC/envelope residuals. "
             "The outer batch-size still controls sampling; this only limits CUDA memory after feasibility pretraining."

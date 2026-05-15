@@ -375,7 +375,7 @@ def main() -> None:
     parser.add_argument("--target-scenario-q-rms", type=float, default=1e-2)
     parser.add_argument("--optimal-feasibility-pretrain-steps", type=int, default=1_000)
     parser.add_argument("--optimal-full-weight-warmup-steps", type=int, default=1_000)
-    parser.add_argument("--optimal-full-batch-size", type=int, default=512)
+    parser.add_argument("--optimal-full-batch-size", type=int, default=256)
     parser.add_argument("--optimal-private-loss-weight", type=float, default=1.0)
     parser.add_argument("--optimal-bellman-loss-weight", type=float, default=0.0)
     parser.add_argument("--optimal-stationarity-loss-weight", type=float, default=0.10)
