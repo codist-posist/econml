@@ -298,6 +298,9 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     val_top = metrics.get("val_top")
     if val_top:
         message += f" top_val={val_top}"
+    raw_stat_top = metrics.get("raw_stat_top")
+    if raw_stat_top:
+        message += f" raw_stat={raw_stat_top}"
     q_d3 = metrics.get("scenario_Q.D_3x.event")
     if q_d3 is not None:
         message += f" qD3={float(q_d3):.2e}"
@@ -370,7 +373,8 @@ def _announce_training(
             f"stat_w={float(train_cfg.optimal_stationarity_loss_weight):g}, "
             f"env_w={float(train_cfg.optimal_envelope_loss_weight):g}, "
             f"legacy_bellman_w={float(train_cfg.optimal_bellman_loss_weight):g}, "
-            f"promise_w={float(train_cfg.optimal_promise_loss_weight):g}"
+            f"promise_w={float(train_cfg.optimal_promise_loss_weight):g}, "
+            f"q_pv_w={float(train_cfg.optimal_q_nobubble_weight):g}"
         )
     print(
         f"Starting {kind}: total={int(total)}, batch_size={int(train_cfg.batch_size)}, "
@@ -390,6 +394,18 @@ def _top_residual_summary(residuals: Dict[str, torch.Tensor], *, limit: int = 3)
         for name, value in residuals.items():
             rms = torch.sqrt(value.detach().pow(2).mean())
             items.append((float(rms.cpu()), name))
+    items.sort(reverse=True)
+    return ", ".join(f"{name}:{rms:.2e}" for rms, name in items[: int(limit)])
+
+
+def _top_tensor_summary_by_prefix(data: Dict[str, torch.Tensor], prefix: str, *, limit: int = 3) -> str:
+    with torch.no_grad():
+        items = []
+        for name, value in data.items():
+            if not name.startswith(prefix):
+                continue
+            rms = torch.sqrt(value.detach().pow(2).mean())
+            items.append((float(rms.cpu()), name.removeprefix(prefix)))
     items.sort(reverse=True)
     return ", ".join(f"{name}:{rms:.2e}" for rms, name in items[: int(limit)])
 
@@ -1816,6 +1832,22 @@ def _add_tensor_diagnostics(diag: Dict[str, float], prefix: str, value: torch.Te
     diag[f"{prefix}.max"] = float(v.max().cpu())
 
 
+def _raw_stationarity_diagnostics(data: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    diag: Dict[str, float] = {}
+    parts: list[torch.Tensor] = []
+    with torch.no_grad():
+        for name, value in data.items():
+            if not name.startswith("raw_stat_"):
+                continue
+            _add_tensor_diagnostics(diag, name, value)
+            parts.append(value.detach().reshape(-1))
+        if parts:
+            raw = torch.cat(parts)
+            diag["raw_stat_overall.rms"] = float(torch.sqrt(raw.pow(2).mean()).cpu())
+            diag["raw_stat_overall.max_abs"] = float(raw.abs().max().cpu())
+    return diag
+
+
 def exact_condition_diagnostics(data: Dict[str, torch.Tensor], params: BaselineParams, *, natural: bool = False) -> Dict[str, float]:
     """Diagnostics for original, un-smoothed complementarity conditions.
 
@@ -2741,7 +2773,8 @@ def train_optimal_episode(
                 raise FloatingPointError(
                     f"Non-finite {key} auxiliary loss at episode {episode} stage={stage}"
                 )
-            aux_loss.backward()
+            if aux_loss.requires_grad:
+                aux_loss.backward()
             loss = base_loss_detached + aux_loss.detach()
             grad_norm = torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10.0)
             if not bool(torch.isfinite(grad_norm).detach().cpu()):
@@ -2755,7 +2788,7 @@ def train_optimal_episode(
             last_loss = loss.detach()
         should_validate = episode == 1 or episode % int(log_every) == 0 or episode == n_episodes
         if last_mat is not None and last_loss is not None and should_validate:
-            val_res, _, val_mat = _optimal_full_residuals_chunked(
+            val_res, val_drv, val_mat = _optimal_full_residuals_chunked(
                 val_state,
                 net,
                 val_nodes,
@@ -2789,6 +2822,8 @@ def train_optimal_episode(
             metrics["stage"] = _optimal_training_stage(episode, train_cfg)
             metrics["full_weight"] = _optimal_full_weight(episode, train_cfg) if metrics["stage"] == "full" else 0.0
             metrics["val_top"] = val_top
+            metrics["raw_stat_top"] = _top_tensor_summary_by_prefix(val_drv, "raw_stat_")
+            metrics.update(_raw_stationarity_diagnostics(val_drv))
             scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
             mechanism_diag = _scenario_mechanism_diagnostics(scenario_val_drv, scenario_names, params=params)
             del scenario_val_res, scenario_val_drv, scenario_names
@@ -3031,6 +3066,7 @@ def evaluate_optimal(
         "rms": float(torch.sqrt(mat.pow(2).mean()).detach().cpu()),
         "max_abs": float(mat.abs().max().detach().cpu()),
         **residual_diagnostics(res),
+        **_raw_stationarity_diagnostics(drv),
         **exact_condition_diagnostics(drv, params),
         **_scenario_q_diagnostics(scenario_res, scenario_names, q_key="Q"),
         **_scenario_mechanism_diagnostics(scenario_drv, scenario_names, params=params),

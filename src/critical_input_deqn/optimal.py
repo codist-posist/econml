@@ -258,10 +258,35 @@ def private_residual_matrix(res: TensorDict) -> torch.Tensor:
     return torch.stack([res[name] for name in OPT_PRIVATE_RESIDUAL_NAMES], dim=-1)
 
 
+def _stationarity_scale(name: str, out: TensorDict, params: BaselineParams) -> torch.Tensor:
+    """Positive local scale for FOC residuals.
+
+    The stationarity equations are derivatives of a normalized Hamiltonian with
+    respect to controls that live in different units.  Scaling by local control
+    magnitudes and the main analytic derivative scale preserves the zero set
+    while keeping the DEQN loss from treating, for example, the inflation FOC
+    and the repair-value FOC as numerically incomparable objects.
+    """
+
+    value = out[name].detach().abs()
+    if name == "C":
+        lambda_scale = out["C"].detach().clamp_min(1e-12).pow(-float(params.sigma)).abs()
+        return 1.0 + value + lambda_scale
+    if name == "Pi":
+        return 1.0 + float(params.epsilon) * value
+    if name == "Q_A":
+        return 1.0 + value
+    if name in {"S_p", "F_p", "Y"}:
+        return 1.0 + value
+    return torch.ones_like(value)
+
+
 def stationarity_from_lagrangian(
     lagrangian: torch.Tensor,
     out: TensorDict,
-) -> TensorDict:
+    *,
+    params: BaselineParams,
+) -> tuple[TensorDict, TensorDict]:
     grads = torch.autograd.grad(
         lagrangian.sum(),
         controls(out),
@@ -270,11 +295,15 @@ def stationarity_from_lagrangian(
         allow_unused=True,
     )
     stat: TensorDict = {}
+    diagnostics: TensorDict = {}
     for name, grad in zip(OPT_CONTROL_NAMES, grads):
         if grad is None:
             grad = torch.zeros_like(out[name])
-        stat[f"stat_{name}"] = grad
-    return stat
+        scale = _stationarity_scale(name, out, params)
+        stat[f"stat_{name}"] = grad / torch.clamp(scale, min=1e-12)
+        diagnostics[f"raw_stat_{name}"] = grad
+        diagnostics[f"stat_scale_{name}"] = scale
+    return stat, diagnostics
 
 
 def _discretion_costate_continuation(drv: TensorDict, params: BaselineParams) -> torch.Tensor:
@@ -379,7 +408,7 @@ def discretion_residuals(
     H = private_residual_matrix(priv)
     mu = multipliers(out)
     lagrangian = U + (mu * H).sum(dim=-1) + _discretion_costate_continuation(drv, params)
-    stat = stationarity_from_lagrangian(lagrangian, out)
+    stat, stat_diag = stationarity_from_lagrangian(lagrangian, out, params=params)
     env, env_diag = discretion_envelope_residuals(
         z,
         out,
@@ -392,7 +421,7 @@ def discretion_residuals(
     res: TensorDict = {f"priv_{k}": v for k, v in priv.items()}
     res.update(stat)
     res.update(env)
-    return res, {**drv, **env_diag}
+    return res, {**drv, **env_diag, **stat_diag}
 
 
 def commitment_promise_term(z: torch.Tensor, out: TensorDict, drv: TensorDict, params: BaselineParams) -> torch.Tensor:
@@ -484,7 +513,7 @@ def commitment_residuals(
     # would create a nested B x S x S expectation tensor and double-count that
     # promise recursion.
     lagrangian = U + promise_term + (mu * H).sum(dim=-1) + _discretion_costate_continuation(drv, params)
-    stat = stationarity_from_lagrangian(lagrangian, out)
+    stat, stat_diag = stationarity_from_lagrangian(lagrangian, out, params=params)
     env, env_diag = discretion_envelope_residuals(
         zc,
         out,
@@ -505,7 +534,7 @@ def commitment_residuals(
     res.update(env)
     for i, name in enumerate(COMMITMENT_PROMISE_NAMES):
         res[name] = promise_resid[..., i]
-    return res, {**drv, **env_diag}
+    return res, {**drv, **env_diag, **stat_diag}
 
 
 def random_physical_step(

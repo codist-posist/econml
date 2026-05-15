@@ -157,6 +157,14 @@ def _append_optimal_training_args(cmd: list[str], args: argparse.Namespace) -> l
         str(args.optimal_envelope_loss_weight),
         "--promise-loss-weight",
         str(args.optimal_promise_loss_weight),
+        "--q-nobubble-weight",
+        str(args.optimal_q_nobubble_weight),
+        "--q-nobubble-horizon",
+        str(args.optimal_q_nobubble_horizon),
+        "--q-nobubble-paths",
+        str(args.optimal_q_nobubble_paths),
+        "--best-q-nobubble-weight",
+        str(args.best_q_nobubble_weight),
     ]
     return cmd
 
@@ -378,9 +386,13 @@ def main() -> None:
     parser.add_argument("--optimal-full-batch-size", type=int, default=256)
     parser.add_argument("--optimal-private-loss-weight", type=float, default=1.0)
     parser.add_argument("--optimal-bellman-loss-weight", type=float, default=0.0)
-    parser.add_argument("--optimal-stationarity-loss-weight", type=float, default=0.10)
-    parser.add_argument("--optimal-envelope-loss-weight", type=float, default=0.10)
+    parser.add_argument("--optimal-stationarity-loss-weight", type=float, default=1.0)
+    parser.add_argument("--optimal-envelope-loss-weight", type=float, default=1.0)
     parser.add_argument("--optimal-promise-loss-weight", type=float, default=1.0)
+    parser.add_argument("--optimal-q-nobubble-weight", type=float, default=1.0)
+    parser.add_argument("--optimal-q-nobubble-horizon", type=int, default=12)
+    parser.add_argument("--optimal-q-nobubble-paths", type=int, default=64)
+    parser.add_argument("--best-q-nobubble-weight", type=float, default=1.0)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--checkpoint-keep", type=int, default=3)
