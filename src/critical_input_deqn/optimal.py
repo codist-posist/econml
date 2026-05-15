@@ -139,6 +139,11 @@ def private_residuals_free(
     mc_A_next = mc_derivative_A(drv_next["mc"], drv_next["p_x"], p_x_A_next, params)
     benefit_A_next = -(mc_A_next * drv_next["Delta"] * out_next["Y"]).reshape(B, S)
 
+    y_scale = out["Y"].detach().clamp_min(1e-12)
+    s_scale = out["S_p"].detach().clamp_min(1e-12)
+    f_scale = out["F_p"].detach().clamp_min(1e-12)
+    q_scale = 1.0 + out["Q_A"].detach().abs()
+
     res: TensorDict = {}
     res["resource"] = (
         out["Y"]
@@ -146,7 +151,7 @@ def private_residuals_free(
         - drv["pm"] * drv["M"]
         - float(params.p_d) * drv["S"]
         - float(params.p_a) * psi(drv["I_A_effective"], params)
-    ) / out["Y"]
+    ) / y_scale
     price_index_lhs = (
         (1.0 - float(params.theta)) * drv["p_star"].pow(1.0 - float(params.epsilon))
         + float(params.theta) * out["Pi"].pow(float(params.epsilon) - 1.0)
@@ -156,17 +161,17 @@ def private_residuals_free(
         out["S_p"]
         - drv["mc"] * out["Y"]
         - float(params.theta) * _mean_over_nodes(Mdisc * Pi_next.pow(float(params.epsilon)) * S_p_next)
-    ) / out["S_p"]
+    ) / s_scale
     res["calvo_F"] = (
         out["F_p"]
         - out["Y"]
         - float(params.theta) * _mean_over_nodes(Mdisc * Pi_next.pow(float(params.epsilon) - 1.0) * F_p_next)
-    ) / out["F_p"]
+    ) / f_scale
     if adaptation_enabled(params):
         res["Q"] = (
             out["Q_A"]
             - _mean_over_nodes(Mdisc * (benefit_A_next + (1.0 - float(params.delta_A)) * Q_next))
-        ) / (1.0 + out["Q_A"].abs())
+        ) / q_scale
     else:
         res["Q"] = out["Q_A"]
     return res, {**out, **drv, "z_next": z_next, "out_next": out_next, "R_euler_check": R_check, "euler_rate_residual": euler_rate_residual}
@@ -527,14 +532,19 @@ def commitment_residuals(
 
     selected_mu = commitment_promise_map(out, drv, params)
     promised = torch.stack([out[name] for name in COMMITMENT_PROMISE_NAMES], dim=-1)
-    promise_resid = promised - selected_mu
+    raw_promise_resid = promised - selected_mu
+    promise_scale = 1.0 + torch.maximum(promised.detach().abs(), selected_mu.detach().abs())
+    promise_resid = raw_promise_resid / torch.clamp(promise_scale, min=1e-12)
 
     res: TensorDict = {f"priv_{k}": v for k, v in priv.items()}
     res.update(stat)
     res.update(env)
+    promise_diag: TensorDict = {}
     for i, name in enumerate(COMMITMENT_PROMISE_NAMES):
         res[name] = promise_resid[..., i]
-    return res, {**drv, **env_diag, **stat_diag}
+        promise_diag[f"raw_{name}"] = raw_promise_resid[..., i]
+        promise_diag[f"{name}_scale"] = promise_scale[..., i]
+    return res, {**drv, **env_diag, **stat_diag, **promise_diag}
 
 
 def random_physical_step(

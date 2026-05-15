@@ -15,8 +15,10 @@ from .config import (
     COMMITMENT_OUTPUT_NAMES,
     COMMITMENT_PROMISE_NAMES,
     COMMITMENT_STATE_NAMES,
+    DISCRETION_COSTATE_NAMES,
     DISCRETION_OUTPUT_NAMES,
     NATURAL_OUTPUT_NAMES,
+    OPT_MULTIPLIER_NAMES,
     RULE_OUTPUT_NAMES,
     RULE_STATE_NAMES,
     NetworkConfig,
@@ -301,6 +303,10 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     raw_stat_top = metrics.get("raw_stat_top")
     if raw_stat_top:
         message += f" raw_stat={raw_stat_top}"
+    sat_freq = metrics.get("bounded_head_saturation.max_freq")
+    if sat_freq is not None and math.isfinite(float(sat_freq)):
+        payload["sat"] = f"{float(sat_freq):.2e}"
+        message += f" sat={float(sat_freq):.2e}"
     q_d3 = metrics.get("scenario_Q.D_3x.event")
     if q_d3 is not None:
         message += f" qD3={float(q_d3):.2e}"
@@ -1848,6 +1854,46 @@ def _raw_stationarity_diagnostics(data: Dict[str, torch.Tensor]) -> Dict[str, fl
     return diag
 
 
+def _raw_promise_diagnostics(data: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    diag: Dict[str, float] = {}
+    parts: list[torch.Tensor] = []
+    with torch.no_grad():
+        for name, value in data.items():
+            if not name.startswith("raw_promise_"):
+                continue
+            _add_tensor_diagnostics(diag, name, value)
+            parts.append(value.detach().reshape(-1))
+        if parts:
+            raw = torch.cat(parts)
+            diag["raw_promise_overall.rms"] = float(torch.sqrt(raw.pow(2).mean()).cpu())
+            diag["raw_promise_overall.max_abs"] = float(raw.abs().max().cpu())
+    return diag
+
+
+def _bounded_head_saturation_diagnostics(data: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    diag: Dict[str, float] = {}
+    specs = [(name, 50.0) for name in (*DISCRETION_COSTATE_NAMES, *OPT_MULTIPLIER_NAMES)]
+    specs.extend((name, 5.0) for name in COMMITMENT_PROMISE_NAMES)
+    sat_freqs: list[float] = []
+    max_utils: list[float] = []
+    with torch.no_grad():
+        for name, bound in specs:
+            if name not in data:
+                continue
+            util = data[name].detach().abs() / max(float(bound), 1e-12)
+            sat = (util > 0.95).to(util.dtype)
+            sat_freq = float(sat.mean().cpu())
+            max_util = float(util.max().cpu())
+            diag[f"{name}.saturation_freq"] = sat_freq
+            diag[f"{name}.bound_utilization.max"] = max_util
+            sat_freqs.append(sat_freq)
+            max_utils.append(max_util)
+        if sat_freqs:
+            diag["bounded_head_saturation.max_freq"] = max(sat_freqs)
+            diag["bounded_head_utilization.max"] = max(max_utils)
+    return diag
+
+
 def exact_condition_diagnostics(data: Dict[str, torch.Tensor], params: BaselineParams, *, natural: bool = False) -> Dict[str, float]:
     """Diagnostics for original, un-smoothed complementarity conditions.
 
@@ -2824,6 +2870,8 @@ def train_optimal_episode(
             metrics["val_top"] = val_top
             metrics["raw_stat_top"] = _top_tensor_summary_by_prefix(val_drv, "raw_stat_")
             metrics.update(_raw_stationarity_diagnostics(val_drv))
+            metrics.update(_raw_promise_diagnostics(val_drv))
+            metrics.update(_bounded_head_saturation_diagnostics(val_drv))
             scenario_diag = _scenario_q_diagnostics(scenario_val_res, scenario_names, q_key="Q")
             mechanism_diag = _scenario_mechanism_diagnostics(scenario_val_drv, scenario_names, params=params)
             del scenario_val_res, scenario_val_drv, scenario_names
@@ -3067,6 +3115,8 @@ def evaluate_optimal(
         "max_abs": float(mat.abs().max().detach().cpu()),
         **residual_diagnostics(res),
         **_raw_stationarity_diagnostics(drv),
+        **_raw_promise_diagnostics(drv),
+        **_bounded_head_saturation_diagnostics(drv),
         **exact_condition_diagnostics(drv, params),
         **_scenario_q_diagnostics(scenario_res, scenario_names, q_key="Q"),
         **_scenario_mechanism_diagnostics(scenario_drv, scenario_names, params=params),
