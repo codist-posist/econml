@@ -229,6 +229,7 @@ OPT_CONTROL_NAMES = (
     "Y",
     "Pi",
     "Q_A",
+    "I_A",
     "S_p",
     "F_p",
 )
@@ -237,7 +238,9 @@ OPT_CONTROL_NAMES = (
 # network output: it is recovered from the household Euler equation.  The
 # optimal FOC block therefore uses multipliers for the remaining private
 # implementability constraints, including the Calvo price-index identity.
-OPT_PRIVATE_RESIDUAL_NAMES = tuple(name for name in PRIVATE_RESIDUAL_NAMES if name != "hh_euler")
+OPT_PRIVATE_RESIDUAL_NAMES = tuple(name for name in PRIVATE_RESIDUAL_NAMES if name != "hh_euler") + (
+    "repair_KKT",
+)
 
 OPT_MULTIPLIER_NAMES = tuple(f"mu_{name}" for name in OPT_PRIVATE_RESIDUAL_NAMES)
 

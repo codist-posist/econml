@@ -505,7 +505,10 @@ def derive_free(
     p_star = (float(p.epsilon) / (float(p.epsilon) - 1.0)) * S_p / F_p
     Delta = (1.0 - float(p.theta)) * p_star.pow(-float(p.epsilon)) + float(p.theta) * Pi.pow(float(p.epsilon)) * Delta_prev
     Omega_A = omega_A_cost(R, p)
-    I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
+    if "I_A" in out:
+        I = effective_repair_investment(out["I_A"], p)
+    else:
+        I = bounded_repair_investment(out["Q_A"], Omega_A, p_a, p)
     A_next = (1.0 - float(p.delta_A)) * st.A + I
     chi, M_zero_rent, M_at_rent = solve_import_rent(
         st,

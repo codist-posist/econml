@@ -219,6 +219,9 @@ def decode_optimal_outputs(
             out[name] = _bounded_log_center(x, targets["Pi"], _calvo_admissible_pi_width(params))
         elif name == "Q_A":
             out[name] = _bounded_signed(x, targets["Q_A_scale"])
+        elif name == "I_A":
+            cap = float((params or BaselineParams()).repair_capacity)
+            out[name] = cap * torch.sigmoid(x - 4.0)
         elif name == "S_p":
             out[name] = _bounded_log_center(x, targets["S_p"], math.log(4.0))
         elif name == "F_p":

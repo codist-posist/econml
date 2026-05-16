@@ -172,8 +172,18 @@ def private_residuals_free(
             out["Q_A"]
             - _mean_over_nodes(Mdisc * (benefit_A_next + (1.0 - float(params.delta_A)) * Q_next))
         ) / q_scale
+        I = drv["I_A_effective"]
+        repair_gap = drv["Omega_A"] * drv["p_a"] * psi_prime(I, params) - out["Q_A"]
+        eta = 1.0 / torch.clamp(drv["Omega_A"] * drv["p_a"] * float(params.phi_A), min=1e-12)
+        projected = torch.clamp(
+            I - eta * repair_gap,
+            min=0.0,
+            max=float(params.repair_capacity),
+        )
+        res["repair_KKT"] = (I - projected) / max(float(params.repair_capacity), 1e-12)
     else:
         res["Q"] = out["Q_A"]
+        res["repair_KKT"] = out.get("I_A", torch.zeros_like(out["Q_A"]))
     return res, {**out, **drv, "z_next": z_next, "out_next": out_next, "R_euler_check": R_check, "euler_rate_residual": euler_rate_residual}
 
 
@@ -281,6 +291,8 @@ def _stationarity_scale(name: str, out: TensorDict, params: BaselineParams) -> t
         return 1.0 + float(params.epsilon) * value
     if name == "Q_A":
         return 1.0 + value
+    if name == "I_A":
+        return 1.0 + value / max(float(params.repair_capacity), 1e-12)
     if name in {"S_p", "F_p", "Y"}:
         return 1.0 + value
     return torch.ones_like(value)

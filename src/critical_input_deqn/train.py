@@ -2134,6 +2134,79 @@ def _adapt_legacy_policy_output_state_dict(state_dict: Dict[str, torch.Tensor], 
     if target_rows == len(RULE_OUTPUT_NAMES) and source_rows == target_rows - 1:
         # Reduced Taylor head: C,Y,Pi,Q_A,F_p -> C,Y,Pi,Q_A,S_p,F_p.
         mapping = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 5)]
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == 13:
+        # Pre-explicit-repair discretion head:
+        # C,Y,Pi,Q_A,S_p,F_p,xi_A,xi_log_Delta,mu_resource,...,mu_Q
+        # -> C,Y,Pi,Q_A,I_A,S_p,F_p,xi_A,xi_log_Delta,mu_resource,...,mu_Q,mu_repair_KKT.
+        mapping = [
+            (0, 0),  # C
+            (1, 1),  # Y
+            (2, 2),  # Pi
+            (3, 3),  # Q_A
+            (4, 5),  # S_p
+            (5, 6),  # F_p
+            (6, 7),  # xi_A
+            (7, 8),  # xi_log_Delta
+            (8, 9),  # mu_resource
+            (9, 10),  # mu_price_index
+            (10, 11),  # mu_calvo_S
+            (11, 12),  # mu_calvo_F
+            (12, 13),  # mu_Q
+        ]
+    elif target_rows == len(COMMITMENT_OUTPUT_NAMES) and source_rows == 16:
+        # Pre-explicit-repair commitment head:
+        # controls,costates,mu_resource,...,mu_Q,promise_S,promise_F,promise_Q
+        # -> controls plus I_A, costates, multipliers plus mu_repair_KKT, promises.
+        mapping = [
+            (0, 0),  # C
+            (1, 1),  # Y
+            (2, 2),  # Pi
+            (3, 3),  # Q_A
+            (4, 5),  # S_p
+            (5, 6),  # F_p
+            (6, 7),  # xi_A
+            (7, 8),  # xi_log_Delta
+            (8, 9),  # mu_resource
+            (9, 10),  # mu_price_index
+            (10, 11),  # mu_calvo_S
+            (11, 12),  # mu_calvo_F
+            (12, 13),  # mu_Q
+            (13, 15),  # promise_S
+            (14, 16),  # promise_F
+            (15, 17),  # promise_Q
+        ]
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == 11:
+        # Recent discretion head after dropping V, before adding envelope
+        # costates and before explicit I_A:
+        # C,Y,Pi,Q_A,S_p,F_p,mu_resource,mu_price_index,mu_calvo_S,mu_calvo_F,mu_Q.
+        mapping = [
+            (0, 0),
+            (1, 1),
+            (2, 2),
+            (3, 3),
+            (4, 5),
+            (5, 6),
+            (6, 9),
+            (7, 10),
+            (8, 11),
+            (9, 12),
+            (10, 13),
+        ]
+    elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == 12:
+        # Legacy discretion head with V but without explicit costates/I_A.
+        mapping = [
+            (0, 0),
+            (1, 1),
+            (2, 2),
+            (3, 3),
+            (4, 5),
+            (5, 6),
+            (7, 9),
+            (8, 10),
+            (9, 11),
+            (10, 12),
+            (11, 13),
+        ]
     elif target_rows == len(DISCRETION_OUTPUT_NAMES) and source_rows == target_rows - 1:
         # Legacy discretion head included a learned Bellman value V and no
         # explicit envelope costates:
