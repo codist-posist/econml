@@ -158,6 +158,9 @@ class TrainConfig:
     optimal_q_nobubble_horizon: int = 12
     optimal_q_nobubble_paths: int = 64
     best_q_nobubble_weight: float = 1.0
+    optimal_active_reference: tuple[float, float, float, float] | None = None
+    optimal_active_reference_share: float = 1.0
+    optimal_active_reference_noise: float = 0.05
 
 
 STOP_PROFILES = {

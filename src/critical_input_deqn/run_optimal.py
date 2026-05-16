@@ -229,6 +229,30 @@ def main() -> None:
         default=1.0,
         help="Scale factor on the author-style commitment promise initialization standard deviations.",
     )
+    parser.add_argument(
+        "--active-reference-d",
+        type=float,
+        default=None,
+        help=(
+            "Optional optimal-policy training center for disruption D. "
+            "When supplied with X/A/logDelta, discretion and commitment train around this conditional active-repair region."
+        ),
+    )
+    parser.add_argument("--active-reference-x", type=float, default=None)
+    parser.add_argument("--active-reference-a", type=float, default=None)
+    parser.add_argument("--active-reference-log-delta", type=float, default=None)
+    parser.add_argument(
+        "--active-reference-share",
+        type=float,
+        default=1.0,
+        help="Share of initial/validation/broad optimal states drawn around the active reference point.",
+    )
+    parser.add_argument(
+        "--active-reference-noise",
+        type=float,
+        default=0.05,
+        help="Relative sampling noise around the active reference point.",
+    )
     parser.add_argument("--qmc-train", type=int, default=256)
     parser.add_argument("--qmc-val", type=int, default=512)
     parser.add_argument("--n-val-states", type=int, default=1024)
@@ -246,6 +270,23 @@ def main() -> None:
     net_cfg = NetworkConfig(hidden_width=args.hidden_width, hidden_depth=args.hidden_depth)
     qmc_cfg = QMCConfig(n_train=args.qmc_train, n_val=args.qmc_val, seed=args.seed)
     stop = _resolved_stop(args)
+    active_values = [
+        args.active_reference_d,
+        args.active_reference_x,
+        args.active_reference_a,
+        args.active_reference_log_delta,
+    ]
+    if any(value is not None for value in active_values) and not all(value is not None for value in active_values):
+        raise ValueError(
+            "Active-reference training needs all four flags: "
+            "--active-reference-d, --active-reference-x, --active-reference-a, "
+            "--active-reference-log-delta."
+        )
+    active_reference = (
+        tuple(float(value) for value in active_values)
+        if all(value is not None for value in active_values)
+        else None
+    )
     train_cfg = TrainConfig(
         batch_size=args.batch_size,
         optimal_full_batch_size=args.full_batch_size,
@@ -289,6 +330,9 @@ def main() -> None:
         optimal_envelope_loss_weight=args.envelope_loss_weight,
         optimal_promise_loss_weight=args.promise_loss_weight,
         optimal_full_weight_warmup_steps=args.full_weight_warmup_steps,
+        optimal_active_reference=active_reference,
+        optimal_active_reference_share=args.active_reference_share,
+        optimal_active_reference_noise=args.active_reference_noise,
         dtype=dtype,
         device=args.device,
     )
@@ -345,6 +389,9 @@ def main() -> None:
             "promise_loss_weight": args.promise_loss_weight,
             "commitment_promise_init_mean": COMMITMENT_PROMISE_INIT_MEAN,
             "commitment_promise_init_std": COMMITMENT_PROMISE_INIT_STD,
+            "active_reference": active_reference,
+            "active_reference_share": args.active_reference_share,
+            "active_reference_noise": args.active_reference_noise,
             "dtype": args.dtype,
             "device": args.device,
         },
@@ -358,6 +405,8 @@ def main() -> None:
         f"updates_per_episode={args.episode_updates_per_episode}, broad_share={args.episode_broad_share}, "
         f"feasibility_pretrain={args.feasibility_pretrain_steps}, "
         f"full_warmup={args.full_weight_warmup_steps}, "
+        f"active_reference={active_reference}, active_share={args.active_reference_share}, "
+        f"active_noise={args.active_reference_noise}, "
         f"stat_w={args.stationarity_loss_weight:g}, env_w={args.envelope_loss_weight:g}, "
         f"legacy_bellman_w={args.bellman_loss_weight:g}, "
         f"q_nobubble_w={args.q_nobubble_weight:g}",

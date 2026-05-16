@@ -1176,6 +1176,138 @@ def _normal_optimal_state(
     return torch.cat([z_phys, promises], dim=-1)
 
 
+def _append_commitment_promises(
+    z_phys: torch.Tensor,
+    *,
+    kind: str,
+    promise_init_scale: float,
+    randomize: bool,
+) -> torch.Tensor:
+    if kind.lower() != "commitment":
+        return z_phys
+    mean, std = commitment_promise_init_tensors(
+        device=z_phys.device,
+        dtype=z_phys.dtype,
+        scale=promise_init_scale,
+    )
+    if randomize:
+        promises = mean[None, :] + std[None, :] * torch.randn(
+            (z_phys.shape[0], len(COMMITMENT_PROMISE_NAMES)),
+            device=z_phys.device,
+            dtype=z_phys.dtype,
+        )
+    else:
+        promises = mean[None, :].expand(z_phys.shape[0], len(COMMITMENT_PROMISE_NAMES))
+    return torch.cat([z_phys, promises], dim=-1)
+
+
+def _active_reference_rule_states(
+    n: int,
+    *,
+    params: BaselineParams,
+    device: str,
+    dtype: torch.dtype,
+    reference: tuple[float, float, float, float],
+    noise: float,
+) -> torch.Tensor:
+    """Sample states around a conditional active-repair reference point.
+
+    The tuple is (D, X, A, log_Delta_prev).  This is deliberately only used by
+    the optimal-policy trainer; rule/Taylor training keeps its broad sampler.
+    """
+
+    n = int(n)
+    D0, X0, A0, log_delta0 = (float(v) for v in reference)
+    spread = max(float(noise), 0.0)
+    eps = torch.randn((n, 7), device=device, dtype=dtype)
+    D_scale = max(abs(D0), float(params.mark_D), 0.25)
+    X_scale = max(abs(X0), float(params.mark_X), 0.25)
+    A_scale = max(abs(A0), 0.25)
+    D = torch.clamp(torch.full((n,), D0, device=device, dtype=dtype) + spread * D_scale * eps[:, 0], min=0.0)
+    X = torch.clamp(torch.full((n,), X0, device=device, dtype=dtype) + spread * X_scale * eps[:, 1], min=0.0)
+    ell_D = torch.full((n,), float(params.log_bar_lambda_D), device=device, dtype=dtype) + spread * 0.15 * eps[:, 2]
+    ell_X = torch.full((n,), float(params.log_bar_lambda_X), device=device, dtype=dtype) + spread * 0.15 * eps[:, 3]
+    log_Z = torch.full((n,), float(-0.5 * params.sigma_z**2), device=device, dtype=dtype) + spread * 0.02 * eps[:, 4]
+    A = torch.clamp(torch.full((n,), A0, device=device, dtype=dtype) + spread * A_scale * eps[:, 5], min=0.0)
+    log_Delta = torch.clamp(
+        torch.full((n,), log_delta0, device=device, dtype=dtype) + spread * 0.05 * eps[:, 6],
+        min=-0.25,
+        max=0.25,
+    )
+    return torch.stack([D, X, ell_D, ell_X, log_Z, A, log_Delta], dim=-1)
+
+
+def _active_reference_optimal_states(
+    n: int,
+    *,
+    kind: str,
+    params: BaselineParams,
+    device: str,
+    dtype: torch.dtype,
+    promise_init_scale: float,
+    reference: tuple[float, float, float, float],
+    noise: float,
+    randomize_promises: bool = True,
+) -> torch.Tensor:
+    z_phys = _active_reference_rule_states(
+        n,
+        params=params,
+        device=device,
+        dtype=dtype,
+        reference=reference,
+        noise=noise,
+    )
+    return _append_commitment_promises(
+        z_phys,
+        kind=kind,
+        promise_init_scale=promise_init_scale,
+        randomize=randomize_promises,
+    )
+
+
+def _active_reference_scenario_states(
+    *,
+    kind: str,
+    params: BaselineParams,
+    train_cfg: TrainConfig,
+) -> tuple[torch.Tensor, list[str]]:
+    reference = train_cfg.optimal_active_reference
+    if reference is None:
+        raise ValueError("active reference scenario requested without optimal_active_reference.")
+    D0, X0, A0, log_delta0 = (float(v) for v in reference)
+    rows = [
+        ("active_ref.event", D0, X0, A0, log_delta0),
+        ("active_ref.lower_D", max(0.0, 0.8 * D0), X0, A0, log_delta0),
+        ("active_ref.higher_D", 1.2 * D0, X0, A0, log_delta0),
+        ("active_ref.lower_A", D0, X0, max(0.0, 0.9 * A0), log_delta0),
+        ("active_ref.higher_A", D0, X0, 1.1 * A0, log_delta0),
+        ("active_ref.relief_X", D0, X0 + float(params.mark_X), A0, log_delta0),
+    ]
+    z_phys = torch.tensor(
+        [
+            [
+                D,
+                X,
+                float(params.log_bar_lambda_D),
+                float(params.log_bar_lambda_X),
+                float(-0.5 * params.sigma_z**2),
+                A,
+                log_delta,
+            ]
+            for _, D, X, A, log_delta in rows
+        ],
+        device=train_cfg.device,
+        dtype=train_cfg.dtype,
+    )
+    z = _append_commitment_promises(
+        z_phys,
+        kind=kind,
+        promise_init_scale=train_cfg.promise_init_scale,
+        randomize=False,
+    )
+    return z.detach(), [name for name, *_ in rows]
+
+
 def _optimal_training_scenario_states(
     net: MLP,
     nodes,
@@ -1190,6 +1322,8 @@ def _optimal_training_scenario_states(
     key = kind.lower()
     device = train_cfg.device
     dtype = train_cfg.dtype
+    if train_cfg.optimal_active_reference is not None:
+        return _active_reference_scenario_states(kind=key, params=params, train_cfg=train_cfg)
     burnin = max(1, int(train_cfg.rule_scenario_burnin))
     horizon = max(5, int(train_cfg.rule_scenario_horizon))
     total = burnin + horizon + 1
@@ -2681,6 +2815,62 @@ def _initial_optimal_states(
     return z
 
 
+def _mixed_initial_optimal_states(
+    n: int,
+    *,
+    kind: str,
+    params: BaselineParams,
+    device: str,
+    dtype: torch.dtype,
+    promise_init_scale: float = 1.0,
+    active_reference: tuple[float, float, float, float] | None = None,
+    active_share: float = 1.0,
+    active_noise: float = 0.05,
+) -> torch.Tensor:
+    if active_reference is None:
+        return _initial_optimal_states(
+            n,
+            kind=kind,
+            params=params,
+            device=device,
+            dtype=dtype,
+            promise_init_scale=promise_init_scale,
+        )
+    n_total = int(n)
+    n_active = int(round(n_total * float(active_share)))
+    n_active = min(max(n_active, 0), n_total)
+    n_broad = n_total - n_active
+    pieces: list[torch.Tensor] = []
+    if n_active > 0:
+        pieces.append(
+            _active_reference_optimal_states(
+                n_active,
+                kind=kind,
+                params=params,
+                device=device,
+                dtype=dtype,
+                promise_init_scale=promise_init_scale,
+                reference=active_reference,
+                noise=active_noise,
+            )
+        )
+    if n_broad > 0:
+        pieces.append(
+            _initial_optimal_states(
+                n_broad,
+                kind=kind,
+                params=params,
+                device=device,
+                dtype=dtype,
+                promise_init_scale=promise_init_scale,
+            )
+        )
+    z = torch.cat(pieces, dim=0) if len(pieces) > 1 else pieces[0]
+    if z.shape[0] > 1:
+        z = z[torch.randperm(z.shape[0], device=z.device)]
+    return z
+
+
 def train_optimal_episode(
     *,
     kind: str,
@@ -2710,21 +2900,27 @@ def train_optimal_episode(
     log = TrainLog()
     stop_hits = 0
     best_state = None
-    current_state = _initial_optimal_states(
+    current_state = _mixed_initial_optimal_states(
         train_cfg.sim_batch_size,
         kind=key,
         params=params,
         device=train_cfg.device,
         dtype=train_cfg.dtype,
         promise_init_scale=train_cfg.promise_init_scale,
+        active_reference=train_cfg.optimal_active_reference,
+        active_share=train_cfg.optimal_active_reference_share,
+        active_noise=train_cfg.optimal_active_reference_noise,
     )
-    val_state = _initial_optimal_states(
+    val_state = _mixed_initial_optimal_states(
         train_cfg.stop_val_states,
         kind=key,
         params=params,
         device=train_cfg.device,
         dtype=train_cfg.dtype,
         promise_init_scale=train_cfg.promise_init_scale,
+        active_reference=train_cfg.optimal_active_reference,
+        active_share=train_cfg.optimal_active_reference_share,
+        active_noise=train_cfg.optimal_active_reference_noise,
     )
 
     _announce_training(kind=key, total=n_episodes, train_cfg=train_cfg, qmc_cfg=qmc_cfg, log_every=log_every)
@@ -2756,13 +2952,16 @@ def train_optimal_episode(
                 pieces.append(flat_states[idx])
             if broad_n > 0:
                 pieces.append(
-                    _initial_optimal_states(
+                    _mixed_initial_optimal_states(
                         broad_n,
                         kind=key,
                         params=params,
                         device=train_cfg.device,
                         dtype=train_cfg.dtype,
                         promise_init_scale=train_cfg.promise_init_scale,
+                        active_reference=train_cfg.optimal_active_reference,
+                        active_share=train_cfg.optimal_active_reference_share,
+                        active_noise=train_cfg.optimal_active_reference_noise,
                     )
                 )
             z = torch.cat(pieces, dim=0) if len(pieces) > 1 else pieces[0]
@@ -3063,13 +3262,16 @@ def evaluate_optimal(
         raise ValueError("kind must be 'discretion' or 'commitment'.")
 
     nodes = make_qmc_nodes(qmc_cfg.n_train, cfg=qmc_cfg, device=train_cfg.device, dtype=train_cfg.dtype)
-    z = _initial_optimal_states(
+    z = _mixed_initial_optimal_states(
         n_states,
         kind=key,
         params=params,
         device=train_cfg.device,
         dtype=train_cfg.dtype,
         promise_init_scale=train_cfg.promise_init_scale,
+        active_reference=train_cfg.optimal_active_reference,
+        active_share=train_cfg.optimal_active_reference_share,
+        active_noise=train_cfg.optimal_active_reference_noise,
     )
     res, drv, mat = _optimal_full_residuals_chunked(
         z,
