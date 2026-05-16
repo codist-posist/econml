@@ -313,6 +313,9 @@ def _report_progress(progress, metrics: dict[str, float], *, step: int, total: i
     q_d1 = metrics.get("scenario_Q.D_1x.event")
     if q_d1 is not None:
         message += f" qD1={float(q_d1):.2e}"
+    q_active = metrics.get("scenario_Q.active_ref.event")
+    if q_active is not None:
+        message += f" qAct={float(q_active):.2e}"
     activation_max = metrics.get("scenario_repair_activation.max")
     if activation_max is not None and math.isfinite(float(activation_max)):
         payload["act_max"] = f"{float(activation_max):.2e}"
@@ -1427,9 +1430,8 @@ def _scenario_q_diagnostics(res: Dict[str, torch.Tensor], names: list[str], *, q
         "scenario_Q.rms": float(torch.sqrt(q.pow(2).mean()).cpu()),
         "scenario_Q.max_abs": float(q.abs().max().cpu()),
     }
-    wanted = {f"{label}.{tag}" for label, tag in _RULE_SCENARIO_POINTS}
     for i, name in enumerate(names):
-        if name in wanted and i < q.numel():
+        if i < q.numel():
             diag[f"scenario_Q.{name}"] = float(q[i].abs().cpu())
     return diag
 
@@ -1486,9 +1488,8 @@ def _scenario_mechanism_diagnostics(
                 "scenario_cap_pressure.max": float(pressure.max().cpu()),
             }
         )
-    wanted = {f"{label}.{tag}" for label, tag in _RULE_SCENARIO_POINTS}
     for i, name in enumerate(names):
-        if name not in wanted or i >= q.numel():
+        if i >= q.numel():
             continue
         diag[f"scenario_Q_A.{name}"] = float(q[i].cpu())
         if activation is not None and i < activation.numel():
