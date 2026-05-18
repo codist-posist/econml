@@ -194,6 +194,7 @@ def iter_zip_entries(result_dir: Path) -> Iterable[ZipEntry]:
 def iter_result_archives(result_dir: Path) -> list[Path]:
     skip_names = {
         "results_synthesis_outputs.zip",
+        "outputs.zip",
     }
     archives = []
     for archive in sorted(result_dir.glob("*.zip")):
