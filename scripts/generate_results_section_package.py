@@ -585,6 +585,15 @@ def build_main_tex(out_dir: Path, data: dict[str, pd.DataFrame]) -> str:
 
         \input{{tables/conditional_active_repair_root.tex}}
 
+        It is useful to state in advance which results confirm the mechanism and which do not.  The mechanism is confirmed in three places.  First, in the repair-active Taylor-rule experiments, a binding cap raises $\chi_t$, pushes $Q^A_t$ above the repair threshold, and produces positive $I^A_t$.  Second, in the local monetary-wedge exercise, a higher policy rate lowers $I^A_t$ conditional on being in a binding-cap, active-repair state.  Third, in the stochastic simulations, repair appears repeatedly under rules that preserve the scarcity signal.  The mechanism is not confirmed as an unconditional prediction of the baseline Ramsey/discretion problem.  In the reliable optimal-policy checkpoints the repair value remains below the KKT threshold and the economy stays on the no-repair branch.  This split is central to the interpretation: repair is a real state-contingent margin, not an automatic response to every disruption.
+
+        \subsection{{Policy rules and what they are meant to test}}
+        \label{{sec:policy-rule-map}}
+
+        The rule-based exercises compare several policy formulas because each one removes a different ambiguity.  The fixed Taylor rule is the benchmark: it responds to inflation and activity but has no direct term for the import cap or repair.  The natural-rate adjusted rule replaces the constant intercept with the natural-rate benchmark, so it asks whether part of the result is just a mismeasured natural rate during the supply disruption.  The bottleneck Taylor rule adds a direct cap-pressure adjustment.  In the implementation used here, high cap pressure lowers the rule's gross rate relative to the standard Taylor component; it is therefore a bottleneck-accommodative rule, not a rule that leans mechanically against the current scarcity rent.  The repair-aware rule goes one step further and makes the accommodative term depend on both cap pressure and the repair margin $Q^A_t/(\Omega^A_t p^A_t\psi_A)$.  The aggressive repair-support rule is a stronger version of the same idea.
+
+        The reason these rules can behave differently is that the model has two policy-relevant margins.  Lowering the rate can support current demand and reduce the financing cost of repair, but it can also change output, cap pressure, and the private value of future adaptation.  Raising or lowering rates is therefore not enough to predict repair by itself.  What matters is where the rule leaves the economy relative to the repair threshold.
+
         \subsection{{The main policy comparison}}
         \label{{sec:main-policy-comparison}}
 
@@ -597,6 +606,8 @@ def build_main_tex(out_dir: Path, data: dict[str, pd.DataFrame]) -> str:
         \input{{tables/main_policy_d3_summary.tex}}
 
         The mild-disruption figure, Figure~\ref{{fig:policy-comparison-d1}}, is useful for interpretation.  When the shock is smaller, cap pressure is near the binding margin and the rent is much lower.  Repair is not a robust response across rules.  This state dependence is exactly what the model was designed to capture: adaptation should not happen mechanically after every disturbance.  It appears when the expected benefit of reducing import intensity is large enough to cover the convex repair cost and the financing wedge.
+
+        The panels in the policy-comparison figures should be read as a sequence.  The policy-rate and inflation panels describe the nominal stabilization response.  The output-gap panel shows the real allocation relative to the flexible-price benchmark.  The scarcity-rent and cap-pressure panels show whether the import constraint is merely present or economically binding.  The $Q^A_t$ and repair-activation panels show whether the private value of adaptation crosses the KKT threshold.  Finally, the $I^A_t$ and $A_t$ panels distinguish a one-period repair spike from a persistent change in exposure.  The central trade-off is visible when the first group of panels improves current stabilization while the second group moves repair below threshold.
 
         \subsection{{Natural benchmark and the meaning of the output gap}}
         \label{{sec:natural-benchmark-results}}
@@ -629,6 +640,8 @@ def build_main_tex(out_dir: Path, data: dict[str, pd.DataFrame]) -> str:
 
         The stochastic moments make the same point in levels.  Under the fixed rule the mean repair flow is positive and the upper bound is frequently reached in the right tail.  Under the bottleneck rule, the repair distribution is much thinner.  Under the repair-aware rules it collapses to zero.  This rules out the interpretation that the main figures are merely hand-picked event dates.  The active-repair margin appears in the ergodic behavior of some rules and disappears under others.
 
+        The stochastic steady-state histograms are kept in Appendix~\ref{{app:additional-results-figures}} because they are distributional diagnostics rather than the main narrative figures.  They are nevertheless part of the evidence.  They show whether the model visits binding-cap and repair-active states repeatedly after many simulated shocks, rather than only in the deterministic event windows used for the main figures.
+
         \subsection{{Relief, repair costs, and why the branch is fragile}}
         \label{{sec:sensitivity-results}}
 
@@ -636,14 +649,18 @@ def build_main_tex(out_dir: Path, data: dict[str, pd.DataFrame]) -> str:
 
         Repair-cost sensitivity is more direct.  Figure~\ref{{fig:repair-cost-fixed-d3}} shows that repair is a threshold phenomenon.  The object that matters is not $Q^A_t$ alone, but $Q^A_t$ relative to the KKT threshold $\Omega^A_t p^A_t\psi_A$.  When the threshold is low enough and the bottleneck is severe enough, repair activates.  When policy or parameters move the economy below the threshold, the projection sends $I^A_t$ back to zero.  This explains why some exploratory checkpoints with visible repair were not used as main quantitative evidence: if the residuals are large, a positive $I^A_t$ can reflect a poor approximation to the KKT system rather than a trustworthy equilibrium branch.
 
+        The additional sensitivity figures in Appendix~\ref{{app:additional-results-figures}} separate these two robustness questions.  The relief figures vary the expected external relief channel.  The repair-threshold figures vary the private cost side of the KKT condition.  The first set tells us that anticipated relief is not by itself enough to explain the disappearance of repair.  The second set tells us that the repair branch is genuinely threshold-sensitive.
+
         \subsection{{Discretion and commitment}}
         \label{{sec:optimal-policy-results}}
 
         The optimal-policy exercises are included because they answer a different question from the implementable Taylor-rule experiments.  The Taylor rules ask what happens under simple policy formulas.  Discretion and commitment ask whether a policymaker that internalizes the repair margin chooses to preserve it.  In the reliable baseline discretion and commitment checkpoints, the answer is mostly no: repair remains inactive.  We then tried several ways to make sure this was not merely a coding artifact.  We made $I^A_t$ an explicit network output, added the repair KKT condition directly to the private residual system, targeted the training distribution around a static active-repair reference state, and checked no-relief variants.  These diagnostics did not produce a stable, low-residual optimal-policy solution with robust positive repair.
 
+        The economic reading is that the central bank does not choose the external shock or the physical cap.  It affects scarcity indirectly through demand, output, inflation dynamics, and the repair financing wedge.  By changing the equilibrium path of production and demand for the intermediate input, policy changes desired import pressure and hence the scarcity rent when the cap binds.  By changing $R_t$, it also changes $\Omega^A_t$ and the repair threshold.  In the reliable optimal-policy runs these effects jointly keep $Q^A_t$ below the threshold needed for positive repair.  In other words, the central bank can reduce current scarcity and current distortions, but doing so removes the private return that would have made repair attractive.
+
         This is an important result for interpretation.  The paper should not claim that the Ramsey or discretion solution robustly invests in adaptation under the baseline calibration.  The stronger statement supported by the evidence is more precise: the model contains a real repair-scarcity mechanism; simple rules can either preserve or destroy that mechanism; and full optimal-policy training tends to select a no-repair branch unless the economy is deliberately moved into a repair-active region.  In economic terms, the planner's problem finds it attractive to stabilize current distortions enough that the private repair threshold is not crossed.  That does not invalidate the mechanism; it says the mechanism is conditional on being in the part of the state space where scarcity rents make private adaptation valuable.
 
-        Figures~\ref{{fig:optimal-no-repair-d3}} and~\ref{{fig:optimal-active-region-d3}} document this distinction.  They should be read as a negative benchmark: the no-repair branch is not a failure to plot the right variable, but a robust feature of the trained optimal-policy approximations available here.
+        Figures~\ref{{fig:optimal-no-repair-d3}} and~\ref{{fig:optimal-active-region-d3}} document this distinction.  They should be read as a negative benchmark: the no-repair branch is not a failure to plot the right variable, but a robust feature of the trained optimal-policy approximations available here.  The appendix reports the intermediate optimal-policy diagnostics: no-relief probes, explicit-$I^A$ runs, active-region targeting, and multi-checkpoint comparisons.  Their role is to show why the main text does not overstate the optimal-policy result.
 
         \subsection{{Summary of the economic story}}
         \label{{sec:results-summary}}
