@@ -50,6 +50,47 @@ PREFERRED_ARCHIVE = {
     "repair_support_aggressive": "repair_support_aggressive_interior_probe.zip",
 }
 
+SCENARIO_LABELS = {
+    "no_event": "No disruption",
+    "D_1x": "Mild disruption",
+    "D_3x": "Severe disruption",
+    "D_1x_X_lag": "Mild disruption with delayed relief",
+    "D_3x_X_lag": "Severe disruption with delayed relief",
+    "X_1x": "Relief-only shock",
+    "active_ref": "Active-repair reference state",
+    "higher_D": "Higher-disruption active state",
+    "lower_D": "Lower-disruption active state",
+    "higher_A": "Higher-adaptation active state",
+    "lower_A": "Lower-adaptation active state",
+    "relief_X": "Active state with relief shock",
+}
+
+
+def scenario_label(scenario: object) -> str:
+    key = str(scenario)
+    return SCENARIO_LABELS.get(key, key.replace("_", " "))
+
+
+def scenario_from_text(text: str) -> str | None:
+    # Longest/most specific names first.
+    for key in [
+        "D_3x_X_lag",
+        "D_1x_X_lag",
+        "D_3x",
+        "D_1x",
+        "X_1x",
+        "active_ref",
+        "higher_D",
+        "lower_D",
+        "higher_A",
+        "lower_A",
+        "relief_X",
+        "no_event",
+    ]:
+        if key in text:
+            return key
+    return None
+
 
 def read_csv(zf: zipfile.ZipFile, name: str) -> pd.DataFrame:
     with zf.open(name) as fh:
@@ -401,7 +442,7 @@ def build_tables(zf: zipfile.ZipFile, table_dir: Path) -> dict[str, pd.DataFrame
         local_rows.append(
             [
                 tex_escape(row["policy_label"]),
-                tex_escape(row.get("scenario", "")),
+                tex_escape(scenario_label(row.get("scenario", ""))),
                 fmt(row.get("baseline_I_A_event"), 4),
                 fmt(row.get("baseline_chi_event")),
                 fmt(row.get("baseline_cap_pressure_event")),
@@ -581,6 +622,8 @@ def build_main_tex(out_dir: Path, data: dict[str, pd.DataFrame]) -> str:
         \]
         Thus the economically relevant object is not just the impact value of $I^A_t$, but the resulting path of $A_t$ and the decline in future exposure to the bottleneck.
 
+        \paragraph{Scenario notation.}  The figures and data files use a compact scenario shorthand.  In the text, ``mild disruption'' corresponds to the file label \texttt{D\_1x}; ``severe disruption'' corresponds to \texttt{D\_3x}; and ``severe disruption with delayed relief'' corresponds to \texttt{D\_3x\_X\_lag}.  The suffix $X$ denotes a relief shock, so ``relief-only shock'' corresponds to \texttt{X\_1x}.  These names are kept in file paths for reproducibility, but the economic interpretation below uses the descriptive labels.
+
         The baseline calibration is deliberately conservative about repair.  In the selected discretion and commitment solutions, repair is typically inactive.  This is an economic feature of the benchmark rather than a mechanical plotting issue: the no-repair branch survives several variants, including versions with the repair flow written explicitly as a network output.  To study the mechanism itself, the rule-based exercises therefore use a repair-active calibration with a stronger physical bottleneck and lower repair cost.  This is not a change in the model's logic; it moves the simulated economy to the part of the state space where the KKT condition for repair is close enough to bind.  A useful reference state is reported in Table~\ref{{tab:conditional-active-repair-root}}: at a three-times disruption, $D=0.75$, and $A\simeq {fmt(root.get("A"))}$, the static calculation supports an interior repair flow $I^A\simeq {fmt(root.get("I_A"))}$ with $Q^A$ exactly at the required continuation value.  This reference is important because it shows that the active-repair branch exists economically even when the full optimal-policy benchmark often prefers not to use it.
 
         \input{{tables/conditional_active_repair_root.tex}}
@@ -701,31 +744,37 @@ def build_main_tex(out_dir: Path, data: dict[str, pd.DataFrame]) -> str:
 def figure_caption(rel: str) -> str:
     name = Path(rel).stem
     pretty = name.replace("_", " ")
+    scen_key = scenario_from_text(name)
+    scen = scenario_label(scen_key) if scen_key is not None else None
     if "policy_comparison" in rel and "taylor_policy_comparison" in rel:
-        scenario = name.replace("taylor_policy_comparison_", "")
-        return f"Taylor-rule policy comparison for {tex_escape(scenario)}.  The panels compare current nominal stabilization, scarcity rents, cap pressure, repair value, repair investment, and the accumulated adaptation stock."
+        return f"Taylor-rule policy comparison for {tex_escape(scen or pretty)}.  The panels compare current nominal stabilization, scarcity rents, cap pressure, repair value, repair investment, and the accumulated adaptation stock."
     if "all_saved_policy_diagnostic" in rel:
-        scenario = name.replace("all_saved_policy_diagnostic_", "")
-        return f"Additional policy comparison for {tex_escape(scenario)}.  This broader figure shows that the main pattern is not driven by a single plotted series."
+        return f"Additional policy comparison for {tex_escape(scen or pretty)}.  This broader figure shows that the main pattern is not driven by a single plotted series."
     if "natural_benchmark" in rel:
-        scenario = name.split("_")[-1] if "D_1x" in name else name.replace("natural_benchmark_", "")
-        return f"Natural-benchmark decomposition for {tex_escape(scenario)}.  These panels compare realized output and rates with the flexible-price benchmark and clarify whether policy is tightening or accommodating relative to the physical shock."
+        return f"Natural-benchmark decomposition for {tex_escape(scen or pretty)}.  These panels compare realized output and rates with the flexible-price benchmark and clarify whether policy is tightening or accommodating relative to the physical shock."
     if "local_monetary_wedge" in rel:
-        return "Local monetary-wedge exercise.  The graph applies a small policy-rate wedge around a repair-active state to isolate the financing channel in the repair KKT condition."
+        tail = f" for {scen}" if scen else ""
+        return f"Local monetary-wedge exercise{tex_escape(tail)}.  The graph applies a small policy-rate wedge around a repair-active state to isolate the financing channel in the repair KKT condition."
     if "relief_sensitivity" in rel:
-        return "Relief-channel sensitivity.  The graph compares paths when the expected relief process is changed, testing whether repair disappears simply because future relief is anticipated."
+        tail = f" for {scen}" if scen else ""
+        return f"Relief-channel sensitivity{tex_escape(tail)}.  The graph compares paths when the expected relief process is changed, testing whether repair disappears simply because future relief is anticipated."
     if "repair_threshold_sensitivity" in rel:
-        return "Repair-cost and repair-threshold sensitivity.  The graph shows how close the economy is to the projection threshold for positive adaptation."
+        tail = f" for {scen}" if scen else ""
+        return f"Repair-cost and repair-threshold sensitivity{tex_escape(tail)}.  The graph shows how close the economy is to the projection threshold for positive adaptation."
     if "optimal_policy" in rel:
-        return "Optimal-policy exercise.  The figure documents whether discretion or commitment stays on a no-repair branch or can sustain an active-repair path when the state space is shifted toward that region."
+        tail = f" for {scen}" if scen else ""
+        return f"Optimal-policy exercise{tex_escape(tail)}.  The figure documents whether discretion or commitment stays on a no-repair branch or can sustain an active-repair path when the state space is shifted toward that region."
     if "taylor_sss_histograms" in rel:
         return "Stochastic steady-state histograms for the corresponding Taylor rule.  These distributions show how often the economy visits binding-cap and repair-active regions beyond deterministic impulse responses."
     if "bottleneck_interior_repair" in rel:
-        return "Bottleneck-rule interior-repair diagnostic under the repair-active calibration."
+        tail = f" for {scen}" if scen else ""
+        return f"Bottleneck-rule interior-repair figure{tex_escape(tail)} under the repair-active calibration."
     if "repair_aware" in rel:
-        return "Repair-aware rule diagnostic under the repair-active calibration."
+        tail = f" for {scen}" if scen else ""
+        return f"Repair-aware rule figure{tex_escape(tail)} under the repair-active calibration."
     if "aggressive_repair_support" in rel:
-        return "Aggressive repair-support rule diagnostic under the repair-active calibration."
+        tail = f" for {scen}" if scen else ""
+        return f"Aggressive repair-support rule figure{tex_escape(tail)} under the repair-active calibration."
     return f"Diagnostic figure: {tex_escape(pretty)}."
 
 
@@ -735,6 +784,7 @@ def build_appendix_tex(fig_names: list[str]) -> str:
         "\\section{Additional results figures}",
         "\\label{app:additional-results-figures}",
         "This appendix collects all figures extracted from the consolidated results archive.  The main text uses a subset of these figures; the remaining figures provide additional policy comparisons, sensitivity checks, stochastic steady-state distributions, natural-benchmark decompositions, and local monetary-wedge exercises.",
+        "File paths retain the compact scenario names used in the computational output: \\texttt{D\\_1x} is the mild disruption, \\texttt{D\\_3x} is the severe disruption, \\texttt{D\\_3x\\_X\\_lag} is the severe disruption followed by delayed relief, and \\texttt{X\\_1x} is a relief-only shock.  Figure captions use the descriptive names.",
     ]
     for i, rel in enumerate(fig_names, start=1):
         label = "fig:appendix-results-" + str(i)
